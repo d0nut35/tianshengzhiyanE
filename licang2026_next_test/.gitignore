@@ -1,5 +1,7 @@
 # Operating-system and editor-local files
 .vscode/
+!.vscode/
+!.vscode/c_cpp_properties.json
 .idea/
 .vs/
 .DS_Store

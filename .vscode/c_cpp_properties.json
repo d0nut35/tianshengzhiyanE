@@ -1,0 +1,28 @@
+{
+    "configurations": [
+        {
+            "name": "STM32F750 FreeRTOS",
+            "includePath": [
+                "${workspaceFolder}/licang2026_next_test/**",
+                "${workspaceFolder}/licang2026_next_test/Middlewares/Third_Party/FreeRTOS/Source/include",
+                "${workspaceFolder}/licang2026_next_test/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2",
+                "${workspaceFolder}/licang2026_next_test/Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1"
+            ],
+            "defines": [
+                "USE_HAL_DRIVER",
+                "STM32F750xx",
+                "RTT_USE_ASM=0"
+            ],
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-gcc-arm",
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/licang2026_next_test"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}

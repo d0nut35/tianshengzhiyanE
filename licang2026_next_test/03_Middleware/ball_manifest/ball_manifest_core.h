@@ -13,6 +13,12 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifndef LICANG_RELEASE_MINIMAL
+#define LICANG_RELEASE_MINIMAL 0
+#endif
+
+#define BALL_MANIFEST_RUNTIME_GUARDS_ENABLE (!LICANG_RELEASE_MINIMAL)
+
 /** 本方颜色在全场最多9个球，档案保存到本轮比赛结束。 */
 #define BALL_MANIFEST_CAPACITY             9U
 #define BALL_MANIFEST_STORAGE_SLOT_UNKNOWN 0xFFU
@@ -34,7 +40,8 @@ typedef enum {
     BALL_MANIFEST_STATE_INVALID = 0,
     BALL_MANIFEST_STATE_STORED,
     BALL_MANIFEST_STATE_PLACED,
-    BALL_MANIFEST_STATE_FAULT,
+    /** 已抓取但IC读取失败；物理槽位保留，目标位置未知。 */
+    BALL_MANIFEST_STATE_READ_FAILED,
 } ball_manifest_state_t;
 
 typedef enum {
@@ -44,6 +51,7 @@ typedef enum {
     BALL_MANIFEST_ERR_REGION_COMPLETE,
     BALL_MANIFEST_ERR_STORAGE_SLOT_DUPLICATE,
     BALL_MANIFEST_ERR_CORRUPT,
+    BALL_MANIFEST_ERR_TARGET_UNKNOWN,
 } ball_manifest_status_t;
 
 typedef struct {
@@ -55,14 +63,18 @@ typedef struct {
     uint8_t target_column;
     uint8_t storage_slot;
     ball_manifest_state_t state;
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     uint16_t checksum;
     bool committed;
+#endif
 } ball_manifest_record_t;
 
 typedef struct {
     ball_manifest_record_t records[BALL_MANIFEST_CAPACITY];
     uint8_t count;
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     uint8_t region_counts[4];
+#endif
 } ball_manifest_t;
 
 /** 清空并开始一轮新的球档案；只能由上层在安全空闲状态显式调用。 */
@@ -95,6 +107,13 @@ ball_manifest_status_t ball_manifest_append(
     uint8_t ic_code,
     uint8_t target_row,
     uint8_t target_column,
+    uint8_t storage_slot);
+
+/** IC重试耗尽后登记已占用槽位；目标编码、行、列保持未知。 */
+ball_manifest_status_t ball_manifest_append_read_failed(
+    ball_manifest_t *manifest,
+    ball_manifest_region_t region,
+    ball_manifest_color_t color,
     uint8_t storage_slot);
 
 /** 把指定记录更新为已入库；不允许修改球的身份、来源或IC目标信息。 */

@@ -9,6 +9,10 @@ extern "C" {
 
 #include "zdt_turntable_service.h"
 
+#ifndef LICANG_RELEASE_MINIMAL
+#define LICANG_RELEASE_MINIMAL 0
+#endif
+
 /** 设备地址、事务超时和Emm角度换算参数。 */
 typedef struct {
     uint8_t address;
@@ -41,7 +45,9 @@ typedef struct {
     bool closed_loop;
     bool scaled_input;
     bool options_pending;
+#if !LICANG_RELEASE_MINIMAL
     zdt_turntable_service_t *service;
+#endif
     zdt_turntable_device_submit_fn_t submit_fn;
     void *submit_ctx;
     zdt_turntable_device_config_t config;
@@ -57,10 +63,12 @@ typedef struct {
  * @param config 非零地址、超时和Emm每圈脉冲数。
  * @return 初始化结果。
  */
+#if !LICANG_RELEASE_MINIMAL
 zdt_turntable_status_t zdt_turntable_device_init(
     zdt_turntable_device_t *device,
     zdt_turntable_service_t *service,
     const zdt_turntable_device_config_t *config);
+#endif
 
 /**
  * @brief 使用抽象事务提交函数初始化转盘Device。
@@ -90,6 +98,12 @@ zdt_turntable_status_t zdt_turntable_device_query_options(
     zdt_turntable_done_fn_t done_cb,
     void *user_ctx);
 
+/** 查询正式任务用于到位和故障判断的0x3A状态。 */
+zdt_turntable_status_t zdt_turntable_device_query_status(
+    zdt_turntable_device_t *device,
+    zdt_turntable_done_fn_t done_cb,
+    void *user_ctx);
+
 /**
  * @brief 查询版本、状态或实时位置，只接受0x1F/0x3A/0x36。
  * @param device 已初始化设备对象。
@@ -98,9 +112,21 @@ zdt_turntable_status_t zdt_turntable_device_query_options(
  * @param user_ctx 原样交给done_cb的调用者上下文。
  * @return OK仅表示查询已排队；不支持的功能码返回ERR_UNSUPPORTED。
  */
+#if !LICANG_RELEASE_MINIMAL
 zdt_turntable_status_t zdt_turntable_device_query(
     zdt_turntable_device_t *device,
     uint8_t function,
+    zdt_turntable_done_fn_t done_cb,
+    void *user_ctx);
+#endif
+
+/**
+ * @brief 按已确认的Emm固件发送角度位置命令。
+ * @note 正式任务只使用实机确认过的Emm路径，避免把X固件构帧带入固件。
+ */
+zdt_turntable_status_t zdt_turntable_device_move_emm_angle(
+    zdt_turntable_device_t *device,
+    const zdt_turntable_position_command_t *command,
     zdt_turntable_done_fn_t done_cb,
     void *user_ctx);
 
@@ -114,11 +140,13 @@ zdt_turntable_status_t zdt_turntable_device_query(
  * @note 返回OK只表示请求排队；默认Response=Receive时完成回调的ACK也只代表
  *       电机接收命令，必须再查询0x3A/0x36或观察0x9F确认到位。
  */
+#if !LICANG_RELEASE_MINIMAL
 zdt_turntable_status_t zdt_turntable_device_move_angle(
     zdt_turntable_device_t *device,
     const zdt_turntable_position_command_t *command,
     zdt_turntable_done_fn_t done_cb,
     void *user_ctx);
+#endif
 
 /**
  * @brief 提交立即停止命令。

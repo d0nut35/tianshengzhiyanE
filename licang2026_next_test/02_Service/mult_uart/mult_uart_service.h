@@ -21,6 +21,14 @@ extern "C" {
 
 #include "mult_uart_core.h"
 
+#ifndef LICANG_RELEASE_MINIMAL
+#define LICANG_RELEASE_MINIMAL 0
+#endif
+
+/* 统计和重复装配接口仅供测试/诊断，正式任务不占用代码与常驻RAM。 */
+#define MULT_UART_SERVICE_DIAGNOSTICS_ENABLE (!LICANG_RELEASE_MINIMAL)
+#define MULT_UART_SERVICE_TEST_API_ENABLE    (!LICANG_RELEASE_MINIMAL)
+
 #define MULT_UART_SERVICE_QUEUE_DEPTH    4U
 #define MULT_UART_SERVICE_TX_MAX         128U
 #define MULT_UART_SERVICE_RX_MAX         128U
@@ -109,6 +117,7 @@ typedef struct {
 /**
  * @brief Service 运行统计，用于调试队列压力和错误来源。
  */
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
 typedef struct {
     uint32_t submitted;
     uint32_t completed;
@@ -122,6 +131,7 @@ typedef struct {
     uint32_t cancelled;
     uint32_t queue_high_watermark;
 } mult_uart_service_stats_t;
+#endif
 
 /**
  * @brief Service 初始化配置。
@@ -194,7 +204,9 @@ typedef struct {
     size_t queue_count;
     mult_uart_service_job_t active_job;
     mult_uart_service_events_t events;
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
     mult_uart_service_stats_t stats;
+#endif
 } mult_uart_service_t;
 
 /**
@@ -248,7 +260,9 @@ mult_uart_status_t mult_uart_service_stop(mult_uart_service_t *service);
  * @param service Service实例。
  * @return MULT_UART_OK表示成功，否则返回参数或状态错误。
  */
+#if MULT_UART_SERVICE_TEST_API_ENABLE
 mult_uart_status_t mult_uart_service_deinit(mult_uart_service_t *service);
+#endif
 
 /**
  * @brief 读取当前统计快照。
@@ -256,9 +270,11 @@ mult_uart_status_t mult_uart_service_deinit(mult_uart_service_t *service);
  * @param stats 输出统计对象。
  * @return MULT_UART_OK表示成功，否则返回参数或未初始化错误。
  */
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
 mult_uart_status_t mult_uart_service_get_stats(
     const mult_uart_service_t *service,
     mult_uart_service_stats_t *stats);
+#endif
 
 #ifdef __cplusplus
 }

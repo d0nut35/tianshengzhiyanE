@@ -206,6 +206,34 @@ static void test_injected_submit(void)
           fake.request.frame[2] == ZDT_TURNTABLE_CHECK_BYTE);
 }
 
+/** @brief 验证正式精简接口只生成Emm运动和0x3A状态查询。 */
+static void test_release_minimal_interfaces(void)
+{
+    zdt_turntable_device_t device = {0};
+    zdt_turntable_device_config_t config = {1U, 500U, 3200U};
+    zdt_turntable_position_command_t command = {
+        ZDT_TURNTABLE_DIR_CW,
+        ZDT_TURNTABLE_POS_RELATIVE_LAST_TARGET,
+        60U, 0U, 0U, 100U, 50U
+    };
+    injected_submit_t fake = {0};
+
+    CHECK(zdt_turntable_device_init_with_submit(
+        &device, fake_injected_submit, &fake, &config) == ZDT_TURNTABLE_OK);
+    device.firmware_known = true;
+    device.firmware = ZDT_TURNTABLE_FIRMWARE_EMM;
+    device.closed_loop = true;
+    CHECK(zdt_turntable_device_move_emm_angle(
+        &device, &command, NULL, NULL) == ZDT_TURNTABLE_OK);
+    CHECK(fake.request.expected_function == 0xFDU);
+    CHECK(fake.request.frame_len == 13U);
+    CHECK(zdt_turntable_device_query_status(
+        &device, NULL, NULL) == ZDT_TURNTABLE_OK);
+    CHECK(fake.submitted == 2U);
+    CHECK(fake.request.expected_function == 0x3AU);
+    CHECK(fake.request.frame_len == 3U);
+}
+
 /** @brief 运行全部ZDT Device PC fake测试。 */
 int main(void)
 {
@@ -213,6 +241,7 @@ int main(void)
     test_x_scale();
     test_emm_absolute_zero();
     test_injected_submit();
+    test_release_minimal_interfaces();
     if (failures != 0) return 1;
     puts("zdt_turntable_device tests passed");
     return 0;

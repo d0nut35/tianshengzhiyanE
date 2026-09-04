@@ -21,8 +21,10 @@ extern "C" {
 
 typedef struct {
     ic_card_ball_info_t ball;
+#if IC_CARD_DEVICE_RAW_RESULT_ENABLE
     uint8_t block_data[IC_CARD_BLOCK_DATA_SIZE];
     ic_card_response_t response;
+#endif
 } ic_card_ball_result_t;
 
 /**
@@ -56,7 +58,9 @@ typedef ic_card_status_t (*ic_card_device_submit_fn_t)(
  * @brief 初始化直连UART7的Service OS和Device请求管理。
  * @return 初始化成功返回IC_CARD_OK，否则返回具体错误。
  */
+#if IC_CARD_DEVICE_EXTENDED_API_ENABLE
 ic_card_status_t ic_card_device_init(void);
+#endif
 
 /**
  * @brief 使用调用者提供的事务链路初始化IC卡Device。
@@ -88,10 +92,12 @@ ic_card_status_t ic_card_device_read_competition_ball(
  * @param user_ctx 原样传给done_cb的用户上下文。
  * @return 请求入队状态；模块响应由done_cb异步返回。
  */
+#if IC_CARD_DEVICE_EXTENDED_API_ENABLE
 ic_card_status_t ic_card_device_query(
     ic_card_command_t command,
     ic_card_request_done_fn_t done_cb,
     void *user_ctx);
+#endif
 
 #ifdef __cplusplus
 }

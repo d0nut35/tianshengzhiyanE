@@ -21,6 +21,7 @@ extern "C" {
 #define CHASSIS_MISSION_LINK_VERSION       1U
 #define CHASSIS_MISSION_REQUEST_ID_INVALID 0U
 #define CHASSIS_MISSION_QUEUE_DEPTH        8U
+#define CHASSIS_MISSION_FLAG_EVENT         (1UL << 0)
 
 /** Mission -> 底盘。 */
 typedef uint8_t mission_command_type_t;
@@ -70,6 +71,34 @@ extern osMessageQueueId_t mission_event_queue;
 
 /** 创建Mission与底盘之间的两个单向消息队列。 */
 bool chassis_mission_link_init(void);
+
+/**
+ * @brief 绑定接收底盘事件的Mission任务。
+ * @param mission_task 已创建的Mission任务句柄。
+ * @return 绑定成功返回true；空句柄或重复绑定返回false。
+ */
+bool chassis_mission_link_bind_mission_task(osThreadId_t mission_task);
+
+/**
+ * @brief Mission向底盘命令队列发送一条命令。
+ * @param command 待复制入队的命令。
+ * @param timeout_ticks 等待队列空位的最长OS tick数。
+ * @return 入队成功返回true。
+ */
+bool chassis_mission_link_send_command(
+    const chassis_mission_command_t *command,
+    uint32_t timeout_ticks);
+
+/**
+ * @brief 底盘向Mission事件队列上报一条状态并唤醒Mission任务。
+ * @param event 待复制入队的底盘事件。
+ * @param timeout_ticks 等待队列空位的最长OS tick数；ISR中必须传0。
+ * @return 消息入队且唤醒成功返回true。
+ * @note 底盘侧统一调用本接口，禁止只设置线程标志而不保存事件内容。
+ */
+bool chassis_mission_link_post_event(
+    const chassis_mission_event_t *event,
+    uint32_t timeout_ticks);
 
 #ifdef __cplusplus
 }

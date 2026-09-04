@@ -10,6 +10,7 @@
  * @param request 待排队请求。
  * @return Service提交结果。
  */
+#if !LICANG_RELEASE_MINIMAL
 static zdt_turntable_status_t zdt_service_submit_adapter(
     void *submit_ctx,
     const zdt_turntable_request_t *request)
@@ -18,6 +19,7 @@ static zdt_turntable_status_t zdt_service_submit_adapter(
         (zdt_turntable_service_t *)submit_ctx,
         request);
 }
+#endif
 
 /**
  * @brief 生成非零、单调递增的本地请求标识。
@@ -71,6 +73,7 @@ static zdt_turntable_status_t zdt_submit_frame(
 }
 
 /** @copydoc zdt_turntable_device_init() */
+#if !LICANG_RELEASE_MINIMAL
 zdt_turntable_status_t zdt_turntable_device_init(
     zdt_turntable_device_t *device,
     zdt_turntable_service_t *service,
@@ -95,6 +98,7 @@ zdt_turntable_status_t zdt_turntable_device_init(
     }
     return status;
 }
+#endif
 
 /** @copydoc zdt_turntable_device_init_with_submit() */
 zdt_turntable_status_t zdt_turntable_device_init_with_submit(
@@ -190,7 +194,28 @@ zdt_turntable_status_t zdt_turntable_device_query_options(
     return status;
 }
 
+/** @copydoc zdt_turntable_device_query_status() */
+zdt_turntable_status_t zdt_turntable_device_query_status(
+    zdt_turntable_device_t *device,
+    zdt_turntable_done_fn_t done_cb,
+    void *user_ctx)
+{
+    uint8_t frame[3];
+    size_t frame_len;
+    zdt_turntable_status_t status;
+
+    if ((device == NULL) || !device->initialized) {
+        return ZDT_TURNTABLE_ERR_NOT_INIT;
+    }
+    status = zdt_turntable_build_read_status(
+        device->config.address, frame, sizeof(frame), &frame_len);
+    return (status == ZDT_TURNTABLE_OK) ?
+        zdt_submit_frame(device, 0x3AU, frame, frame_len, done_cb, user_ctx) :
+        status;
+}
+
 /** @copydoc zdt_turntable_device_query() */
+#if !LICANG_RELEASE_MINIMAL
 zdt_turntable_status_t zdt_turntable_device_query(
     zdt_turntable_device_t *device,
     uint8_t function,
@@ -220,8 +245,63 @@ zdt_turntable_status_t zdt_turntable_device_query(
         zdt_submit_frame(device, function, frame, frame_len, done_cb, user_ctx) :
         status;
 }
+#endif
+
+/** @copydoc zdt_turntable_device_move_emm_angle() */
+zdt_turntable_status_t zdt_turntable_device_move_emm_angle(
+    zdt_turntable_device_t *device,
+    const zdt_turntable_position_command_t *command,
+    zdt_turntable_done_fn_t done_cb,
+    void *user_ctx)
+{
+    uint8_t frame[ZDT_TURNTABLE_FRAME_MAX];
+    size_t frame_len;
+    uint64_t pulse_numerator;
+    uint64_t pulse_result;
+    uint32_t pulses;
+    zdt_turntable_status_t status;
+    zdt_turntable_position_command_t adjusted;
+
+    if ((device == NULL) || !device->initialized) {
+        return ZDT_TURNTABLE_ERR_NOT_INIT;
+    }
+    if ((command == NULL) || !device->firmware_known ||
+        !device->closed_loop ||
+        (device->firmware != ZDT_TURNTABLE_FIRMWARE_EMM)) {
+        return (command == NULL) ? ZDT_TURNTABLE_ERR_PARAM :
+            ZDT_TURNTABLE_ERR_STATE;
+    }
+    adjusted = *command;
+    if (device->scaled_input) {
+        if (adjusted.speed > (3000U / 10U)) {
+            return ZDT_TURNTABLE_ERR_PARAM;
+        }
+        adjusted.speed = (uint16_t)(adjusted.speed * 10U);
+    }
+    pulse_numerator = (uint64_t)command->angle_0p1deg *
+                      device->config.emm_pulses_per_revolution;
+    pulse_result = pulse_numerator / 3600U;
+    if ((pulse_numerator % 3600U) >= 1800U) {
+        pulse_result++;
+    }
+    if (pulse_result > UINT32_MAX) {
+        return ZDT_TURNTABLE_ERR_PARAM;
+    }
+    pulses = (uint32_t)pulse_result;
+    status = zdt_turntable_build_emm_position(
+        device->config.address,
+        &adjusted,
+        pulses,
+        frame,
+        sizeof(frame),
+        &frame_len);
+    return (status == ZDT_TURNTABLE_OK) ?
+        zdt_submit_frame(device, 0xFDU, frame, frame_len, done_cb, user_ctx) :
+        status;
+}
 
 /** @copydoc zdt_turntable_device_move_angle() */
+#if !LICANG_RELEASE_MINIMAL
 zdt_turntable_status_t zdt_turntable_device_move_angle(
     zdt_turntable_device_t *device,
     const zdt_turntable_position_command_t *command,
@@ -291,6 +371,7 @@ zdt_turntable_status_t zdt_turntable_device_move_angle(
         zdt_submit_frame(device, 0xFDU, frame, frame_len, done_cb, user_ctx) :
         status;
 }
+#endif
 
 /** @copydoc zdt_turntable_device_stop() */
 zdt_turntable_status_t zdt_turntable_device_stop(

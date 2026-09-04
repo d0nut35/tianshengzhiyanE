@@ -14,6 +14,7 @@ extern "C" {
 
 #include "ic_card_service.h"
 
+#if !LICANG_RELEASE_MINIMAL
 /**
  * @brief 创建消息队列和worker，并完成IC卡UART7直连链路装配。
  * @return IC_CARD_OK表示初始化成功，否则返回资源创建或底层绑定错误。
@@ -44,6 +45,7 @@ void ic_card_service_os_process_once(void);
  * @return IC_CARD_OK表示成功，否则返回参数或未初始化错误。
  */
 ic_card_status_t ic_card_service_os_get_stats(ic_card_service_stats_t *stats);
+#endif
 
 #ifdef __cplusplus
 }

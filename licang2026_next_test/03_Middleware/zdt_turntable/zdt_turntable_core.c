@@ -5,10 +5,12 @@
 #include <string.h>
 
 #define ZDT_CODE_OPTIONS       0x1AU
+#if !LICANG_RELEASE_MINIMAL
 #define ZDT_CODE_VERSION       0x1FU
+#define ZDT_CODE_REAL_POSITION 0x36U
+#endif
 #define ZDT_CODE_POSITION      0xFDU
 #define ZDT_CODE_STOP          0xFEU
-#define ZDT_CODE_REAL_POSITION 0x36U
 #define ZDT_CODE_STATUS        0x3AU
 
 /**
@@ -40,6 +42,7 @@ static void zdt_write_u32_be(uint8_t *dst, uint32_t value)
  * @param src 至少包含4字节的源地址。
  * @return 解码后的32位数值。
  */
+#if !LICANG_RELEASE_MINIMAL
 static uint32_t zdt_read_u32_be(const uint8_t *src)
 {
     return ((uint32_t)src[0] << 24U) |
@@ -47,6 +50,7 @@ static uint32_t zdt_read_u32_be(const uint8_t *src)
            ((uint32_t)src[2] << 8U) |
            (uint32_t)src[3];
 }
+#endif
 
 /**
  * @brief 从大端序2字节字段读取无符号数值。
@@ -85,12 +89,14 @@ static zdt_turntable_status_t zdt_build_read(
     return ZDT_TURNTABLE_OK;
 }
 
+#if !LICANG_RELEASE_MINIMAL
 /** @copydoc zdt_turntable_build_read_version() */
 zdt_turntable_status_t zdt_turntable_build_read_version(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len)
 {
     return zdt_build_read(address, ZDT_CODE_VERSION, frame, capacity, frame_len);
 }
+#endif
 
 /** @copydoc zdt_turntable_build_read_options() */
 zdt_turntable_status_t zdt_turntable_build_read_options(
@@ -106,6 +112,7 @@ zdt_turntable_status_t zdt_turntable_build_read_status(
     return zdt_build_read(address, ZDT_CODE_STATUS, frame, capacity, frame_len);
 }
 
+#if !LICANG_RELEASE_MINIMAL
 /** @copydoc zdt_turntable_build_read_position() */
 zdt_turntable_status_t zdt_turntable_build_read_position(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len)
@@ -113,6 +120,7 @@ zdt_turntable_status_t zdt_turntable_build_read_position(
     return zdt_build_read(
         address, ZDT_CODE_REAL_POSITION, frame, capacity, frame_len);
 }
+#endif
 
 /**
  * @brief 校验位置命令中两种固件共用的字段范围。
@@ -128,6 +136,7 @@ static bool zdt_position_command_valid(
            ((uint32_t)command->mode <= ZDT_TURNTABLE_POS_RELATIVE_CURRENT);
 }
 
+#if !LICANG_RELEASE_MINIMAL
 /** @copydoc zdt_turntable_build_x_position() */
 zdt_turntable_status_t zdt_turntable_build_x_position(
     uint8_t address,
@@ -154,6 +163,7 @@ zdt_turntable_status_t zdt_turntable_build_x_position(
     *frame_len = 16U;
     return ZDT_TURNTABLE_OK;
 }
+#endif
 
 /** @copydoc zdt_turntable_build_emm_position() */
 zdt_turntable_status_t zdt_turntable_build_emm_position(
@@ -224,8 +234,10 @@ zdt_turntable_status_t zdt_turntable_parse_response(
     (void)memset(response, 0, sizeof(*response));
     response->address = data[0];
     response->function = data[1];
+#if !LICANG_RELEASE_MINIMAL
     response->raw_len = len;
     (void)memcpy(response->raw, data, len);
+#endif
 
     if (expected_function == ZDT_CODE_OPTIONS) {
         /* 4字节E2/EE仍是合法设备错误；成功响应必须严格为5字节。 */
@@ -281,6 +293,7 @@ zdt_turntable_status_t zdt_turntable_parse_response(
         return ZDT_TURNTABLE_OK;
     }
 
+#if !LICANG_RELEASE_MINIMAL
     if (expected_function == ZDT_CODE_REAL_POSITION) {
         if ((len == 4U) && ((data[2] == 0xE2U) || (data[2] == 0xEEU))) {
             response->kind = (data[2] == 0xE2U) ?
@@ -315,6 +328,7 @@ zdt_turntable_status_t zdt_turntable_parse_response(
         response->data.version.hardware_version = data[5];
         return ZDT_TURNTABLE_OK;
     }
+#endif
 
     if ((expected_function == ZDT_CODE_POSITION) && (len == 4U)) {
         switch (data[2]) {

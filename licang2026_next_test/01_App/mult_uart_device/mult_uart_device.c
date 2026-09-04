@@ -28,7 +28,9 @@ typedef struct {
     uint32_t next_request_id;
     mult_uart_device_config_t configs[MULT_UART_DEVICE_COUNT];
     mult_uart_device_slot_t slots[MULT_UART_DEVICE_COUNT];
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
     mult_uart_device_stats_t stats;
+#endif
 } mult_uart_device_manager_t;
 
 static mult_uart_device_manager_t g_mult_uart_device_manager;
@@ -148,7 +150,9 @@ static void mult_uart_device_service_done(
     void *user_ctx,
     const mult_uart_completion_t *completion)
 {
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
     mult_uart_device_manager_t *manager = &g_mult_uart_device_manager;
+#endif
     mult_uart_device_slot_t *slot =
         (mult_uart_device_slot_t *)user_ctx;
     mult_uart_device_completion_t device_completion;
@@ -169,7 +173,9 @@ static void mult_uart_device_service_done(
     done_cb = slot->done_cb;
     done_ctx = slot->user_ctx;
     mult_uart_device_free_slot(slot);
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
     manager->stats.completed++;
+#endif
 
     if (done_cb != NULL) {
         done_cb(done_ctx, &device_completion);
@@ -235,6 +241,7 @@ mult_uart_status_t mult_uart_device_init(
  * @return 没有pending事务时返回MULT_UART_OK，否则返回BUSY或未初始化错误。
  * @note 拒绝带未完成事务反初始化，避免下层回调访问已清空的slot。
  */
+#if MULT_UART_DEVICE_TEST_API_ENABLE
 mult_uart_status_t mult_uart_device_deinit(void)
 {
     mult_uart_device_manager_t *manager = &g_mult_uart_device_manager;
@@ -253,6 +260,7 @@ mult_uart_status_t mult_uart_device_deinit(void)
     (void)memset(manager, 0, sizeof(*manager));
     return MULT_UART_OK;
 }
+#endif
 
 /**
  * @brief 校验并提交一笔设备级串口事务。
@@ -276,23 +284,29 @@ mult_uart_status_t mult_uart_device_submit(
     }
 
     if (!mult_uart_device_id_is_valid(transfer->device_id)) {
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
         manager->stats.invalid_request++;
+#endif
         return MULT_UART_ERR_PARAM;
     }
 
     config = &manager->configs[(uint32_t)transfer->device_id];
     if (!config->enabled) {
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
         manager->stats.invalid_request++;
+#endif
         return MULT_UART_ERR_STATE;
     }
 
     status = mult_uart_device_alloc_slot(manager, transfer, &slot);
     if (status != MULT_UART_OK) {
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
         if (status == MULT_UART_ERR_BUSY) {
             manager->stats.busy++;
         } else {
             manager->stats.invalid_request++;
         }
+#endif
         return status;
     }
 
@@ -304,11 +318,15 @@ mult_uart_status_t mult_uart_device_submit(
     status = mult_uart_service_os_submit(&request, queue_timeout_ms);
     if (status != MULT_UART_OK) {
         mult_uart_device_free_slot(slot);
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
         manager->stats.submit_error++;
+#endif
         return status;
     }
 
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
     manager->stats.submitted++;
+#endif
     return MULT_UART_OK;
 }
 
@@ -317,6 +335,7 @@ mult_uart_status_t mult_uart_device_submit(
  * @param stats 输出统计对象。
  * @return 获取成功返回MULT_UART_OK，否则返回参数或未初始化错误。
  */
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
 mult_uart_status_t mult_uart_device_get_stats(
     mult_uart_device_stats_t *stats)
 {
@@ -332,3 +351,4 @@ mult_uart_status_t mult_uart_device_get_stats(
     *stats = manager->stats;
     return MULT_UART_OK;
 }
+#endif

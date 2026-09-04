@@ -8,19 +8,19 @@
 #include <stdbool.h>
 #include <string.h>
 
+#if IC_CARD_DEVICE_EXTENDED_API_ENABLE
 #include "ic_card_service_os.h"
+#endif
 
 typedef struct {
     bool initialized;
     ic_card_device_submit_fn_t submit_fn;
     void *submit_ctx;
     uint32_t next_request_id;
-    struct {
-        bool in_use;
-        uint32_t request_id;
-        ic_card_device_read_done_fn_t done_cb;
-        void *user_ctx;
-    } pending[IC_CARD_SERVICE_QUEUE_DEPTH + 1U];
+    bool read_pending;
+    uint32_t read_request_id;
+    ic_card_device_read_done_fn_t read_done_cb;
+    void *read_user_ctx;
 } ic_card_device_context_t;
 
 static ic_card_device_context_t g_ic_card_device;
@@ -32,6 +32,7 @@ static ic_card_device_context_t g_ic_card_device;
  * @param queue_timeout_ms OS队列等待时间。
  * @return 直连Service OS提交结果。
  */
+#if IC_CARD_DEVICE_EXTENDED_API_ENABLE
 static ic_card_status_t ic_card_device_direct_submit(
     void *submit_ctx,
     const ic_card_request_t *request,
@@ -40,6 +41,7 @@ static ic_card_status_t ic_card_device_direct_submit(
     (void)submit_ctx;
     return ic_card_service_os_submit(request, queue_timeout_ms);
 }
+#endif
 
 /**
  * @brief 分配一个非零请求编号。
@@ -74,35 +76,34 @@ static void ic_card_device_read_bridge(
     ic_card_device_read_done_fn_t done_cb = NULL;
     void *done_ctx = NULL;
     ic_card_ball_result_t result;
-    uint32_t i;
+    uint8_t block_data[IC_CARD_BLOCK_DATA_SIZE];
 
-    if (ctx == NULL) {
+    if ((ctx == NULL) || !ctx->read_pending ||
+        (ctx->read_request_id != request_id)) {
         return;
     }
-    for (i = 0U; i < (IC_CARD_SERVICE_QUEUE_DEPTH + 1U); ++i) {
-        if (ctx->pending[i].in_use &&
-            (ctx->pending[i].request_id == request_id)) {
-            done_cb = ctx->pending[i].done_cb;
-            done_ctx = ctx->pending[i].user_ctx;
-            ctx->pending[i].in_use = false;
-            break;
-        }
-    }
-    if (i == (IC_CARD_SERVICE_QUEUE_DEPTH + 1U)) {
-        return;
-    }
+    done_cb = ctx->read_done_cb;
+    done_ctx = ctx->read_user_ctx;
+    ctx->read_pending = false;
+    ctx->read_done_cb = NULL;
+    ctx->read_user_ctx = NULL;
 
     (void)memset(&result, 0, sizeof(result));
     if ((status == IC_CARD_OK) && (response != NULL)) {
+#if IC_CARD_DEVICE_RAW_RESULT_ENABLE
         result.response = *response;
+#endif
         status = ic_card_extract_block_data(
             response,
             IC_CARD_DEVICE_ADDRESS,
-            result.block_data);
+            block_data);
         if (status == IC_CARD_OK) {
-            if (!ic_ball_rule_2026_decode(result.block_data, &result.ball)) {
+            if (!ic_ball_rule_2026_decode(block_data, &result.ball)) {
                 status = IC_CARD_ERR_PROTOCOL;
             }
+#if IC_CARD_DEVICE_RAW_RESULT_ENABLE
+            (void)memcpy(result.block_data, block_data, sizeof(block_data));
+#endif
         }
     }
     if (done_cb != NULL) {
@@ -119,6 +120,7 @@ static void ic_card_device_read_bridge(
  * @return 成功返回IC_CARD_OK；重复初始化或底层初始化失败时返回对应错误。
  * @note 本函数只建立软件对象和worker，不代表真实读卡器通信已经成功。
  */
+#if IC_CARD_DEVICE_EXTENDED_API_ENABLE
 ic_card_status_t ic_card_device_init(void)
 {
     ic_card_status_t status;
@@ -132,6 +134,7 @@ ic_card_status_t ic_card_device_init(void)
         ic_card_device_init_with_transport(ic_card_device_direct_submit, NULL) :
         status;
 }
+#endif
 
 /** @copydoc ic_card_device_init_with_transport() */
 ic_card_status_t ic_card_device_init_with_transport(
@@ -166,17 +169,11 @@ ic_card_status_t ic_card_device_read_competition_ball(
 {
     ic_card_request_t request;
     ic_card_status_t status;
-    uint32_t i;
 
     if (!g_ic_card_device.initialized) {
         return IC_CARD_ERR_NOT_INIT;
     }
-    for (i = 0U; i < (IC_CARD_SERVICE_QUEUE_DEPTH + 1U); ++i) {
-        if (!g_ic_card_device.pending[i].in_use) {
-            break;
-        }
-    }
-    if (i == (IC_CARD_SERVICE_QUEUE_DEPTH + 1U)) {
+    if (g_ic_card_device.read_pending) {
         return IC_CARD_ERR_BUSY;
     }
 
@@ -190,16 +187,18 @@ ic_card_status_t ic_card_device_read_competition_ball(
     request.done_cb = ic_card_device_read_bridge;
     request.user_ctx = &g_ic_card_device;
 
-    g_ic_card_device.pending[i].in_use = true;
-    g_ic_card_device.pending[i].request_id = request.request_id;
-    g_ic_card_device.pending[i].done_cb = done_cb;
-    g_ic_card_device.pending[i].user_ctx = user_ctx;
+    g_ic_card_device.read_pending = true;
+    g_ic_card_device.read_request_id = request.request_id;
+    g_ic_card_device.read_done_cb = done_cb;
+    g_ic_card_device.read_user_ctx = user_ctx;
     status = g_ic_card_device.submit_fn(
         g_ic_card_device.submit_ctx,
         &request,
         IC_CARD_DEVICE_QUEUE_TIMEOUT_MS);
     if (status != IC_CARD_OK) {
-        g_ic_card_device.pending[i].in_use = false;
+        g_ic_card_device.read_pending = false;
+        g_ic_card_device.read_done_cb = NULL;
+        g_ic_card_device.read_user_ctx = NULL;
     }
     return status;
 }
@@ -211,6 +210,7 @@ ic_card_status_t ic_card_device_read_competition_ball(
  * @param user_ctx 原样传给done_cb的用户上下文。
  * @return 请求入队结果；返回OK不代表模块已经回复。
  */
+#if IC_CARD_DEVICE_EXTENDED_API_ENABLE
 ic_card_status_t ic_card_device_query(
     ic_card_command_t command,
     ic_card_request_done_fn_t done_cb,
@@ -234,3 +234,4 @@ ic_card_status_t ic_card_device_query(
         &request,
         IC_CARD_DEVICE_QUEUE_TIMEOUT_MS);
 }
+#endif

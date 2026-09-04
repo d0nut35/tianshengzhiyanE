@@ -125,7 +125,9 @@ static void ic_card_service_complete(
     service->tx_completed = false;
     (void)memset(&service->active, 0, sizeof(service->active));
     if (status == IC_CARD_OK) {
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
         ++service->stats.completed;
+#endif
     }
     if (finished.done_cb != NULL) {
         finished.done_cb(
@@ -229,18 +231,24 @@ ic_card_status_t ic_card_service_submit(
         return (service == NULL) ? IC_CARD_ERR_PARAM : IC_CARD_ERR_NOT_INIT;
     }
     if (!ic_card_request_is_valid(request)) {
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
         ++service->stats.rejected;
+#endif
         return IC_CARD_ERR_PARAM;
     }
     if (service->queue_count >= IC_CARD_SERVICE_QUEUE_DEPTH) {
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
         ++service->stats.rejected;
+#endif
         return IC_CARD_ERR_QUEUE_FULL;
     }
     service->queue[service->queue_head] = *request;
     service->queue_head = (uint8_t)(
         (service->queue_head + 1U) % IC_CARD_SERVICE_QUEUE_DEPTH);
     ++service->queue_count;
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
     ++service->stats.submitted;
+#endif
     return IC_CARD_OK;
 }
 
@@ -266,7 +274,9 @@ void ic_card_service_process_once(ic_card_service_t *service)
         service->handled_error_sequence = service->error_sequence;
         service->handled_tx_sequence = service->tx_sequence;
         service->handled_rx_sequence = service->rx_sequence;
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
         ++service->stats.uart_errors;
+#endif
         status = ic_card_recover(service->config.device);
         ic_card_service_complete(
             service,
@@ -291,7 +301,9 @@ void ic_card_service_process_once(ic_card_service_t *service)
                     IC_CARD_OK : IC_CARD_ERR_CARD;
                 ic_card_service_complete(service, status, &response);
             } else {
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
                 ++service->stats.unrelated_responses;
+#endif
             }
         }
     }
@@ -299,7 +311,9 @@ void ic_card_service_process_once(ic_card_service_t *service)
     if (service->active_valid) {
         now = service->config.now_ms(service->config.time_ctx);
         if (ic_card_time_reached(now, service->active_deadline_ms)) {
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
             ++service->stats.timed_out;
+#endif
             status = ic_card_recover(service->config.device);
             ic_card_service_complete(
                 service,
@@ -329,6 +343,7 @@ void ic_card_service_process_once(ic_card_service_t *service)
  * @param stats 接收统计值的输出对象。
  * @return 获取结果。
  */
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
 ic_card_status_t ic_card_service_get_stats(
     const ic_card_service_t *service,
     ic_card_service_stats_t *stats)
@@ -342,3 +357,4 @@ ic_card_status_t ic_card_service_get_stats(
     *stats = service->stats;
     return IC_CARD_OK;
 }
+#endif

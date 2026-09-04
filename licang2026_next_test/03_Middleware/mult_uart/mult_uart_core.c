@@ -737,6 +737,7 @@ void mult_uart_on_error_isr(
  * @return 反初始化结果。
  * @note managed EN 若仍使能，会先物理断开；失败时保留对象供诊断/恢复。
  */
+#if MULT_UART_CORE_TEST_API_ENABLE
 mult_uart_status_t mult_uart_deinit(mult_uart_bus_t *bus)
 {
     mult_uart_status_t status;
@@ -774,3 +775,4 @@ mult_uart_status_t mult_uart_deinit(mult_uart_bus_t *bus)
     mult_uart_reset_bus(bus);
     return MULT_UART_OK;
 }
+#endif

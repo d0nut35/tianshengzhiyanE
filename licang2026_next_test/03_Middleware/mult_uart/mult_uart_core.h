@@ -15,6 +15,13 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef LICANG_RELEASE_MINIMAL
+#define LICANG_RELEASE_MINIMAL 0
+#endif
+
+/* 正式任务上电后常驻运行，不保留仅供测试重复装配使用的反初始化入口。 */
+#define MULT_UART_CORE_TEST_API_ENABLE (!LICANG_RELEASE_MINIMAL)
+
 /* 硬件固定为 1 路公共 UART 分时连接 4 路 TTL UART。 */
 #define MULT_UART_CHANNEL_COUNT       4U
 #define MULT_UART_CHANNEL_INVALID     0xFFU
@@ -306,7 +313,9 @@ void mult_uart_on_error_isr(
  * @return MULT_UART_OK表示成功；总线忙时返回状态错误。
  * @note 调用前应先由Service停止调度并完成abort。
  */
+#if MULT_UART_CORE_TEST_API_ENABLE
 mult_uart_status_t mult_uart_deinit(mult_uart_bus_t *bus);
+#endif
 
 #ifdef __cplusplus
 }

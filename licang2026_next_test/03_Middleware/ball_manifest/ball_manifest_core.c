@@ -22,6 +22,20 @@ static bool ball_manifest_color_valid(ball_manifest_color_t color)
            (color == BALL_MANIFEST_COLOR_BLUE);
 }
 
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
+static bool ball_manifest_storage_slot_used(
+    const ball_manifest_t *manifest,
+    uint8_t storage_slot)
+{
+    uint8_t i;
+
+    if (storage_slot == BALL_MANIFEST_STORAGE_SLOT_UNKNOWN) return false;
+    for (i = 0U; i < manifest->count; ++i) {
+        if (manifest->records[i].storage_slot == storage_slot) return true;
+    }
+    return false;
+}
+
 static uint16_t ball_manifest_crc16_update(uint16_t crc, uint8_t value)
 {
     uint8_t bit;
@@ -49,6 +63,7 @@ static uint16_t ball_manifest_record_checksum(
     crc = ball_manifest_crc16_update(crc, (uint8_t)record->state);
     return crc;
 }
+#endif
 
 void ball_manifest_init(ball_manifest_t *manifest)
 {
@@ -68,8 +83,19 @@ uint8_t ball_manifest_region_count(
     const ball_manifest_t *manifest,
     ball_manifest_region_t region)
 {
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     if ((manifest == NULL) || !ball_manifest_region_valid(region)) return 0U;
     return manifest->region_counts[(uint8_t)region];
+#else
+    uint8_t count = 0U;
+    uint8_t i;
+
+    if ((manifest == NULL) || !ball_manifest_region_valid(region)) return 0U;
+    for (i = 0U; i < manifest->count; ++i) {
+        if (manifest->records[i].region == region) ++count;
+    }
+    return count;
+#endif
 }
 
 bool ball_manifest_region_is_complete(
@@ -94,7 +120,6 @@ ball_manifest_status_t ball_manifest_append(
     uint8_t storage_slot)
 {
     ball_manifest_record_t record;
-    uint8_t i;
 
     if ((manifest == NULL) || !ball_manifest_region_valid(region) ||
         !ball_manifest_color_valid(color) ||
@@ -103,22 +128,22 @@ ball_manifest_status_t ball_manifest_append(
         (ic_code != (uint8_t)((target_row << 4) | target_column))) {
         return BALL_MANIFEST_ERR_PARAM;
     }
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     if (ball_manifest_validate(manifest) != BALL_MANIFEST_OK) {
         return BALL_MANIFEST_ERR_CORRUPT;
     }
+#endif
     if (manifest->count >= BALL_MANIFEST_CAPACITY) {
         return BALL_MANIFEST_ERR_FULL;
     }
     if (ball_manifest_region_is_complete(manifest, region)) {
         return BALL_MANIFEST_ERR_REGION_COMPLETE;
     }
-    if (storage_slot != BALL_MANIFEST_STORAGE_SLOT_UNKNOWN) {
-        for (i = 0U; i < manifest->count; ++i) {
-            if (manifest->records[i].storage_slot == storage_slot) {
-                return BALL_MANIFEST_ERR_STORAGE_SLOT_DUPLICATE;
-            }
-        }
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
+    if (ball_manifest_storage_slot_used(manifest, storage_slot)) {
+        return BALL_MANIFEST_ERR_STORAGE_SLOT_DUPLICATE;
     }
+#endif
 
     (void)memset(&record, 0, sizeof(record));
     record.sequence = manifest->count;
@@ -129,11 +154,60 @@ ball_manifest_status_t ball_manifest_append(
     record.target_column = target_column;
     record.storage_slot = storage_slot;
     record.state = BALL_MANIFEST_STATE_STORED;
-    record.checksum = ball_manifest_record_checksum(&record);
-
     manifest->records[manifest->count] = record;
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
+    manifest->records[manifest->count].checksum =
+        ball_manifest_record_checksum(&record);
     manifest->records[manifest->count].committed = true;
     ++manifest->region_counts[(uint8_t)region];
+#endif
+    ++manifest->count;
+    return BALL_MANIFEST_OK;
+}
+
+ball_manifest_status_t ball_manifest_append_read_failed(
+    ball_manifest_t *manifest,
+    ball_manifest_region_t region,
+    ball_manifest_color_t color,
+    uint8_t storage_slot)
+{
+    ball_manifest_record_t record;
+
+    if ((manifest == NULL) || !ball_manifest_region_valid(region) ||
+        !ball_manifest_color_valid(color) ||
+        (storage_slot == BALL_MANIFEST_STORAGE_SLOT_UNKNOWN)) {
+        return BALL_MANIFEST_ERR_PARAM;
+    }
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
+    if (ball_manifest_validate(manifest) != BALL_MANIFEST_OK) {
+        return BALL_MANIFEST_ERR_CORRUPT;
+    }
+#endif
+    if (manifest->count >= BALL_MANIFEST_CAPACITY) {
+        return BALL_MANIFEST_ERR_FULL;
+    }
+    if (ball_manifest_region_is_complete(manifest, region)) {
+        return BALL_MANIFEST_ERR_REGION_COMPLETE;
+    }
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
+    if (ball_manifest_storage_slot_used(manifest, storage_slot)) {
+        return BALL_MANIFEST_ERR_STORAGE_SLOT_DUPLICATE;
+    }
+#endif
+
+    (void)memset(&record, 0, sizeof(record));
+    record.sequence = manifest->count;
+    record.region = region;
+    record.color = color;
+    record.storage_slot = storage_slot;
+    record.state = BALL_MANIFEST_STATE_READ_FAILED;
+    manifest->records[manifest->count] = record;
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
+    manifest->records[manifest->count].checksum =
+        ball_manifest_record_checksum(&record);
+    manifest->records[manifest->count].committed = true;
+    ++manifest->region_counts[(uint8_t)region];
+#endif
     ++manifest->count;
     return BALL_MANIFEST_OK;
 }
@@ -147,14 +221,23 @@ ball_manifest_status_t ball_manifest_mark_placed(
     if ((manifest == NULL) || (sequence >= manifest->count)) {
         return BALL_MANIFEST_ERR_PARAM;
     }
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     if (ball_manifest_validate(manifest) != BALL_MANIFEST_OK) {
         return BALL_MANIFEST_ERR_CORRUPT;
     }
+#endif
     record = &manifest->records[sequence];
+    if (record->state == BALL_MANIFEST_STATE_READ_FAILED) {
+        return BALL_MANIFEST_ERR_TARGET_UNKNOWN;
+    }
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     record->committed = false;
+#endif
     record->state = BALL_MANIFEST_STATE_PLACED;
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     record->checksum = ball_manifest_record_checksum(record);
     record->committed = true;
+#endif
     return BALL_MANIFEST_OK;
 }
 
@@ -167,9 +250,11 @@ ball_manifest_status_t ball_manifest_get(
         (sequence >= manifest->count)) {
         return BALL_MANIFEST_ERR_PARAM;
     }
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     if (ball_manifest_validate(manifest) != BALL_MANIFEST_OK) {
         return BALL_MANIFEST_ERR_CORRUPT;
     }
+#endif
     *record = manifest->records[sequence];
     return BALL_MANIFEST_OK;
 }
@@ -177,6 +262,7 @@ ball_manifest_status_t ball_manifest_get(
 ball_manifest_status_t ball_manifest_validate(
     const ball_manifest_t *manifest)
 {
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     uint8_t counts[BALL_MANIFEST_REGION_COUNT] = {0U};
     uint8_t i;
 
@@ -188,6 +274,12 @@ ball_manifest_status_t ball_manifest_validate(
         if (!record->committed || (record->sequence != i) ||
             !ball_manifest_region_valid(record->region) ||
             !ball_manifest_color_valid(record->color) ||
+            ((record->state != BALL_MANIFEST_STATE_STORED) &&
+             (record->state != BALL_MANIFEST_STATE_PLACED) &&
+             (record->state != BALL_MANIFEST_STATE_READ_FAILED)) ||
+            ((record->state == BALL_MANIFEST_STATE_READ_FAILED) &&
+             ((record->ic_code != 0U) || (record->target_row != 0U) ||
+              (record->target_column != 0U))) ||
             (record->checksum != ball_manifest_record_checksum(record))) {
             return BALL_MANIFEST_ERR_CORRUPT;
         }
@@ -199,4 +291,8 @@ ball_manifest_status_t ball_manifest_validate(
         }
     }
     return BALL_MANIFEST_OK;
+#else
+    return ((manifest == NULL) || (manifest->count > BALL_MANIFEST_CAPACITY)) ?
+        BALL_MANIFEST_ERR_PARAM : BALL_MANIFEST_OK;
+#endif
 }

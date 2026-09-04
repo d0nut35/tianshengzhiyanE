@@ -176,6 +176,7 @@ size_t ic_card_test_format_success(
         !ic_card_test_append_text(text, capacity, &used, " DATA=")) {
         return 0U;
     }
+#if IC_CARD_DEVICE_RAW_RESULT_ENABLE
     for (i = 0U; i < IC_CARD_BLOCK_DATA_SIZE; ++i) {
         if ((i > 0U) &&
             !ic_card_test_append_char(text, capacity, &used, ' ')) {
@@ -186,6 +187,12 @@ size_t ic_card_test_format_success(
             return 0U;
         }
     }
+#else
+    (void)i;
+    if (!ic_card_test_append_text(text, capacity, &used, "DISABLED")) {
+        return 0U;
+    }
+#endif
     if (!ic_card_test_append_text(text, capacity, &used, "\r\n")) {
         return 0U;
     }

@@ -18,6 +18,12 @@ extern "C" {
 
 #include "ic_card_core.h"
 
+#ifndef LICANG_RELEASE_MINIMAL
+#define LICANG_RELEASE_MINIMAL 0
+#endif
+
+#define IC_CARD_SERVICE_DIAGNOSTICS_ENABLE (!LICANG_RELEASE_MINIMAL)
+
 #define IC_CARD_SERVICE_QUEUE_DEPTH 4U
 
 typedef enum {
@@ -67,6 +73,8 @@ typedef struct {
     void *user_ctx;
 } ic_card_request_t;
 
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
+/** 仅供测试和调试读取的累计统计；正式任务不保存这些计数。 */
 typedef struct {
     uint32_t submitted;
     uint32_t completed;
@@ -75,6 +83,7 @@ typedef struct {
     uint32_t uart_errors;
     uint32_t unrelated_responses;
 } ic_card_service_stats_t;
+#endif
 
 typedef struct {
     ic_card_t *device;
@@ -102,7 +111,9 @@ typedef struct {
     uint32_t handled_rx_sequence;
     uint32_t handled_error_sequence;
     uint32_t response_sequence;
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
     ic_card_service_stats_t stats;
+#endif
 } ic_card_service_t;
 
 /**
@@ -146,9 +157,11 @@ void ic_card_service_process_once(ic_card_service_t *service);
  * @param stats 输出统计对象。
  * @return IC_CARD_OK表示复制成功，否则返回参数或未初始化错误。
  */
+#if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
 ic_card_status_t ic_card_service_get_stats(
     const ic_card_service_t *service,
     ic_card_service_stats_t *stats);
+#endif
 
 #ifdef __cplusplus
 }

@@ -18,6 +18,10 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef LICANG_RELEASE_MINIMAL
+#define LICANG_RELEASE_MINIMAL 0
+#endif
+
 /** 当前驱动固定使用的协议校验字节。 */
 #define ZDT_TURNTABLE_CHECK_BYTE          0x6BU
 /** X/Emm两种固件命令帧的统一缓冲区上限。 */
@@ -95,8 +99,10 @@ typedef struct {
     zdt_turntable_reply_kind_t kind;
     uint8_t address;
     uint8_t function;
+#if !LICANG_RELEASE_MINIMAL
     uint8_t raw[ZDT_TURNTABLE_RESPONSE_MAX];
     size_t raw_len;
+#endif
     union {
         struct {
             uint16_t raw_flags;
@@ -138,8 +144,10 @@ typedef struct {
  * @param frame_len 输出有效帧长。
  * @return 构帧结果；OK只表示本地帧已生成。
  */
+#if !LICANG_RELEASE_MINIMAL
 zdt_turntable_status_t zdt_turntable_build_read_version(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len);
+#endif
 
 /**
  * @brief 构造读取选项参数命令0x1A，用于确认X/Emm与闭环状态。
@@ -171,8 +179,10 @@ zdt_turntable_status_t zdt_turntable_build_read_status(
  * @param frame_len 输出有效帧长。
  * @return 构帧结果。
  */
+#if !LICANG_RELEASE_MINIMAL
 zdt_turntable_status_t zdt_turntable_build_read_position(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len);
+#endif
 
 /**
  * @brief 构造X固件梯形加减速位置命令0xFD。
@@ -185,12 +195,14 @@ zdt_turntable_status_t zdt_turntable_build_read_position(
  * @note angle_0p1deg单位为0.1度；若设备启用了继续缩小10倍输入，真实单位
  *       会变为0.01度，测试前必须通过0x1A确认scaled_input为false。
  */
+#if !LICANG_RELEASE_MINIMAL
 zdt_turntable_status_t zdt_turntable_build_x_position(
     uint8_t address,
     const zdt_turntable_position_command_t *command,
     uint8_t *frame,
     size_t capacity,
     size_t *frame_len);
+#endif
 
 /**
  * @brief 构造Emm固件位置命令0xFD。

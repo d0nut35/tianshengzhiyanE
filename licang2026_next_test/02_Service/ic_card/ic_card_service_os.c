@@ -11,6 +11,8 @@
 #include "ic_card_uart7_hal.h"
 #include "uart_dispatch.h"
 
+#if !LICANG_RELEASE_MINIMAL
+/* 直连UART7装配只用于独立测试；正式任务统一经mult_uart通道1访问IC卡。 */
 #define IC_CARD_OS_FLAG_REQUEST       (1UL << 0)
 #define IC_CARD_OS_FLAG_ISR_EVENT     (1UL << 1)
 #define IC_CARD_OS_WAIT_SLICE_MS      10U
@@ -338,3 +340,4 @@ ic_card_status_t ic_card_service_os_get_stats(ic_card_service_stats_t *stats)
     }
     return ic_card_service_get_stats(&g_ic_card_service_os.service, stats);
 }
+#endif

@@ -18,6 +18,9 @@ extern "C" {
 
 #include "mult_uart_service.h"
 
+/* 正式任务不导出调试快照；worker、队列和错误恢复仍完整保留。 */
+#define MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE (!LICANG_RELEASE_MINIMAL)
+
 /**
  * @brief RTOS接入层的只读调试对象类型。
  * @note 具体CMSIS、HAL、队列和adapter字段只在.c中定义，避免应用仅为调用
@@ -29,6 +32,7 @@ typedef struct mult_uart_service_os mult_uart_service_os_t;
  * @brief RTOS worker运行诊断快照。
  * @note 全部字段只用于测试和故障定位，业务逻辑不得依赖这些计数。
  */
+#if MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE
 typedef struct {
     uint32_t worker_loop_count;
     uint32_t os_submit_count;
@@ -40,6 +44,7 @@ typedef struct {
     uint32_t uart_error_count;
     uint32_t last_uart_error;
 } mult_uart_service_os_diagnostics_t;
+#endif
 
 /**
  * @brief 初始化默认 mult_uart RTOS service，并创建请求队列和 worker task。
@@ -76,6 +81,7 @@ void mult_uart_service_os_process_once(void);
  * @param stats 输出统计对象。
  * @return MULT_UART_OK表示成功，否则返回参数或未初始化错误。
  */
+#if MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE
 mult_uart_status_t mult_uart_service_os_get_stats(
     mult_uart_service_stats_t *stats);
 
@@ -93,6 +99,7 @@ mult_uart_status_t mult_uart_service_os_get_diagnostics(
  * @note 业务层不得直接修改对象内部状态。
  */
 mult_uart_service_os_t *mult_uart_service_os_get_default(void);
+#endif
 
 #ifdef __cplusplus
 }

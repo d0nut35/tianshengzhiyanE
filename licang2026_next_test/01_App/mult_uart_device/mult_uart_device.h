@@ -21,6 +21,14 @@ extern "C" {
 
 #include "mult_uart_service.h"
 
+#ifndef LICANG_RELEASE_MINIMAL
+#define LICANG_RELEASE_MINIMAL 0
+#endif
+
+/* 正式任务只保留事务接口；统计和重复初始化测试入口不进入镜像。 */
+#define MULT_UART_DEVICE_DIAGNOSTICS_ENABLE (!LICANG_RELEASE_MINIMAL)
+#define MULT_UART_DEVICE_TEST_API_ENABLE    (!LICANG_RELEASE_MINIMAL)
+
 #define MULT_UART_DEVICE_COUNT               4U
 #define MULT_UART_DEVICE_QUEUE_TIMEOUT_MS    0U
 #define MULT_UART_DEVICE_DEFAULT_IO_MS       100U
@@ -82,6 +90,7 @@ typedef struct {
     void *user_ctx;
 } mult_uart_device_transfer_t;
 
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
 typedef struct {
     uint32_t submitted;
     uint32_t completed;
@@ -89,6 +98,7 @@ typedef struct {
     uint32_t busy;
     uint32_t submit_error;
 } mult_uart_device_stats_t;
+#endif
 
 /**
  * @brief 初始化设备事务层。
@@ -110,7 +120,9 @@ mult_uart_status_t mult_uart_device_init(
  * 完成回调上下文提前释放。
  * @return 成功返回MULT_UART_OK；存在未完成事务时返回MULT_UART_ERR_BUSY。
  */
+#if MULT_UART_DEVICE_TEST_API_ENABLE
 mult_uart_status_t mult_uart_device_deinit(void);
+#endif
 
 /**
  * @brief 提交一笔设备事务。
@@ -130,8 +142,10 @@ mult_uart_status_t mult_uart_device_submit(
  * @param stats 接收统计快照的输出对象。
  * @return 成功返回MULT_UART_OK，否则返回参数或未初始化错误。
  */
+#if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE
 mult_uart_status_t mult_uart_device_get_stats(
     mult_uart_device_stats_t *stats);
+#endif
 
 #ifdef __cplusplus
 }

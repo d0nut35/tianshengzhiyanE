@@ -28,6 +28,8 @@
 #include "mult_uart_device.h"
 #include "mult_uart_service_os.h"
 #include "test_config.h"
+#include "chassis_mission_link.h"
+#include "../01_App/mission/mission_app.h"
 
 #if MULT_UART_FREERTOS_TEST_ENABLED
 #include "mult_uart_freertos_test.h"
@@ -193,6 +195,16 @@ void MX_FREERTOS_Init(void) {
    * debug_uart1等夹具争抢UART。
    */
   if (chassis_bridge_init() != CHASSIS_BRIDGE_OK)
+  {
+    Error_Handler();
+  }
+
+  if (!chassis_mission_link_init())
+  {
+    Error_Handler();
+  }
+
+  if (mission_app_init() != MISSION_APP_OK)
   {
     Error_Handler();
   }

@@ -48,10 +48,12 @@ typedef struct {
  */
 struct mult_uart_service_os {
     bool initialized;
+#if MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE
     volatile uint32_t worker_loop_count;
     volatile uint32_t os_submit_count;
     volatile uint32_t os_dequeue_count;
     volatile uint32_t notify_error_count;
+#endif
     mult_uart_bus_t bus;
     mult_uart_port_t port;
     mult_uart_stm32_hal_t hal_adapter;
@@ -293,7 +295,9 @@ static void mult_uart_service_os_drain_request_queue(
         if (osMessageQueueGet(ctx->request_queue, &item, NULL, 0U) != osOK) {
             return;
         }
+#if MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE
         ctx->os_dequeue_count++;
+#endif
 
         mult_uart_service_os_make_service_request(&item, &request);
         status = mult_uart_service_submit(&ctx->service, &request);
@@ -317,9 +321,13 @@ static void mult_uart_service_os_notify(void *user_ctx)
         flags_result = osThreadFlagsSet(
             ctx->worker_thread,
             MULT_UART_SERVICE_OS_FLAG_EVENT);
+#if MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE
         if ((flags_result & osFlagsError) != 0U) {
             ctx->notify_error_count++;
         }
+#else
+        (void)flags_result;
+#endif
     }
 }
 
@@ -375,10 +383,11 @@ static bool mult_uart_service_os_dispatch_error(
 }
 
 /**
- * @brief 按初始化逆序撤销复用Service OS资源。
+ * @brief 测试构建中按初始化逆序撤销复用Service OS资源。
  * @param ctx OS适配上下文。
- * @note 支持从任意初始化失败点安全回滚，避免DMA、路由或队列残留。
+ * @note 正式任务的启动失败不可恢复，由MX_FREERTOS_Init调用者进入Error_Handler。
  */
+#if !LICANG_RELEASE_MINIMAL
 static void mult_uart_service_os_rollback(mult_uart_service_os_t *ctx)
 {
     if (ctx->dispatch_registered) {
@@ -399,10 +408,11 @@ static void mult_uart_service_os_rollback(mult_uart_service_os_t *ctx)
     }
     (void)memset(ctx, 0, sizeof(*ctx));
 }
+#endif
 
 /**
  * @brief 装配UART7复用Core、HAL适配、Service、路由、队列和worker。
- * @return 全部资源建立成功返回MULT_UART_OK，否则回滚并返回具体错误。
+ * @return 全部资源建立成功返回MULT_UART_OK，否则返回具体错误；测试构建会回滚。
  */
 mult_uart_status_t mult_uart_service_os_init(void)
 {
@@ -439,13 +449,17 @@ mult_uart_status_t mult_uart_service_os_init(void)
         &hal_config,
         &ctx->port);
     if (status != MULT_UART_OK) {
+#if !LICANG_RELEASE_MINIMAL
         mult_uart_service_os_rollback(ctx);
+#endif
         return status;
     }
 
     status = mult_uart_init(&ctx->bus, &core_config, &ctx->port);
     if (status != MULT_UART_OK) {
+#if !LICANG_RELEASE_MINIMAL
         mult_uart_service_os_rollback(ctx);
+#endif
         return status;
     }
 
@@ -455,13 +469,17 @@ mult_uart_status_t mult_uart_service_os_init(void)
     service_config.notify_ctx = ctx;
     status = mult_uart_service_init(&ctx->service, &service_config);
     if (status != MULT_UART_OK) {
+#if !LICANG_RELEASE_MINIMAL
         mult_uart_service_os_rollback(ctx);
+#endif
         return status;
     }
 
     status = mult_uart_service_start(&ctx->service);
     if (status != MULT_UART_OK) {
+#if !LICANG_RELEASE_MINIMAL
         mult_uart_service_os_rollback(ctx);
+#endif
         return status;
     }
 
@@ -470,7 +488,9 @@ mult_uart_status_t mult_uart_service_os_init(void)
     dispatch_handler.error = mult_uart_service_os_dispatch_error;
     dispatch_handler.user_ctx = ctx;
     if (!uart_dispatch_register(&dispatch_handler, &ctx->dispatch_handle)) {
+#if !LICANG_RELEASE_MINIMAL
         mult_uart_service_os_rollback(ctx);
+#endif
         return MULT_UART_ERR_IO;
     }
     ctx->dispatch_registered = true;
@@ -480,7 +500,9 @@ mult_uart_status_t mult_uart_service_os_init(void)
         ctx,
         &g_mult_uart_worker_attr);
     if (ctx->worker_thread == NULL) {
+#if !LICANG_RELEASE_MINIMAL
         mult_uart_service_os_rollback(ctx);
+#endif
         return MULT_UART_ERR_IO;
     }
 
@@ -521,15 +543,21 @@ mult_uart_status_t mult_uart_service_os_submit(
     if (os_status != osOK) {
         return mult_uart_service_os_map_status(os_status);
     }
+#if MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE
     ctx->os_submit_count++;
+#endif
 
     if (ctx->worker_thread != NULL) {
         uint32_t flags_result = osThreadFlagsSet(
             ctx->worker_thread,
             MULT_UART_SERVICE_OS_FLAG_REQUEST);
+#if MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE
         if ((flags_result & osFlagsError) != 0U) {
             ctx->notify_error_count++;
         }
+#else
+        (void)flags_result;
+#endif
     }
     return MULT_UART_OK;
 }
@@ -553,6 +581,7 @@ void mult_uart_service_os_process_once(void)
  * @param stats 接收统计值的输出对象。
  * @return 获取结果。
  */
+#if MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE
 mult_uart_status_t mult_uart_service_os_get_stats(
     mult_uart_service_stats_t *stats)
 {
@@ -598,6 +627,7 @@ mult_uart_service_os_t *mult_uart_service_os_get_default(void)
 {
     return &g_mult_uart_service_os;
 }
+#endif
 
 /**
  * @brief mult_uart唯一worker任务入口。
@@ -610,7 +640,9 @@ static void mult_uart_service_os_worker_entry(void *argument)
 
     /* 单worker保证公共UART链路始终只有一笔在途事务。 */
     for (;;) {
+#if MULT_UART_SERVICE_OS_DIAGNOSTICS_ENABLE
         g_mult_uart_service_os.worker_loop_count++;
+#endif
         mult_uart_service_os_process_once();
         (void)osThreadFlagsWait(
             MULT_UART_SERVICE_OS_FLAG_REQUEST |

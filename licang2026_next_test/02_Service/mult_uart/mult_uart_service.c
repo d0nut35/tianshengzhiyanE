@@ -107,6 +107,7 @@ static size_t mult_uart_service_queue_next(size_t index)
 /**
  * @brief 更新队列水位峰值，用于判断队列深度是否够用。
  */
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
 static void mult_uart_service_update_high_watermark(
     mult_uart_service_t *service)
 {
@@ -114,6 +115,7 @@ static void mult_uart_service_update_high_watermark(
         service->stats.queue_high_watermark = (uint32_t)service->queue_count;
     }
 }
+#endif
 
 /**
  * @brief 清空 active job 相关的异步事件暂存。
@@ -147,6 +149,7 @@ static void mult_uart_service_notify(mult_uart_service_t *service)
 /**
  * @brief 把完成状态归类到统计计数。
  */
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
 static void mult_uart_service_count_status(
     mult_uart_service_t *service,
     mult_uart_operation_t operation,
@@ -169,6 +172,7 @@ static void mult_uart_service_count_status(
         service->stats.tx_error++;
     }
 }
+#endif
 
 /**
  * @brief 统一生成 completion 并调用上层回调。
@@ -184,6 +188,10 @@ static void mult_uart_service_complete_job(
 {
     mult_uart_completion_t completion;
 
+#if !MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
+    (void)service;
+#endif
+
     completion.request_id = job->request_id;
     completion.status = status;
     completion.operation = job->operation;
@@ -193,8 +201,10 @@ static void mult_uart_service_complete_job(
          mult_uart_service_op_needs_rx(job->operation)) ? job->rx_data : NULL;
     completion.rx_len = (status == MULT_UART_OK) ? rx_len : 0U;
 
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
     service->stats.completed++;
     mult_uart_service_count_status(service, job->operation, status);
+#endif
 
     if (job->done_cb != NULL) {
         job->done_cb(job->user_ctx, &completion);
@@ -324,7 +334,9 @@ static mult_uart_status_t mult_uart_service_select_channel(
         if (status != MULT_UART_OK) {
             return status;
         }
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
         service->stats.switch_count++;
+#endif
     }
 
     return mult_uart_enable(service->bus);
@@ -600,15 +612,19 @@ mult_uart_status_t mult_uart_service_submit(
 
     status = mult_uart_service_validate_request(request);
     if (status != MULT_UART_OK) {
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
         service->stats.invalid_request++;
         if (status == MULT_UART_ERR_OVERFLOW) {
             service->stats.overflow++;
         }
+#endif
         return status;
     }
 
     if (service->queue_count >= MULT_UART_SERVICE_QUEUE_DEPTH) {
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
         service->stats.queue_full++;
+#endif
         return MULT_UART_ERR_QUEUE_FULL;
     }
 
@@ -616,8 +632,10 @@ mult_uart_status_t mult_uart_service_submit(
     service->queue[service->queue_tail] = job;
     service->queue_tail = mult_uart_service_queue_next(service->queue_tail);
     service->queue_count++;
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
     service->stats.submitted++;
     mult_uart_service_update_high_watermark(service);
+#endif
     return MULT_UART_OK;
 }
 
@@ -692,6 +710,7 @@ mult_uart_status_t mult_uart_service_stop(mult_uart_service_t *service)
 /**
  * @brief 解除 Core 回调绑定并释放 Service 逻辑所有权。
  */
+#if MULT_UART_SERVICE_TEST_API_ENABLE
 mult_uart_status_t mult_uart_service_deinit(mult_uart_service_t *service)
 {
     if (service == NULL) {
@@ -710,10 +729,12 @@ mult_uart_status_t mult_uart_service_deinit(mult_uart_service_t *service)
     mult_uart_service_reset(service);
     return MULT_UART_OK;
 }
+#endif
 
 /**
  * @brief 复制一份统计快照给调用者。
  */
+#if MULT_UART_SERVICE_DIAGNOSTICS_ENABLE
 mult_uart_status_t mult_uart_service_get_stats(
     const mult_uart_service_t *service,
     mult_uart_service_stats_t *stats)
@@ -729,3 +750,4 @@ mult_uart_status_t mult_uart_service_get_stats(
     *stats = service->stats;
     return MULT_UART_OK;
 }
+#endif

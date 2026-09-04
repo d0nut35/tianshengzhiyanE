@@ -2013,6 +2013,16 @@
               <FileType>5</FileType>
               <FilePath>../02_Service/chassis_bridge/chassis_bridge.h</FilePath>
             </File>
+            <File>
+              <FileName>chassis_mission_link.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../02_Service/chassis_bridge/chassis_mission_link.c</FilePath>
+            </File>
+            <File>
+              <FileName>chassis_mission_link.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../02_Service/chassis_bridge/chassis_mission_link.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

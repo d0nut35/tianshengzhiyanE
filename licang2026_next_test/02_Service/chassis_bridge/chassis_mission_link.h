@@ -9,7 +9,10 @@
 #ifndef CHASSIS_MISSION_LINK_H
 #define CHASSIS_MISSION_LINK_H
 
+#include <stdbool.h>
 #include <stdint.h>
+
+#include "cmsis_os.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,6 +20,7 @@ extern "C" {
 
 #define CHASSIS_MISSION_LINK_VERSION       1U
 #define CHASSIS_MISSION_REQUEST_ID_INVALID 0U
+#define CHASSIS_MISSION_QUEUE_DEPTH        8U
 
 /** Mission -> 底盘。 */
 typedef uint8_t mission_command_type_t;
@@ -60,6 +64,12 @@ typedef struct {
     chassis_command_type_t type;
     uint8_t is_ready;
 } chassis_mission_event_t;
+
+extern osMessageQueueId_t chassis_command_queue;
+extern osMessageQueueId_t mission_event_queue;
+
+/** 创建Mission与底盘之间的两个单向消息队列。 */
+bool chassis_mission_link_init(void);
 
 #ifdef __cplusplus
 }

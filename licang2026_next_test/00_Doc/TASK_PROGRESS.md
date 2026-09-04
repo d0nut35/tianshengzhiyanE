@@ -1,9 +1,26 @@
-# licang2026v1 任务进度
+# licang2026_next_test 任务进度
 
-> 最近更新：2026-08-31
+> 最近更新：2026-09-05
 > 本文件用于快速恢复当前开发进度；详细背景、文档事实和历史结论见`00_Doc/任务衔接记录.md`。
 
-## 0. 2026-08-31现场进度快照
+## 0. 2026-09-05新底盘架构迁移快照
+
+本节是当前最高优先级事实来源。当前唯一开发仓库为`D:\programfile\licang\licang2026_next_test`，工程目录为其下的`licang2026_next_test`；旧工程`D:\programfile\project\licang2026v1`只作历史参考，不再写入。
+
+- 当前分支`feature/mission-app-state-machine`，最新本地提交`83ac4c2 完成Mission状态机并精简正式代码`，尚未推送。
+- 工作树仍有用户和队友的未提交修改；禁止`reset`、`checkout`、`clean`、`pull`或覆盖现有改动。
+- 新工程采用队友`lhy`底盘的Service/App/底层以及`chassis_bridge`，不再迁移旧`chassis_device`、`chassis_runtime`、`mission_route`和`07_Vendor`底盘副本。
+- 我方`mission_app`独立任务已接入Nano协议、LSC16、IC、球档案、独立车载转盘和PB0。双方通过`chassis_mission_link.h`中的两个单向队列通信，消息只携带`request_id/type/is_ready`。
+- Mission已实现动作组10初始化和READY握手、圆盘固定5球、第五球动作17、返回动作10后前往阶梯、低/高/中阶梯扫描、最多2球、停车确认后抓取、抓后返回13并恢复本层剩余横移。
+- IC每球最多读取5次；失败写`READ_FAILED`后继续。PB0修正耗尽后记录并继续。底盘、ZDT通信/保护/超时、机械臂和视觉协议错误仍停机。
+- 当前新架构完整Keil构建为`0 Error(s), 0 Warning(s)`。新Mission与底盘侧联动尚未完成，当前新工程未完成F7全流程实机验证；旧集成工程的实机结果不能直接算作新架构验证。
+- 底盘侧仍需实现：阻塞读取`chassis_command_queue`、双方READY、`GO_PLATFORM/GO_STAIRS`路线及到位回复、每层就绪与`CAM_READY`放行、阶梯实际暂停/保存剩余行程/恢复、`STAIRS_FINISHED`和可及时处理的`STOP/STOPPED`。
+- 仓库识别和倒垛尚未实现，当前Mission在阶梯结束后进入`COMPLETE`。
+- Keil IROM上限`0x10000=65536 B`；当前map的Load Region为`0xFDB0=64944 B`，Flash只剩约`592 B`。RAM使用`120464/327680 B`，尚余约`207216 B`。圆盘五球已在镜像内；加入仓库倒垛前必须先释放Flash。
+- 第一轮Flash减重应优先处理map中确实占ROM的未使用BLE/app_ble分支和正式运行不需要的RTT printf/日志，争取先腾出至少`6~10 KiB`。当前目标板测试对象未出现在最终map中，从Keil分组移除主要用于防止误启用，不应虚报为已释放Flash。必须保留底盘控制、DMA生命周期、UART句柄过滤和统一回调、ISR/任务边界、超时恢复、`request_id`、队列满判断及机械停止保护。
+- 后续默认以完整Keil编译为主；只有平台无关Core或复杂协议规则变更才跑对应PC fake。编译通过仍不等于F7实机通过。
+
+## 0.1 2026-08-31旧集成工程现场进度快照
 
 本节覆盖下方尚未及时清理的旧“当前状态”描述，后续接手应以本节和最新Git提交为准。
 

@@ -1,13 +1,17 @@
-# licang2026v1 项目协作约定
+# licang2026_next_test 项目协作约定
 
 开始处理本工程任务前，必须先完整阅读：
 
-1. `D:\programfile\project\licang2026v1\00_Doc\TASK_PROGRESS.md`
-2. `D:\programfile\project\licang2026v1\00_Doc\任务衔接记录.md`
-3. `D:\programfile\project\licang2026v1\00_Doc\mult_uart_F7移植说明.md`
-4. `D:\programfile\project\zhuaqu_test1\docs\2025赛题目标与模块清单.md`
-5. `D:\programfile\project\zhuaqu_test1\docs\立体仓库控制架构设计.md`
-6. `D:\programfile\project\zhuaqu_test1\docs\F7真实引脚与外设分配.md`
+1. `D:\programfile\licang\licang2026_next_test\licang2026_next_test\00_Doc\TASK_PROGRESS.md`
+2. `D:\programfile\licang\licang2026_next_test\licang2026_next_test\00_Doc\任务衔接记录.md`
+3. `D:\programfile\licang\licang2026_next_test\licang2026_next_test\00_Doc\新底盘架构上层任务移植方案.md`
+4. `D:\programfile\licang\licang2026_next_test\licang2026_next_test\00_Doc\Nano视觉_UART7通道0协议.md`
+5. `D:\programfile\licang\licang2026_next_test\licang2026_next_test\00_Doc\mult_uart_F7移植说明.md`
+6. `D:\programfile\project\zhuaqu_test1\docs\2025赛题目标与模块清单.md`
+7. `D:\programfile\project\zhuaqu_test1\docs\立体仓库控制架构设计.md`
+8. `D:\programfile\project\zhuaqu_test1\docs\F7真实引脚与外设分配.md`
+
+当前唯一STM32开发仓库为`D:\programfile\licang\licang2026_next_test`。`D:\programfile\project\licang2026v1`只作历史参考，未经用户明确要求不得修改。开始时先检查当前Git状态；不得使用`reset`、`checkout`、`clean`或`pull`覆盖未提交修改。
 
 维护要求：
 

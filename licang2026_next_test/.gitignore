@@ -1,0 +1,68 @@
+# Operating-system and editor-local files
+.vscode/
+.idea/
+.vs/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local logs and temporary review artifacts
+*.log
+debug.log
+tmp/
+
+# Local safety copies and redundant personal notes
+00_Doc/backup_*/
+00_Doc/调试日志.md
+00_Doc/IC卡模块架构学习笔记.md
+
+# Host-side generated test executables
+05_Test/host/**/.build/
+
+# Keil user state and generated build output
+MDK-ARM/licang2026v1/
+MDK-ARM/*.uvguix.*
+MDK-ARM/*.uvoptx
+MDK-ARM/*.lst
+MDK-ARM/*.dep
+MDK-ARM/*.lnp
+MDK-ARM/*.bak
+
+# Unused parts of the full CMSIS distribution. The project keeps only the
+# STM32F750 device headers and the generic CMSIS headers required to compile.
+Drivers/CMSIS/Core/
+Drivers/CMSIS/Core_A/
+Drivers/CMSIS/docs/
+Drivers/CMSIS/DSP/
+Drivers/CMSIS/Lib/
+Drivers/CMSIS/NN/
+Drivers/CMSIS/RTOS/
+Drivers/CMSIS/RTOS2/
+Drivers/CMSIS/Device/ST/STM32F7xx/Source/
+Drivers/CMSIS/Device/ST/STM32F7xx/Include/*
+!Drivers/CMSIS/Device/ST/STM32F7xx/Include/stm32f7xx.h
+!Drivers/CMSIS/Device/ST/STM32F7xx/Include/stm32f750xx.h
+!Drivers/CMSIS/Device/ST/STM32F7xx/Include/system_stm32f7xx.h
+
+# Generic generated binaries, maps and object/dependency files
+*.o
+*.obj
+*.d
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.htm
+*.html
+*.crf
+*.iex
+*.tra
+*.sct
+*.scr
+*.fed
+*.lnp
+*.exe
+

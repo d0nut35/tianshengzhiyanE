@@ -1,0 +1,54 @@
+# Editor and operating-system files
+.vscode/
+.idea/
+.vs/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local logs and temporary files
+*.log
+debug.log
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Host-test generated output
+**/05_Test/host/**/.build/
+*.exe
+
+# Keil user state, debug state, and build output
+**/MDK-ARM/*/
+!**/MDK-ARM/RTE/
+!**/MDK-ARM/RTE/**
+**/MDK-ARM/DebugConfig/
+**/MDK-ARM/*.uvguix.*
+**/MDK-ARM/*.uvoptx
+**/MDK-ARM/*.lst
+**/MDK-ARM/*.dep
+**/MDK-ARM/*.lnp
+**/MDK-ARM/*.crf
+**/MDK-ARM/*.iex
+**/MDK-ARM/*.tra
+**/MDK-ARM/*.fed
+**/MDK-ARM/*.sct
+**/MDK-ARM/*.scr
+
+# Compiler-generated binaries and objects
+*.o
+*.obj
+*.d
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.htm
+*.html
+
+# Local repository metadata backups
+**/.git-backup/
+**/.git-old/

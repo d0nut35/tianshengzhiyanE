@@ -12,8 +12,6 @@
 #include <string.h>
 
 #include "cmsis_os.h"
-#include "mult_uart_board_config.h"
-#include "mult_uart_stm32_hal.h"
 #include "uart_dispatch.h"
 
 #define MULT_UART_SERVICE_OS_FLAG_REQUEST    (1UL << 0)
@@ -55,8 +53,6 @@ struct mult_uart_service_os {
     volatile uint32_t notify_error_count;
 #endif
     mult_uart_bus_t bus;
-    mult_uart_port_t port;
-    mult_uart_stm32_hal_t hal_adapter;
     mult_uart_service_t service;
     osMessageQueueId_t request_queue;
     osThreadId_t worker_thread;
@@ -332,7 +328,7 @@ static void mult_uart_service_os_notify(void *user_ctx)
 }
 
 /**
- * @brief 把公共路由TX完成事件转交给UART7复用适配器。
+ * @brief 把公共路由TX完成事件转交给UART7复用BSP。
  * @param user_ctx OS适配上下文。
  * @param huart 产生事件的UART句柄。
  * @return 事件属于本适配器时返回true。
@@ -342,13 +338,13 @@ static bool mult_uart_service_os_dispatch_tx(
     UART_HandleTypeDef *huart)
 {
     mult_uart_service_os_t *ctx = (mult_uart_service_os_t *)user_ctx;
-    return (ctx != NULL) && mult_uart_stm32_hal_handle_tx_complete(
-        &ctx->hal_adapter,
+    return (ctx != NULL) && mult_uart_handle_tx(
+        &ctx->bus,
         huart);
 }
 
 /**
- * @brief 把公共路由ReceiveToIdle事件转交给UART7复用适配器。
+ * @brief 把公共路由ReceiveToIdle事件转交给UART7复用BSP。
  * @param user_ctx OS适配上下文。
  * @param huart 产生事件的UART句柄。
  * @param rx_len 本次DMA有效字节数。
@@ -360,14 +356,14 @@ static bool mult_uart_service_os_dispatch_rx(
     uint16_t rx_len)
 {
     mult_uart_service_os_t *ctx = (mult_uart_service_os_t *)user_ctx;
-    return (ctx != NULL) && mult_uart_stm32_hal_handle_rx_event(
-        &ctx->hal_adapter,
+    return (ctx != NULL) && mult_uart_handle_rx(
+        &ctx->bus,
         huart,
         rx_len);
 }
 
 /**
- * @brief 把公共路由UART错误事件转交给UART7复用适配器。
+ * @brief 把公共路由UART错误事件转交给UART7复用BSP。
  * @param user_ctx OS适配上下文。
  * @param huart 产生错误的UART句柄。
  * @return 事件属于本适配器时返回true。
@@ -377,8 +373,8 @@ static bool mult_uart_service_os_dispatch_error(
     UART_HandleTypeDef *huart)
 {
     mult_uart_service_os_t *ctx = (mult_uart_service_os_t *)user_ctx;
-    return (ctx != NULL) && mult_uart_stm32_hal_handle_error(
-        &ctx->hal_adapter,
+    return (ctx != NULL) && mult_uart_handle_error(
+        &ctx->bus,
         huart);
 }
 
@@ -411,19 +407,12 @@ static void mult_uart_service_os_rollback(mult_uart_service_os_t *ctx)
 #endif
 
 /**
- * @brief 装配UART7复用Core、HAL适配、Service、路由、队列和worker。
+ * @brief 装配UART7复用BSP、Service、路由、队列和worker。
  * @return 全部资源建立成功返回MULT_UART_OK，否则返回具体错误；测试构建会回滚。
  */
 mult_uart_status_t mult_uart_service_os_init(void)
 {
     mult_uart_service_os_t *ctx = &g_mult_uart_service_os;
-    mult_uart_stm32_hal_config_t hal_config;
-    mult_uart_config_t core_config = {
-        (MULT_UART_BOARD_MANAGE_ENABLE != 0),
-        (MULT_UART_BOARD_ENABLE_ACTIVE_LOW != 0),
-        (MULT_UART_BOARD_BREAK_BEFORE_SWITCH != 0),
-        MULT_UART_BOARD_SWITCH_SETTLE_US,
-    };
     mult_uart_service_config_t service_config = {0};
     uart_dispatch_handler_t dispatch_handler = {0};
     mult_uart_status_t status;
@@ -442,20 +431,7 @@ mult_uart_status_t mult_uart_service_os_init(void)
         return MULT_UART_ERR_IO;
     }
 
-    mult_uart_stm32_hal_make_uart7_config(&hal_config);
-    status = mult_uart_stm32_hal_bind(
-        &ctx->hal_adapter,
-        &ctx->bus,
-        &hal_config,
-        &ctx->port);
-    if (status != MULT_UART_OK) {
-#if !LICANG_RELEASE_MINIMAL
-        mult_uart_service_os_rollback(ctx);
-#endif
-        return status;
-    }
-
-    status = mult_uart_init(&ctx->bus, &core_config, &ctx->port);
+    status = mult_uart_init(&ctx->bus);
     if (status != MULT_UART_OK) {
 #if !LICANG_RELEASE_MINIMAL
         mult_uart_service_os_rollback(ctx);
@@ -614,8 +590,8 @@ mult_uart_status_t mult_uart_service_os_get_diagnostics(
     diagnostics->notify_error_count = ctx->notify_error_count;
     diagnostics->service_submit_count = ctx->service.stats.submitted;
     diagnostics->service_complete_count = ctx->service.stats.completed;
-    diagnostics->uart_error_count = ctx->hal_adapter.uart_error_count;
-    diagnostics->last_uart_error = ctx->hal_adapter.last_uart_error;
+    diagnostics->uart_error_count = ctx->bus.uart_error_count;
+    diagnostics->last_uart_error = ctx->bus.last_uart_error;
     return MULT_UART_OK;
 }
 

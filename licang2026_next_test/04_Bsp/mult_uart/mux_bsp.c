@@ -1,9 +1,105 @@
 /**
- * @file    mult_uart_core.c
- * @brief   四通道 TTL UART 复用总线平台无关核心实现
+ * @file    mux_bsp.c
+ * @brief   四通道TTL UART复用器与STM32 UART7 HAL实现。
  */
 
-#include "mult_uart_core.h"
+#include "mux_bsp.h"
+
+#include <limits.h>
+
+#include "main.h"
+#include "usart.h"
+
+#define MULT_UART_SWITCH_SETTLE_US 5U
+
+/** 将HAL状态收敛为复用模块状态。 */
+static mult_uart_status_t mult_uart_map_hal(HAL_StatusTypeDef status)
+{
+    if (status == HAL_OK) return MULT_UART_OK;
+    if (status == HAL_BUSY) return MULT_UART_ERR_BUSY;
+    if (status == HAL_TIMEOUT) return MULT_UART_ERR_TIMEOUT;
+    return MULT_UART_ERR_IO;
+}
+
+/** 一次BSRR写同时提交PD9/PD10，避免出现中间通道。 */
+static void mult_uart_write_select(bool a_high, bool b_high)
+{
+    uint32_t set_mask = (a_high ? M_A_Pin : 0U) |
+                        (b_high ? M_B_Pin : 0U);
+    uint32_t reset_mask = (a_high ? 0U : M_A_Pin) |
+                          (b_high ? 0U : M_B_Pin);
+
+    M_A_GPIO_Port->BSRR = set_mask | (reset_mask << 16U);
+}
+
+/** EN/INH低有效，传true表示接通复用器。 */
+static void mult_uart_write_enable(bool enabled)
+{
+    HAL_GPIO_WritePin(
+        M_EN_GPIO_Port,
+        M_EN_Pin,
+        enabled ? GPIO_PIN_RESET : GPIO_PIN_SET);
+}
+
+/** 通道切换后的短稳定等待。 */
+static void mult_uart_delay_us(uint32_t delay_us)
+{
+    uint32_t cycles_per_us = SystemCoreClock / 1000000U;
+    uint32_t spin;
+
+    if (cycles_per_us == 0U) cycles_per_us = 1U;
+    while (delay_us-- > 0U) {
+        for (spin = 0U; spin < cycles_per_us; ++spin) __NOP();
+    }
+}
+
+/** 启动固定UART7异步发送。 */
+static mult_uart_status_t mult_uart_start_tx(
+    const uint8_t *data,
+    size_t len)
+{
+    if (len > UINT16_MAX) return MULT_UART_ERR_PARAM;
+    return mult_uart_map_hal(HAL_UART_Transmit_IT(
+        &huart7,
+        data,
+        (uint16_t)len));
+}
+
+/** 清旧状态后启动UART7 ReceiveToIdle DMA，并关闭半传输中断。 */
+static mult_uart_status_t mult_uart_start_rx(
+    uint8_t *data,
+    size_t capacity)
+{
+    HAL_StatusTypeDef status;
+
+    if (capacity > UINT16_MAX) return MULT_UART_ERR_PARAM;
+    __HAL_UART_CLEAR_FLAG(
+        &huart7,
+        UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_PEF |
+            UART_CLEAR_FEF | UART_CLEAR_IDLEF);
+    __HAL_UART_SEND_REQ(&huart7, UART_RXDATA_FLUSH_REQUEST);
+    huart7.ErrorCode = HAL_UART_ERROR_NONE;
+
+    status = HAL_UARTEx_ReceiveToIdle_DMA(
+        &huart7,
+        data,
+        (uint16_t)capacity);
+    if (status != HAL_OK) return mult_uart_map_hal(status);
+    __HAL_DMA_DISABLE_IT(huart7.hdmarx, DMA_IT_HT);
+    return MULT_UART_OK;
+}
+
+/** 同步终止UART7收发，并清除可能污染下一事务的旧中断。 */
+static mult_uart_status_t mult_uart_abort_io(void)
+{
+    HAL_StatusTypeDef status = HAL_UART_Abort(&huart7);
+
+    if (status != HAL_OK) return mult_uart_map_hal(status);
+    __HAL_UART_CLEAR_PEFLAG(&huart7);
+    HAL_NVIC_ClearPendingIRQ(UART7_IRQn);
+    HAL_NVIC_ClearPendingIRQ(DMA1_Stream3_IRQn);
+    return MULT_UART_OK;
+}
 
 /**
  * @brief 判断枚举值是否对应硬件支持的4个通道之一。
@@ -41,46 +137,6 @@ static void mult_uart_sync_active_state(mult_uart_bus_t *bus)
 }
 
 /**
- * @brief 校验 Core 运行必需的平台能力。
- * @param config 总线配置。
- * @param port 待注入的平台端口。
- * @return 必需能力完整且配置一致时返回true。
- *
- * EN 和微秒延时只在配置实际使用时才要求实现，DMA 原语属于当前 Core
- * 的固定契约，因此 TX、RX 和 abort 必须全部存在。
- */
-static bool mult_uart_port_is_valid(
-    const mult_uart_config_t *config,
-    const mult_uart_port_t *port)
-{
-    if ((config == NULL) || (port == NULL) || (port->ops == NULL)) {
-        return false;
-    }
-
-    if ((port->ops->write_select == NULL) ||
-        (port->ops->start_tx_dma == NULL) ||
-        (port->ops->start_rx_dma == NULL) ||
-        (port->ops->abort_dma == NULL)) {
-        return false;
-    }
-
-    if (config->manage_enable && (port->ops->write_enable == NULL)) {
-        return false;
-    }
-
-    if ((config->switch_settle_us > 0U) &&
-        (port->ops->delay_us == NULL)) {
-        return false;
-    }
-
-    if (config->break_before_switch && !config->manage_enable) {
-        return false;
-    }
-
-    return true;
-}
-
-/**
  * @brief 将 bus 恢复为确定的 UNINIT 状态。
  * @param bus 复用总线对象。
  * @note 用于首次初始化、初始化失败回滚和成功反初始化。
@@ -96,35 +152,12 @@ static void mult_uart_reset_bus(mult_uart_bus_t *bus)
     bus->aborting = false;
     bus->rx_capacity = 0U;
 
-    bus->config.manage_enable = false;
-    bus->config.enable_active_low = false;
-    bus->config.break_before_switch = false;
-    bus->config.switch_settle_us = 0U;
-
-    bus->port.ops = NULL;
-    bus->port.ctx = NULL;
     bus->event_cb = NULL;
     bus->event_ctx = NULL;
-}
-
-/**
- * @brief 把逻辑“使能”转换为EN引脚的实际电平。
- * @param bus 复用总线对象。
- * @return 应写入EN引脚的高低电平。
- */
-static bool mult_uart_enable_level(const mult_uart_bus_t *bus)
-{
-    return !bus->config.enable_active_low;
-}
-
-/**
- * @brief 把逻辑“禁用”转换为EN引脚的实际电平。
- * @param bus 复用总线对象。
- * @return 应写入EN引脚的高低电平。
- */
-static bool mult_uart_disable_level(const mult_uart_bus_t *bus)
-{
-    return bus->config.enable_active_low;
+#if !LICANG_RELEASE_MINIMAL
+    bus->uart_error_count = 0U;
+    bus->last_uart_error = 0U;
+#endif
 }
 
 /**
@@ -190,44 +223,22 @@ static void mult_uart_emit_event(
  * managed EN 模式会先输出禁用电平；只有全部平台检查和初始写入成功后，
  * 才把对象标记为 initialized，避免上层看到半初始化状态。
  */
-mult_uart_status_t mult_uart_init(
-    mult_uart_bus_t *bus,
-    const mult_uart_config_t *config,
-    const mult_uart_port_t *port)
+mult_uart_status_t mult_uart_init(mult_uart_bus_t *bus)
 {
-    mult_uart_status_t status;
-
-    if ((bus == NULL) || (config == NULL) || (port == NULL)) {
-        return MULT_UART_ERR_PARAM;
-    }
+    if (bus == NULL) return MULT_UART_ERR_PARAM;
 
     if (bus->initialized) {
         return MULT_UART_ERR_STATE;
     }
 
-    if (!mult_uart_port_is_valid(config, port)) {
+    if ((huart7.Instance != UART7) || (huart7.hdmarx == NULL) ||
+        (M_A_GPIO_Port != M_B_GPIO_Port)) {
         mult_uart_reset_bus(bus);
-        return MULT_UART_ERR_PARAM;
+        return MULT_UART_ERR_IO;
     }
 
     mult_uart_reset_bus(bus);
-    bus->config = *config;
-    bus->port = *port;
-
-    if (config->manage_enable) {
-        status = bus->port.ops->write_enable(
-            bus->port.ctx,
-            mult_uart_disable_level(bus));
-        if (status != MULT_UART_OK) {
-            mult_uart_reset_bus(bus);
-            return status;
-        }
-        bus->enabled = false;
-    } else {
-        /* EN 由硬件下拉或直接接地时，Core 视为始终使能。 */
-        bus->enabled = true;
-    }
-
+    mult_uart_write_enable(false);
     bus->state = MULT_UART_STATE_IDLE;
     bus->initialized = true;
     return MULT_UART_OK;
@@ -289,21 +300,7 @@ mult_uart_status_t mult_uart_enable(mult_uart_bus_t *bus)
         return MULT_UART_ERR_STATE;
     }
 
-    if (!bus->config.manage_enable) {
-        bus->enabled = true;
-        return MULT_UART_OK;
-    }
-
-    status = bus->port.ops->write_enable(
-        bus->port.ctx,
-        mult_uart_enable_level(bus));
-    if (status != MULT_UART_OK) {
-        bus->current_channel =
-            (mult_uart_channel_t)MULT_UART_CHANNEL_INVALID;
-        bus->state = MULT_UART_STATE_ERROR;
-        return status;
-    }
-
+    mult_uart_write_enable(true);
     bus->enabled = true;
     return MULT_UART_OK;
 }
@@ -327,24 +324,11 @@ mult_uart_status_t mult_uart_disable(mult_uart_bus_t *bus)
         return status;
     }
 
-    if (!bus->config.manage_enable) {
-        return MULT_UART_ERR_UNSUPPORTED;
-    }
-
     if (!bus->enabled) {
         return MULT_UART_OK;
     }
 
-    status = bus->port.ops->write_enable(
-        bus->port.ctx,
-        mult_uart_disable_level(bus));
-    if (status != MULT_UART_OK) {
-        bus->current_channel =
-            (mult_uart_channel_t)MULT_UART_CHANNEL_INVALID;
-        bus->state = MULT_UART_STATE_ERROR;
-        return status;
-    }
-
+    mult_uart_write_enable(false);
     bus->enabled = false;
     return MULT_UART_OK;
 }
@@ -363,7 +347,6 @@ mult_uart_status_t mult_uart_select(
     mult_uart_channel_t channel)
 {
     mult_uart_status_t status;
-    mult_uart_status_t restore_status;
     bool temporarily_disabled = false;
     bool a_high;
     bool b_high;
@@ -385,78 +368,20 @@ mult_uart_status_t mult_uart_select(
         return MULT_UART_OK;
     }
 
-    if (bus->enabled && bus->config.break_before_switch) {
-        status = bus->port.ops->write_enable(
-            bus->port.ctx,
-            mult_uart_disable_level(bus));
-        if (status != MULT_UART_OK) {
-            bus->current_channel =
-                (mult_uart_channel_t)MULT_UART_CHANNEL_INVALID;
-            bus->state = MULT_UART_STATE_ERROR;
-            return status;
-        }
+    if (bus->enabled) {
+        mult_uart_write_enable(false);
         bus->enabled = false;
         temporarily_disabled = true;
     }
 
     a_high = (((uint32_t)channel & 0x01U) != 0U);
     b_high = (((uint32_t)channel & 0x02U) != 0U);
-    status = bus->port.ops->write_select(
-        bus->port.ctx,
-        a_high,
-        b_high);
-
-    if (status == MULT_UART_OK) {
-        if (bus->config.switch_settle_us > 0U) {
-            bus->port.ops->delay_us(
-                bus->port.ctx,
-                bus->config.switch_settle_us);
-        }
-    } else {
-        bus->current_channel =
-            (mult_uart_channel_t)MULT_UART_CHANNEL_INVALID;
-    }
-
-    if (temporarily_disabled && (status != MULT_UART_OK)) {
-        /* 选择线状态不确定时保持 EN 禁用，避免误接入未知通道。 */
-        return status;
-    }
-
-    if ((status != MULT_UART_OK) && !temporarily_disabled) {
-        /* 使能状态下写 A/B 失败时，尽力断开不确定通道。 */
-        if (bus->config.manage_enable && bus->enabled) {
-            restore_status = bus->port.ops->write_enable(
-                bus->port.ctx,
-                mult_uart_disable_level(bus));
-            if (restore_status == MULT_UART_OK) {
-                bus->enabled = false;
-            } else {
-                bus->state = MULT_UART_STATE_ERROR;
-                return restore_status;
-            }
-        } else if (!bus->config.manage_enable) {
-            bus->state = MULT_UART_STATE_ERROR;
-        }
-        return status;
-    }
+    mult_uart_write_select(a_high, b_high);
+    mult_uart_delay_us(MULT_UART_SWITCH_SETTLE_US);
 
     if (temporarily_disabled) {
-        restore_status = bus->port.ops->write_enable(
-            bus->port.ctx,
-            mult_uart_enable_level(bus));
-        if (restore_status == MULT_UART_OK) {
-            bus->enabled = true;
-        } else {
-            bus->enabled = false;
-            bus->current_channel =
-                (mult_uart_channel_t)MULT_UART_CHANNEL_INVALID;
-            bus->state = MULT_UART_STATE_ERROR;
-            return restore_status;
-        }
-    }
-
-    if (status != MULT_UART_OK) {
-        return status;
+        mult_uart_write_enable(true);
+        bus->enabled = true;
     }
 
     bus->current_channel = channel;
@@ -529,7 +454,7 @@ mult_uart_status_t mult_uart_start_tx_dma(
     /* 先标记 TX 活动，避免极短 DMA 在 start 返回前完成造成竞态。 */
     bus->tx_active = true;
     mult_uart_sync_active_state(bus);
-    status = bus->port.ops->start_tx_dma(bus->port.ctx, data, len);
+    status = mult_uart_start_tx(data, len);
     if ((status != MULT_UART_OK) &&
         bus->tx_active) {
         bus->tx_active = false;
@@ -582,10 +507,7 @@ mult_uart_status_t mult_uart_start_rx_dma(
     bus->rx_capacity = capacity;
     bus->rx_active = true;
     mult_uart_sync_active_state(bus);
-    status = bus->port.ops->start_rx_dma(
-        bus->port.ctx,
-        data,
-        capacity);
+    status = mult_uart_start_rx(data, capacity);
     if ((status != MULT_UART_OK) &&
         bus->rx_active) {
         bus->rx_active = false;
@@ -628,7 +550,7 @@ mult_uart_status_t mult_uart_abort(mult_uart_bus_t *bus)
     bus->rx_capacity = 0U;
     bus->current_channel =
         (mult_uart_channel_t)MULT_UART_CHANNEL_INVALID;
-    status = bus->port.ops->abort_dma(bus->port.ctx);
+    status = mult_uart_abort_io();
     bus->aborting = false;
     if (status == MULT_UART_OK) {
         bus->state = MULT_UART_STATE_IDLE;
@@ -731,17 +653,47 @@ void mult_uart_on_error_isr(
         port_error);
 }
 
+bool mult_uart_handle_tx(
+    mult_uart_bus_t *bus,
+    UART_HandleTypeDef *huart)
+{
+    if ((bus == NULL) || (huart != &huart7)) return false;
+    mult_uart_on_tx_complete_isr(bus);
+    return true;
+}
+
+bool mult_uart_handle_rx(
+    mult_uart_bus_t *bus,
+    UART_HandleTypeDef *huart,
+    uint16_t rx_len)
+{
+    if ((bus == NULL) || (huart != &huart7)) return false;
+    mult_uart_on_rx_complete_isr(bus, (size_t)rx_len);
+    return true;
+}
+
+bool mult_uart_handle_error(
+    mult_uart_bus_t *bus,
+    UART_HandleTypeDef *huart)
+{
+    if ((bus == NULL) || (huart != &huart7)) return false;
+#if !LICANG_RELEASE_MINIMAL
+    bus->last_uart_error = huart->ErrorCode;
+    bus->uart_error_count++;
+#endif
+    mult_uart_on_error_isr(bus, huart->ErrorCode);
+    return true;
+}
+
 /**
  * @brief 在无在途 DMA 时反初始化总线。
  * @param bus 总线对象。
  * @return 反初始化结果。
  * @note managed EN 若仍使能，会先物理断开；失败时保留对象供诊断/恢复。
  */
-#if MULT_UART_CORE_TEST_API_ENABLE
+#if MULT_UART_BSP_TEST_API_ENABLE
 mult_uart_status_t mult_uart_deinit(mult_uart_bus_t *bus)
 {
-    mult_uart_status_t status;
-
     if (bus == NULL) {
         return MULT_UART_ERR_PARAM;
     }
@@ -760,17 +712,7 @@ mult_uart_status_t mult_uart_deinit(mult_uart_bus_t *bus)
         return MULT_UART_ERR_STATE;
     }
 
-    if (bus->config.manage_enable && bus->enabled) {
-        status = bus->port.ops->write_enable(
-            bus->port.ctx,
-            mult_uart_disable_level(bus));
-        if (status != MULT_UART_OK) {
-            bus->current_channel =
-                (mult_uart_channel_t)MULT_UART_CHANNEL_INVALID;
-            bus->state = MULT_UART_STATE_ERROR;
-            return status;
-        }
-    }
+    if (bus->enabled) mult_uart_write_enable(false);
 
     mult_uart_reset_bus(bus);
     return MULT_UART_OK;

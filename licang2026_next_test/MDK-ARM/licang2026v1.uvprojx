@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F750xx,RTT_USE_ASM=0,LICANG_RELEASE_MINIMAL=1</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../02_Service/lsc16;../04_Bsp/lsc16;../01_App/mult_uart_device;../02_Service/mult_uart;../03_Middleware/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../01_App/ic_card_device;../02_Service/ic_card;../03_Middleware/ic_card;../04_Bsp/ic_card;../01_App/zdt_turntable_device;../02_Service/zdt_turntable;../03_Middleware/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/zdt_turntable;../05_Test/common;../05_Test;../05_Test/mult_uart;../05_Test/ic_card;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/04_Bsp/ble;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
+              <IncludePath>../Core/Inc;../02_Service/lsc16;../04_Bsp/lsc16;../01_App/mult_uart_device;../02_Service/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../01_App/ic_card_device;../02_Service/ic_card;../03_Middleware/ic_card;../04_Bsp/ic_card;../01_App/zdt_turntable_device;../02_Service/zdt_turntable;../03_Middleware/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/zdt_turntable;../05_Test/common;../05_Test;../05_Test/ic_card;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/04_Bsp/ble;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -1624,37 +1624,17 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>03_Middleware/mult_uart</GroupName>
-          <Files>
-            <File>
-              <FileName>mult_uart_core.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../03_Middleware/mult_uart/mult_uart_core.c</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_core.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../03_Middleware/mult_uart/mult_uart_core.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
           <GroupName>04_Bsp/mult_uart</GroupName>
           <Files>
             <File>
-              <FileName>mult_uart_stm32_hal.c</FileName>
+              <FileName>mux_bsp.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../04_Bsp/mult_uart/mult_uart_stm32_hal.c</FilePath>
+              <FilePath>../04_Bsp/mult_uart/mux_bsp.c</FilePath>
             </File>
             <File>
-              <FileName>mult_uart_stm32_hal.h</FileName>
+              <FileName>mux_bsp.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../04_Bsp/mult_uart/mult_uart_stm32_hal.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_board_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../04_Bsp/mult_uart/mult_uart_board_config.h</FilePath>
+              <FilePath>../04_Bsp/mult_uart/mux_bsp.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -1802,46 +1782,6 @@
               <FileName>uart_dispatch.h</FileName>
               <FileType>5</FileType>
               <FilePath>../04_Bsp/uart_dispatch/uart_dispatch.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>05_Test/mult_uart</GroupName>
-          <Files>
-            <File>
-              <FileName>test_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/test_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_test_protocol.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_test_protocol.c</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_test_protocol.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_test_protocol.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_baremetal_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_baremetal_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_baremetal_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_baremetal_test.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_freertos_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_freertos_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_freertos_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_freertos_test.h</FilePath>
             </File>
           </Files>
         </Group>

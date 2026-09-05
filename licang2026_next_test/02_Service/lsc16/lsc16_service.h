@@ -17,7 +17,7 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "lsc16_core.h"
+#include "arm_bsp.h"
 
 #define LSC16_SERVICE_QUEUE_DEPTH       4U
 

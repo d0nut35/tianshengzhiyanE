@@ -8,7 +8,6 @@
 #include <string.h>
 
 #include "cmsis_os.h"
-#include "lsc16_stm32_hal.h"
 #include "uart_dispatch.h"
 
 #define LSC16_OS_FLAG_REQUEST           (1UL << 0)
@@ -19,8 +18,6 @@
 struct lsc16_service_os {
     bool initialized;
     lsc16_t device;
-    lsc16_port_t port;
-    lsc16_stm32_hal_t adapter;
     lsc16_service_t service;
     osMessageQueueId_t request_queue;
     osThreadId_t worker_thread;
@@ -73,7 +70,7 @@ static void lsc16_os_notify_worker(void *user_ctx)
 }
 
 /**
- * @brief 把TX完成事件转交给UART8 HAL适配器。
+ * @brief 把TX完成事件转交给机械臂BSP。
  * @param user_ctx OS适配上下文。
  * @param huart 产生事件的UART句柄。
  * @return 事件属于UART8时返回true。
@@ -81,13 +78,11 @@ static void lsc16_os_notify_worker(void *user_ctx)
 static bool lsc16_os_dispatch_tx(void *user_ctx, UART_HandleTypeDef *huart)
 {
     lsc16_service_os_t *ctx = (lsc16_service_os_t *)user_ctx;
-    return (ctx != NULL) && lsc16_stm32_hal_handle_tx_complete(
-        &ctx->adapter,
-        huart);
+    return (ctx != NULL) && lsc16_handle_tx_complete(&ctx->device, huart);
 }
 
 /**
- * @brief 把ReceiveToIdle事件转交给UART8 HAL适配器。
+ * @brief 把ReceiveToIdle事件转交给机械臂BSP。
  * @param user_ctx OS适配上下文。
  * @param huart 产生事件的UART句柄。
  * @param rx_len 本次DMA有效字节数。
@@ -99,14 +94,12 @@ static bool lsc16_os_dispatch_rx(
     uint16_t rx_len)
 {
     lsc16_service_os_t *ctx = (lsc16_service_os_t *)user_ctx;
-    return (ctx != NULL) && lsc16_stm32_hal_handle_rx_event(
-        &ctx->adapter,
-        huart,
-        rx_len);
+    return (ctx != NULL) &&
+        lsc16_handle_rx_event(&ctx->device, huart, rx_len);
 }
 
 /**
- * @brief 把UART错误事件转交给UART8 HAL适配器。
+ * @brief 把UART错误事件转交给机械臂BSP。
  * @param user_ctx OS适配上下文。
  * @param huart 产生错误的UART句柄。
  * @return 事件属于UART8时返回true。
@@ -114,9 +107,7 @@ static bool lsc16_os_dispatch_rx(
 static bool lsc16_os_dispatch_error(void *user_ctx, UART_HandleTypeDef *huart)
 {
     lsc16_service_os_t *ctx = (lsc16_service_os_t *)user_ctx;
-    return (ctx != NULL) && lsc16_stm32_hal_handle_error(
-        &ctx->adapter,
-        huart);
+    return (ctx != NULL) && lsc16_handle_error(&ctx->device, huart);
 }
 
 /**
@@ -188,7 +179,7 @@ static void lsc16_os_worker_entry(void *argument)
 }
 
 /**
- * @brief 装配UART8 HAL适配、公共路由、Service、队列和worker。
+ * @brief 装配机械臂BSP、公共路由、Service、队列和worker。
  * @param report_cb 控制板主动回报回调，允许为NULL。
  * @param report_ctx 原样传给report_cb的上下文。
  * @return 全部资源建立成功返回LSC16_OK，否则回滚并返回错误。
@@ -198,7 +189,6 @@ lsc16_status_t lsc16_service_os_init(
     void *report_ctx)
 {
     lsc16_service_os_t *ctx = &g_lsc16_service_os;
-    lsc16_stm32_hal_config_t hal_config;
     lsc16_service_config_t service_config;
     uart_dispatch_handler_t handler = {0};
     lsc16_status_t status;
@@ -216,17 +206,7 @@ lsc16_status_t lsc16_service_os_init(
         return LSC16_ERR_IO;
     }
 
-    lsc16_stm32_hal_make_uart8_config(&hal_config);
-    status = lsc16_stm32_hal_bind(
-        &ctx->adapter,
-        &ctx->device,
-        &hal_config,
-        &ctx->port);
-    if (status != LSC16_OK) {
-        lsc16_os_rollback(ctx);
-        return status;
-    }
-    status = lsc16_init(&ctx->device, &ctx->port);
+    status = lsc16_init(&ctx->device);
     if (status != LSC16_OK) {
         lsc16_os_rollback(ctx);
         return status;

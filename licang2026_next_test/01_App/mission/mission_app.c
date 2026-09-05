@@ -707,7 +707,6 @@ static bool mission_prepare_zdt(mission_context_t *ctx)
 static void mission_handle_vision(mission_context_t *ctx)
 {
     nano_vision_status_t status;
-    nano_vision_frame_t frame;
     nano_vision_session_t session;
     nano_vision_event_t event;
     nano_vision_event_ack_t ack;
@@ -736,11 +735,9 @@ static void mission_handle_vision(mission_context_t *ctx)
     if (ctx->vision.phase == MISSION_VISION_STOPPING) {
         uint16_t stopped_session = 0U;
 
-        status = nano_vision_decode_frame(
-            ctx->vision.mail_data, ctx->vision.mail_len, &frame);
+        status = nano_vision_decode_session_stopped(
+            ctx->vision.mail_data, ctx->vision.mail_len, &stopped_session);
         if ((status != NANO_VISION_OK) ||
-            (nano_vision_parse_session_stopped(
-                 &frame, &stopped_session) != NANO_VISION_OK) ||
             (stopped_session != ctx->vision.session_id)) {
             mission_fail(ctx, MISSION_FAULT_VISION);
             return;
@@ -752,11 +749,10 @@ static void mission_handle_vision(mission_context_t *ctx)
         return;
     }
     if (ctx->vision.phase == MISSION_VISION_STARTING) {
-        status = nano_vision_decode_frame(
-            ctx->vision.mail_data, ctx->vision.mail_len, &frame);
+        status = nano_vision_decode_session_ready(
+            ctx->vision.mail_data, ctx->vision.mail_len, &session);
         if ((status != NANO_VISION_OK) ||
-            (nano_vision_parse_session_ready(&frame, &session) !=
-             NANO_VISION_OK) || (session.session_id != ctx->vision.session_id) ||
+            (session.session_id != ctx->vision.session_id) ||
             (session.scene != ctx->vision.scene) ||
             (session.target_color != ((ctx->color == MISSION_COLOR_RED) ?
                 NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE))) {
@@ -786,10 +782,9 @@ static void mission_handle_vision(mission_context_t *ctx)
         return;
     }
     if (ctx->vision.phase != MISSION_VISION_LISTENING) return;
-    status = nano_vision_decode_frame(
-        ctx->vision.mail_data, ctx->vision.mail_len, &frame);
+    status = nano_vision_decode_event(
+        ctx->vision.mail_data, ctx->vision.mail_len, &event);
     if ((status != NANO_VISION_OK) ||
-        (nano_vision_parse_event(&frame, &event) != NANO_VISION_OK) ||
         (event.session_id != ctx->vision.session_id) ||
         (event.observation.scene != ctx->vision.scene) ||
         (event.observation.status != NANO_VISION_OBS_VALID) ||

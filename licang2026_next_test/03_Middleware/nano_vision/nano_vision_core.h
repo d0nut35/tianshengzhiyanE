@@ -243,6 +243,24 @@ nano_vision_status_t nano_vision_decode_frame(
     size_t len,
     nano_vision_frame_t *frame);
 
+/** 正式会话路径直接校验并解析READY，避免复制通用frame载荷。 */
+nano_vision_status_t nano_vision_decode_session_ready(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_session_t *session);
+
+/** 正式会话路径直接校验并解析STOPPED。 */
+nano_vision_status_t nano_vision_decode_session_stopped(
+    const uint8_t *data,
+    size_t len,
+    uint16_t *session_id);
+
+/** 正式会话路径直接校验并解析视觉事件。 */
+nano_vision_status_t nano_vision_decode_event(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_event_t *event);
+
 nano_vision_status_t nano_vision_parse_poll(
     const nano_vision_frame_t *frame,
     nano_vision_poll_t *poll);

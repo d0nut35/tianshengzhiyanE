@@ -11,8 +11,6 @@
 #include <string.h>
 
 #include "debug_uart1.h"
-#include "ic_ball_rule_2026.h"
-#include "ic_card_device_config.h"
 #include "ic_card_service.h"
 #include "ic_card_test_common.h"
 #include "ic_card_test_config.h"
@@ -123,18 +121,18 @@ static void ic_card_baremetal_read_done(
     const ic_card_response_t *response)
 {
     ic_card_baremetal_context_t *test = (ic_card_baremetal_context_t *)ctx;
-    ic_card_ball_result_t result;
+    ic_result_t result;
+    uint8_t block[IC_CARD_BLOCK_DATA_SIZE];
     size_t text_len;
 
     (void)request_id;
     test->read_pending = false;
     if ((status == IC_CARD_OK) && (response != NULL)) {
         (void)memset(&result, 0, sizeof(result));
-        result.response = *response;
         status = ic_block_data(
-            response, IC_CARD_DEVICE_ADDRESS, result.block_data);
+            response, IC_ADDRESS, block);
         if (status == IC_CARD_OK) {
-            if (!ic_ball_rule_2026_decode(result.block_data, &result.ball)) {
+            if (!ic_decode_ball(block, &result.ball)) {
                 status = IC_CARD_ERR_PROTOCOL;
             }
         }
@@ -276,9 +274,9 @@ void ic_card_baremetal_test_process(void)
     (void)memset(&request, 0, sizeof(request));
     request.request_id = 1U;
     request.type = IC_CARD_REQUEST_READ_BLOCK;
-    request.address = IC_CARD_DEVICE_ADDRESS;
-    request.timeout_ms = IC_CARD_DEVICE_READ_TIMEOUT_MS;
-    request.data.read_block.block = IC_CARD_DEVICE_DATA_BLOCK;
+    request.address = IC_ADDRESS;
+    request.timeout_ms = IC_READ_TIMEOUT_MS;
+    request.data.read_block.block = IC_DATA_BLOCK;
     request.data.read_block.led_beep_prompt =
         (IC_CARD_TEST_LED_BEEP_PROMPT != 0U);
     request.done_cb = ic_card_baremetal_read_done;

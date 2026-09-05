@@ -154,12 +154,11 @@ static bool ic_card_test_append_hex(
  * @return 文本有效长度；参数错误或容量不足返回0。
  */
 size_t ic_card_test_format_success(
-    const ic_card_ball_result_t *result,
+    const ic_result_t *result,
     char *text,
     size_t capacity)
 {
     size_t used = 0U;
-    uint8_t i;
 
     if ((result == NULL) || (text == NULL) || (capacity == 0U)) {
         return 0U;
@@ -172,27 +171,9 @@ size_t ic_card_test_format_success(
             text, capacity, &used, (char)('0' + result->ball.row)) ||
         !ic_card_test_append_text(text, capacity, &used, " COL=") ||
         !ic_card_test_append_char(
-            text, capacity, &used, (char)('0' + result->ball.column)) ||
-        !ic_card_test_append_text(text, capacity, &used, " DATA=")) {
+            text, capacity, &used, (char)('0' + result->ball.column))) {
         return 0U;
     }
-#if IC_CARD_DEVICE_RAW_RESULT_ENABLE
-    for (i = 0U; i < IC_CARD_BLOCK_DATA_SIZE; ++i) {
-        if ((i > 0U) &&
-            !ic_card_test_append_char(text, capacity, &used, ' ')) {
-            return 0U;
-        }
-        if (!ic_card_test_append_hex(
-            text, capacity, &used, result->block_data[i])) {
-            return 0U;
-        }
-    }
-#else
-    (void)i;
-    if (!ic_card_test_append_text(text, capacity, &used, "DISABLED")) {
-        return 0U;
-    }
-#endif
     if (!ic_card_test_append_text(text, capacity, &used, "\r\n")) {
         return 0U;
     }

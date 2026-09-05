@@ -49,7 +49,7 @@
 #endif
 
 #if IC_CARD_FREERTOS_TEST_ENABLED
-#include "ic_card_device.h"
+#include "ic_card_service.h"
 #include "ic_card_freertos_test.h"
 #endif
 
@@ -127,7 +127,7 @@ void MX_FREERTOS_Init(void) {
   }
 #elif IC_CARD_FREERTOS_TEST_ENABLED
   /* IC卡直连测试独占UART7，因此不能同时初始化复用总线的HAL adapter。 */
-  if (ic_card_device_init() != IC_CARD_OK)
+  if (ic_service_init() != IC_CARD_OK)
   {
     Error_Handler();
   }

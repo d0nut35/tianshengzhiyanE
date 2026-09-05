@@ -14,7 +14,7 @@
 #include "ball_manifest_core.h"
 #include "cmsis_os.h"
 #include "cmsis_compiler.h"
-#include "ic_card_device.h"
+#include "ic_card_service.h"
 #include "task.h"
 
 #include "chassis_mission_link.h"
@@ -68,12 +68,6 @@ typedef enum {
 
 typedef struct {
     bool active;
-    uint8_t tx[IC_CARD_FRAME_SIZE_MAX];
-    ic_card_request_t request;
-} mission_ic_transport_t;
-
-typedef struct {
-    bool active;
     zdt_turntable_request_t request;
 } mission_zdt_transport_t;
 
@@ -92,9 +86,8 @@ typedef struct {
 } mission_vision_t;
 
 typedef struct {
-    mission_ic_transport_t ic_transport;
     volatile ic_card_status_t ic_status;
-    ic_card_ball_info_t ic_ball;
+    ic_ball_t ic_ball;
     mission_zdt_transport_t zdt_transport;
     zdt_turntable_device_t zdt;
     volatile zdt_turntable_status_t zdt_status;
@@ -157,7 +150,7 @@ static void mission_ic_done(
     void *user_ctx,
     uint32_t request_id,
     ic_card_status_t status,
-    const ic_card_ball_result_t *result);
+    const ic_result_t *result);
 static void mission_zdt_done(
     void *user_ctx,
     uint32_t request_id,
@@ -221,19 +214,6 @@ static nano_vision_status_t mission_map_vision_status(mult_uart_status_t status)
     return NANO_VISION_ERR_IO;
 }
 
-/** 把复用串口事务结果转换为IC卡协议层状态。 */
-static ic_card_status_t mission_map_ic_status(mult_uart_status_t status)
-{
-    if (status == MULT_UART_OK) return IC_CARD_OK;
-    if (status == MULT_UART_ERR_TIMEOUT) return IC_CARD_ERR_TIMEOUT;
-    if (status == MULT_UART_ERR_BUSY) return IC_CARD_ERR_BUSY;
-    if (status == MULT_UART_ERR_QUEUE_FULL) return IC_CARD_ERR_QUEUE_FULL;
-    if ((status == MULT_UART_ERR_PARAM) || (status == MULT_UART_ERR_OVERFLOW)) {
-        return IC_CARD_ERR_PARAM;
-    }
-    return IC_CARD_ERR_IO;
-}
-
 /** 把复用串口事务结果转换为ZDT协议层状态。 */
 static zdt_turntable_status_t mission_map_zdt_status(mult_uart_status_t status)
 {
@@ -247,85 +227,6 @@ static zdt_turntable_status_t mission_map_zdt_status(mult_uart_status_t status)
         return ZDT_TURNTABLE_ERR_PARAM;
     }
     return ZDT_TURNTABLE_ERR_IO;
-}
-
-/** IC协议请求编码后直接交给UART7复用Service。 */
-static void mission_ic_transfer_done(
-    void *user_ctx,
-    const mux_completion_t *completion)
-{
-    mission_ic_transport_t *transport = (mission_ic_transport_t *)user_ctx;
-    ic_card_request_t request;
-    ic_card_response_t response;
-    ic_card_status_t status;
-
-    if ((transport == NULL) || !transport->active || (completion == NULL)) {
-        return;
-    }
-    request = transport->request;
-    transport->active = false;
-    status = mission_map_ic_status(completion->status);
-    if (status == IC_CARD_OK) {
-        status = ic_parse_frame(
-            completion->rx_data, completion->rx_len, &response);
-        if ((status == IC_CARD_OK) &&
-            (response.command != IC_CARD_CMD_READ_BLOCK_KEY_A)) {
-            status = IC_CARD_ERR_PROTOCOL;
-        }
-        if ((status == IC_CARD_OK) && (response.device_status != 0U)) {
-            status = IC_CARD_ERR_CARD;
-        }
-    }
-    if (request.done_cb != NULL) {
-        request.done_cb(
-            request.user_ctx,
-            request.request_id,
-            status,
-            ((status == IC_CARD_OK) || (status == IC_CARD_ERR_CARD))
-                ? &response : NULL);
-    }
-}
-
-static ic_card_status_t mission_ic_submit(
-    void *submit_ctx,
-    const ic_card_request_t *request,
-    uint32_t queue_timeout_ms)
-{
-    mission_ic_transport_t *transport = (mission_ic_transport_t *)submit_ctx;
-    mux_transfer_t transfer;
-    mult_uart_status_t mult_status;
-    ic_card_status_t status;
-    size_t tx_len = 0U;
-
-    if ((transport == NULL) || (request == NULL)) return IC_CARD_ERR_PARAM;
-    if (transport->active) return IC_CARD_ERR_BUSY;
-    if (request->type != IC_CARD_REQUEST_READ_BLOCK) {
-        return IC_CARD_ERR_UNSUPPORTED;
-    }
-    status = ic_read_frame(
-        request->address,
-        request->data.read_block.block,
-        request->data.read_block.led_beep_prompt,
-        transport->tx,
-        sizeof(transport->tx),
-        &tx_len);
-    if (status != IC_CARD_OK) return status;
-
-    transport->request = *request;
-    transport->active = true;
-    (void)memset(&transfer, 0, sizeof(transfer));
-    transfer.device = MISSION_IC_DEVICE_ID;
-    transfer.operation = MULT_UART_OP_WRITE_READ;
-    transfer.tx_data = transport->tx;
-    transfer.tx_len = tx_len;
-    transfer.rx_capacity = IC_CARD_FRAME_SIZE_MAX;
-    transfer.io_timeout_ms = request->timeout_ms;
-    transfer.queue_timeout_ms = queue_timeout_ms;
-    transfer.done_cb = mission_ic_transfer_done;
-    transfer.user_ctx = transport;
-    mult_status = mux_submit(&transfer);
-    if (mult_status != MULT_UART_OK) transport->active = false;
-    return mission_map_ic_status(mult_status);
 }
 
 /** ZDT生成的完整帧直接通过UART7复用Service发送并解析。 */
@@ -459,7 +360,7 @@ static void mission_ic_done(
     void *user_ctx,
     uint32_t request_id,
     ic_card_status_t status,
-    const ic_card_ball_result_t *result)
+    const ic_result_t *result)
 {
     mission_context_t *ctx = (mission_context_t *)user_ctx;
 
@@ -794,13 +695,13 @@ static bool mission_read_ball(
     for (attempt = 0U; attempt < MISSION_IC_MAX_ATTEMPTS; ++attempt) {
         (void)osThreadFlagsClear(MISSION_FLAG_IC_DONE);
         ctx->storage.ic_status = IC_CARD_ERR_BUSY;
-        if ((ic_card_device_read_competition_ball(
+        if ((ic_read(
                  MISSION_IC_OPERATION_PROMPT != 0U,
                  mission_ic_done,
                  ctx) == IC_CARD_OK) &&
             mission_wait_device(
                 MISSION_FLAG_IC_DONE,
-                IC_CARD_DEVICE_READ_TIMEOUT_MS + 100U) &&
+                IC_READ_TIMEOUT_MS + 100U) &&
             (ctx->storage.ic_status == IC_CARD_OK)) {
             read_ok = true;
             break;
@@ -1512,8 +1413,7 @@ mission_app_status_t mission_app_init(void)
     }
     (void)memset(ctx, 0, sizeof(*ctx));
     ball_manifest_init(&ctx->manifest);
-    if (ic_card_device_init_with_transport(
-            mission_ic_submit, &ctx->storage.ic_transport) != IC_CARD_OK) {
+    if (ic_init() != IC_CARD_OK) {
         return MISSION_APP_ERR_IO;
     }
     {

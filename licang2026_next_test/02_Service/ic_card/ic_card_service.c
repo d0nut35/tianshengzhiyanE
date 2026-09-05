@@ -7,10 +7,154 @@
 
 #include <string.h>
 
+#include "mux_service.h"
+
 #if !LICANG_RELEASE_MINIMAL
 #include "cmsis_os.h"
 #include "uart_dispatch.h"
 #endif
+
+typedef struct {
+    bool initialized;
+    bool active;
+    uint32_t next_request_id;
+    uint32_t request_id;
+    ic_done_fn_t done_cb;
+    void *user_ctx;
+    uint8_t tx[IC_CARD_COMMAND_FRAME_SIZE];
+} ic_context_t;
+
+static ic_context_t g_ic;
+
+static ic_card_status_t ic_map_mux(mult_uart_status_t status)
+{
+    if (status == MULT_UART_OK) return IC_CARD_OK;
+    if (status == MULT_UART_ERR_TIMEOUT) return IC_CARD_ERR_TIMEOUT;
+    if (status == MULT_UART_ERR_BUSY) return IC_CARD_ERR_BUSY;
+    if (status == MULT_UART_ERR_QUEUE_FULL) return IC_CARD_ERR_QUEUE_FULL;
+    if ((status == MULT_UART_ERR_PARAM) || (status == MULT_UART_ERR_OVERFLOW)) {
+        return IC_CARD_ERR_PARAM;
+    }
+    return IC_CARD_ERR_IO;
+}
+
+bool ic_decode_ball(
+    const uint8_t data[IC_CARD_BLOCK_DATA_SIZE],
+    ic_ball_t *ball)
+{
+    uint8_t i;
+    uint8_t row;
+    uint8_t column;
+
+    if ((data == NULL) || (ball == NULL)) return false;
+    (void)memset(ball, 0, sizeof(*ball));
+    for (i = 1U; i < IC_CARD_BLOCK_DATA_SIZE; ++i) {
+        if (data[i] != data[0]) return false;
+    }
+    row = (uint8_t)(data[0] >> 4);
+    column = (uint8_t)(data[0] & 0x0FU);
+    if ((row < 1U) || (row > 3U) || (column < 1U) || (column > 4U)) {
+        return false;
+    }
+    ball->kind = IC_BALL_TARGET;
+    ball->code = data[0];
+    ball->row = row;
+    ball->column = column;
+    return true;
+}
+
+static void ic_mux_done(void *user_ctx, const mux_completion_t *completion)
+{
+    ic_context_t *ctx = (ic_context_t *)user_ctx;
+    ic_card_response_t response;
+    ic_result_t result;
+    uint8_t block[IC_CARD_BLOCK_DATA_SIZE];
+    ic_done_fn_t done_cb;
+    void *done_ctx;
+    uint32_t request_id;
+    ic_card_status_t status;
+
+    if ((ctx == NULL) || !ctx->active || (completion == NULL)) return;
+    done_cb = ctx->done_cb;
+    done_ctx = ctx->user_ctx;
+    request_id = ctx->request_id;
+    ctx->active = false;
+    ctx->done_cb = NULL;
+    ctx->user_ctx = NULL;
+
+    status = ic_map_mux(completion->status);
+    if (status == IC_CARD_OK) {
+        status = ic_parse_frame(
+            completion->rx_data, completion->rx_len, &response);
+    }
+    if (status == IC_CARD_OK) {
+        status = ic_block_data(&response, IC_ADDRESS, block);
+    }
+    if ((status == IC_CARD_OK) && !ic_decode_ball(block, &result.ball)) {
+        status = IC_CARD_ERR_PROTOCOL;
+    }
+    if (done_cb != NULL) {
+        done_cb(
+            done_ctx,
+            request_id,
+            status,
+            (status == IC_CARD_OK) ? &result : NULL);
+    }
+}
+
+ic_card_status_t ic_init(void)
+{
+    if (g_ic.initialized) return IC_CARD_ERR_STATE;
+    (void)memset(&g_ic, 0, sizeof(g_ic));
+    g_ic.initialized = true;
+    return IC_CARD_OK;
+}
+
+ic_card_status_t ic_read(
+    bool led_beep_prompt,
+    ic_done_fn_t done_cb,
+    void *user_ctx)
+{
+    mux_transfer_t transfer;
+    mult_uart_status_t mux_status;
+    ic_card_status_t status;
+    size_t tx_len;
+
+    if (!g_ic.initialized) return IC_CARD_ERR_NOT_INIT;
+    if (g_ic.active) return IC_CARD_ERR_BUSY;
+    status = ic_read_frame(
+        IC_ADDRESS,
+        IC_DATA_BLOCK,
+        led_beep_prompt,
+        g_ic.tx,
+        sizeof(g_ic.tx),
+        &tx_len);
+    if (status != IC_CARD_OK) return status;
+
+    ++g_ic.next_request_id;
+    if (g_ic.next_request_id == 0U) ++g_ic.next_request_id;
+    g_ic.request_id = g_ic.next_request_id;
+    g_ic.done_cb = done_cb;
+    g_ic.user_ctx = user_ctx;
+    g_ic.active = true;
+
+    (void)memset(&transfer, 0, sizeof(transfer));
+    transfer.device = MUX_DEVICE_1;
+    transfer.operation = MULT_UART_OP_WRITE_READ;
+    transfer.tx_data = g_ic.tx;
+    transfer.tx_len = tx_len;
+    transfer.rx_capacity = IC_CARD_FRAME_SIZE_MAX;
+    transfer.io_timeout_ms = IC_READ_TIMEOUT_MS;
+    transfer.done_cb = ic_mux_done;
+    transfer.user_ctx = &g_ic;
+    mux_status = mux_submit(&transfer);
+    if (mux_status != MULT_UART_OK) {
+        g_ic.active = false;
+        g_ic.done_cb = NULL;
+        g_ic.user_ctx = NULL;
+    }
+    return ic_map_mux(mux_status);
+}
 
 /**
  * @brief 判断32位毫秒期限是否已经到达。

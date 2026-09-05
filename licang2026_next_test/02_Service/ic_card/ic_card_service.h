@@ -25,6 +25,9 @@ extern "C" {
 #define IC_CARD_SERVICE_DIAGNOSTICS_ENABLE (!LICANG_RELEASE_MINIMAL)
 
 #define IC_CARD_SERVICE_QUEUE_DEPTH 4U
+#define IC_ADDRESS                  0x20U
+#define IC_DATA_BLOCK               0x01U
+#define IC_READ_TIMEOUT_MS          500U
 
 typedef enum {
     IC_CARD_REQUEST_READ_BLOCK = 0,
@@ -115,6 +118,42 @@ typedef struct {
     ic_card_service_stats_t stats;
 #endif
 } ic_card_service_t;
+
+typedef enum {
+    IC_BALL_INVALID = 0,
+    IC_BALL_TARGET,
+} ic_ball_kind_t;
+
+typedef struct {
+    ic_ball_kind_t kind;
+    uint8_t code;
+    uint8_t row;
+    uint8_t column;
+} ic_ball_t;
+
+typedef struct {
+    ic_ball_t ball;
+} ic_result_t;
+
+typedef void (*ic_done_fn_t)(
+    void *user_ctx,
+    uint32_t request_id,
+    ic_card_status_t status,
+    const ic_result_t *result);
+
+/** 按2026规则解析16字节球码；失败时清空ball。 */
+bool ic_decode_ball(
+    const uint8_t data[IC_CARD_BLOCK_DATA_SIZE],
+    ic_ball_t *ball);
+
+/** 初始化正式Mission使用的IC通道1读球状态。 */
+ic_card_status_t ic_init(void);
+
+/** 异步读取并解析一个比赛球；完成回调在mux worker任务中执行。 */
+ic_card_status_t ic_read(
+    bool led_beep_prompt,
+    ic_done_fn_t done_cb,
+    void *user_ctx);
 
 /**
  * @brief 初始化Service并把Core ISR轻量通知绑定到本对象。

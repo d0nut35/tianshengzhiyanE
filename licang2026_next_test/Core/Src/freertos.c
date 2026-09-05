@@ -43,7 +43,7 @@
 #include "turntable_grasp_lite_freertos_test.h"
 #endif
 
-#include "lsc16_device.h"
+#include "arm.h"
 
 #if LSC16_FREERTOS_TEST_ENABLED
 #include "lsc16_freertos_test.h"
@@ -124,10 +124,10 @@ void MX_FREERTOS_Init(void) {
   }
 
   /*
-   * UART8舵控板与UART7复用器物理独立。综合测试也需要LSC16 Device，
+   * UART8舵控板与UART7复用器物理独立。机械臂Service在此完成装配，
    * 以验证动作组10(安全姿态)、11(识别姿态)和12(抓取放置)的单球闭环。
    */
-  if (lsc16_device_init() != LSC16_OK)
+  if (arm_init() != LSC16_OK)
   {
     Error_Handler();
   }

@@ -18,7 +18,7 @@
 #include "task.h"
 
 #include "chassis_mission_link.h"
-#include "lsc16_device.h"
+#include "arm.h"
 #include "mission_config.h"
 #include "mult_uart_device.h"
 #include "nano_vision_core.h"
@@ -563,7 +563,7 @@ static bool mission_start_arm(
     mission_state_t wait_state)
 {
     ctx->active_arm_group = action_group;
-    if (lsc16_device_run_action_group(
+    if (arm_run(
             action_group,
             1U,
             mission_arm_tx_done,
@@ -1544,12 +1544,12 @@ mission_app_status_t mission_app_init(void)
     if (!chassis_mission_link_bind_mission_task(ctx->task)) {
         return MISSION_APP_ERR_RESOURCE;
     }
-    if (lsc16_device_set_report_callback(mission_arm_report, ctx) != LSC16_OK) {
+    if (arm_on_report(mission_arm_report, ctx) != LSC16_OK) {
         return MISSION_APP_ERR_IO;
     }
     ctx->initialized = true;
     ctx->active_arm_group = MISSION_HOME_ACTION_GROUP;
-    if (lsc16_device_run_action_group(
+    if (arm_run(
             MISSION_HOME_ACTION_GROUP,
             1U,
             mission_arm_tx_done,

@@ -1,9 +1,9 @@
 /**
- * @file    lsc16_service.c
+ * @file    arm.c
  * @brief   机械臂CMSIS-RTOS2队列、worker和UART路由实现。
  */
 
-#include "lsc16_service.h"
+#include "arm.h"
 
 #include <stdbool.h>
 #include <string.h>
@@ -11,8 +11,44 @@
 #include "cmsis_os.h"
 #include "uart_dispatch.h"
 
-#define LSC16_SERVICE_FLAG_WORK         (1UL << 0)
-#define LSC16_SERVICE_WORKER_STACK      (512U * 4U)
+#define ARM_FLAG_WORK                   (1UL << 0)
+#define ARM_WORKER_STACK                (512U * 4U)
+
+typedef enum {
+    LSC16_REQUEST_MOVE_SERVOS = 0,
+    LSC16_REQUEST_RUN_ACTION_GROUP,
+    LSC16_REQUEST_STOP_ACTION_GROUP,
+    LSC16_REQUEST_SET_ACTION_SPEED,
+    LSC16_REQUEST_GET_BATTERY,
+} lsc16_request_type_t;
+
+typedef struct {
+    uint8_t count;
+    uint16_t move_time_ms;
+    lsc16_servo_target_t targets[LSC16_SERVO_COUNT_MAX];
+} lsc16_move_request_t;
+
+typedef struct {
+    uint8_t action_group;
+    uint16_t repeat_count;
+} lsc16_action_run_request_t;
+
+typedef struct {
+    uint8_t action_group;
+    uint16_t speed_percent;
+} lsc16_action_speed_request_t;
+
+typedef struct {
+    uint32_t request_id;
+    lsc16_request_type_t type;
+    union {
+        lsc16_move_request_t move;
+        lsc16_action_run_request_t action_run;
+        lsc16_action_speed_request_t action_speed;
+    } data;
+    arm_done_fn_t done_cb;
+    void *user_ctx;
+} lsc16_request_t;
 
 typedef struct {
     bool initialized;
@@ -21,20 +57,21 @@ typedef struct {
     lsc16_request_t active;
     osMessageQueueId_t queue;
     osThreadId_t worker;
-    lsc16_report_fn_t report_cb;
+    arm_report_fn_t report_cb;
     void *report_ctx;
+    uint32_t next_request_id;
     volatile uint32_t tx_sequence;
     volatile uint32_t error_sequence;
     uint32_t handled_tx_sequence;
     uint32_t handled_error_sequence;
-    lsc16_service_stats_t stats;
+    arm_stats_t stats;
 } lsc16_service_context_t;
 
 static lsc16_service_context_t g_lsc16_service;
 
 static const osThreadAttr_t g_lsc16_worker_attr = {
     .name = "lsc16Svc",
-    .stack_size = LSC16_SERVICE_WORKER_STACK,
+    .stack_size = ARM_WORKER_STACK,
     .priority = (osPriority_t)osPriorityNormal,
 };
 
@@ -78,7 +115,7 @@ static void lsc16_isr_notify(void *user_ctx, lsc16_isr_event_t event)
         ++ctx->error_sequence;
     }
     if (ctx->worker != NULL) {
-        (void)osThreadFlagsSet(ctx->worker, LSC16_SERVICE_FLAG_WORK);
+        (void)osThreadFlagsSet(ctx->worker, ARM_FLAG_WORK);
     }
 }
 
@@ -212,15 +249,13 @@ static void lsc16_worker_entry(void *argument)
     for (;;) {
         lsc16_process_service(ctx);
         (void)osThreadFlagsWait(
-            LSC16_SERVICE_FLAG_WORK,
+            ARM_FLAG_WORK,
             osFlagsWaitAny,
             osWaitForever);
     }
 }
 
-lsc16_status_t lsc16_service_init(
-    lsc16_report_fn_t report_cb,
-    void *report_ctx)
+lsc16_status_t arm_init(void)
 {
     lsc16_service_context_t *ctx = &g_lsc16_service;
     uart_dispatch_handler_t handler = {0};
@@ -231,10 +266,8 @@ lsc16_status_t lsc16_service_init(
         return LSC16_ERR_STATE;
     }
     (void)memset(ctx, 0, sizeof(*ctx));
-    ctx->report_cb = report_cb;
-    ctx->report_ctx = report_ctx;
     ctx->queue = osMessageQueueNew(
-        LSC16_SERVICE_QUEUE_DEPTH,
+        ARM_QUEUE_DEPTH,
         sizeof(lsc16_request_t),
         NULL);
     if (ctx->queue == NULL) {
@@ -263,7 +296,17 @@ lsc16_status_t lsc16_service_init(
     return LSC16_OK;
 }
 
-lsc16_status_t lsc16_service_submit(const lsc16_request_t *request)
+lsc16_status_t arm_on_report(arm_report_fn_t callback, void *user_ctx)
+{
+    if (!g_lsc16_service.initialized) {
+        return LSC16_ERR_NOT_INIT;
+    }
+    g_lsc16_service.report_cb = callback;
+    g_lsc16_service.report_ctx = user_ctx;
+    return LSC16_OK;
+}
+
+static lsc16_status_t arm_submit(lsc16_request_t *request)
 {
     lsc16_service_context_t *ctx = &g_lsc16_service;
     osStatus_t os_status;
@@ -275,6 +318,11 @@ lsc16_status_t lsc16_service_submit(const lsc16_request_t *request)
         ++ctx->stats.rejected;
         return LSC16_ERR_PARAM;
     }
+    ++ctx->next_request_id;
+    if (ctx->next_request_id == 0U) {
+        ++ctx->next_request_id;
+    }
+    request->request_id = ctx->next_request_id;
     os_status = osMessageQueuePut(
         ctx->queue,
         request,
@@ -287,11 +335,110 @@ lsc16_status_t lsc16_service_submit(const lsc16_request_t *request)
             : LSC16_ERR_IO;
     }
     ++ctx->stats.submitted;
-    (void)osThreadFlagsSet(ctx->worker, LSC16_SERVICE_FLAG_WORK);
+    (void)osThreadFlagsSet(ctx->worker, ARM_FLAG_WORK);
     return LSC16_OK;
 }
 
-lsc16_status_t lsc16_service_get_stats(lsc16_service_stats_t *stats)
+lsc16_status_t arm_move(
+    uint8_t servo_id,
+    uint16_t position,
+    uint16_t move_time_ms,
+    arm_done_fn_t done_cb,
+    void *user_ctx)
+{
+    lsc16_servo_target_t target = {servo_id, position};
+
+    return arm_move_all(
+        &target,
+        1U,
+        move_time_ms,
+        done_cb,
+        user_ctx);
+}
+
+lsc16_status_t arm_move_all(
+    const lsc16_servo_target_t *targets,
+    uint8_t servo_count,
+    uint16_t move_time_ms,
+    arm_done_fn_t done_cb,
+    void *user_ctx)
+{
+    lsc16_request_t request;
+
+    if ((targets == NULL) || (servo_count == 0U) ||
+        (servo_count > LSC16_SERVO_COUNT_MAX)) {
+        return LSC16_ERR_PARAM;
+    }
+    (void)memset(&request, 0, sizeof(request));
+    request.type = LSC16_REQUEST_MOVE_SERVOS;
+    request.data.move.count = servo_count;
+    request.data.move.move_time_ms = move_time_ms;
+    (void)memcpy(
+        request.data.move.targets,
+        targets,
+        (size_t)servo_count * sizeof(targets[0]));
+    request.done_cb = done_cb;
+    request.user_ctx = user_ctx;
+    return arm_submit(&request);
+}
+
+lsc16_status_t arm_run(
+    uint8_t action_group,
+    uint16_t repeat_count,
+    arm_done_fn_t done_cb,
+    void *user_ctx)
+{
+    lsc16_request_t request;
+
+    (void)memset(&request, 0, sizeof(request));
+    request.type = LSC16_REQUEST_RUN_ACTION_GROUP;
+    request.data.action_run.action_group = action_group;
+    request.data.action_run.repeat_count = repeat_count;
+    request.done_cb = done_cb;
+    request.user_ctx = user_ctx;
+    return arm_submit(&request);
+}
+
+lsc16_status_t arm_stop(arm_done_fn_t done_cb, void *user_ctx)
+{
+    lsc16_request_t request;
+
+    (void)memset(&request, 0, sizeof(request));
+    request.type = LSC16_REQUEST_STOP_ACTION_GROUP;
+    request.done_cb = done_cb;
+    request.user_ctx = user_ctx;
+    return arm_submit(&request);
+}
+
+lsc16_status_t arm_speed(
+    uint8_t action_group,
+    uint16_t speed_percent,
+    arm_done_fn_t done_cb,
+    void *user_ctx)
+{
+    lsc16_request_t request;
+
+    (void)memset(&request, 0, sizeof(request));
+    request.type = LSC16_REQUEST_SET_ACTION_SPEED;
+    request.data.action_speed.action_group = action_group;
+    request.data.action_speed.speed_percent = speed_percent;
+    request.done_cb = done_cb;
+    request.user_ctx = user_ctx;
+    return arm_submit(&request);
+}
+
+lsc16_status_t arm_battery(arm_done_fn_t done_cb, void *user_ctx)
+{
+    lsc16_request_t request;
+
+    (void)memset(&request, 0, sizeof(request));
+    request.type = LSC16_REQUEST_GET_BATTERY;
+    request.done_cb = done_cb;
+    request.user_ctx = user_ctx;
+    return arm_submit(&request);
+}
+
+lsc16_status_t arm_get_stats(arm_stats_t *stats)
 {
     if (stats == NULL) {
         return LSC16_ERR_PARAM;

@@ -26,7 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "mult_uart_device.h"
-#include "mult_uart_service_os.h"
+#include "mux_service.h"
 #include "test_config.h"
 #include "chassis_mission_link.h"
 #include "../01_App/mission/mission_app.h"
@@ -113,7 +113,7 @@ void MX_FREERTOS_Init(void) {
    * worker，不启动任何测试或业务demo。任务真正运行要等osKernelStart()。
    */
 #if !IC_CARD_FREERTOS_TEST_ENABLED && !ZDT_TURNTABLE_FREERTOS_TEST_ENABLED
-  if (mult_uart_service_os_init() != MULT_UART_OK)
+  if (mux_service_init() != MULT_UART_OK)
   {
     Error_Handler();
   }

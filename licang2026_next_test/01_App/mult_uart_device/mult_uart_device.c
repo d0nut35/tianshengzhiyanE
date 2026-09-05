@@ -12,7 +12,7 @@
 
 #include <string.h>
 
-#include "mult_uart_service_os.h"
+#include "mux_service.h"
 
 typedef struct {
     bool in_use;
@@ -315,7 +315,7 @@ mult_uart_status_t mult_uart_device_submit(
         (transfer->queue_timeout_ms != 0U) ?
             transfer->queue_timeout_ms : MULT_UART_DEVICE_QUEUE_TIMEOUT_MS;
 
-    status = mult_uart_service_os_submit(&request, queue_timeout_ms);
+    status = mux_service_submit(&request, queue_timeout_ms);
     if (status != MULT_UART_OK) {
         mult_uart_device_free_slot(slot);
 #if MULT_UART_DEVICE_DIAGNOSTICS_ENABLE

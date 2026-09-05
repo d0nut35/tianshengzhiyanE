@@ -19,7 +19,7 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-#include "mult_uart_service.h"
+#include "mux_service.h"
 
 #ifndef LICANG_RELEASE_MINIMAL
 #define LICANG_RELEASE_MINIMAL 0

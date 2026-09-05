@@ -20,7 +20,7 @@
 #include "chassis_mission_link.h"
 #include "arm.h"
 #include "mission_config.h"
-#include "mult_uart_device.h"
+#include "mux_service.h"
 #include "nano_vision_core.h"
 #include "gate.h"
 #include "zdt_turntable_device.h"
@@ -152,7 +152,7 @@ static void mission_arm_report(
     const lsc16_report_t *report);
 static void mission_vision_done(
     void *user_ctx,
-    const mult_uart_device_completion_t *completion);
+    const mux_completion_t *completion);
 static void mission_ic_done(
     void *user_ctx,
     uint32_t request_id,
@@ -249,10 +249,10 @@ static zdt_turntable_status_t mission_map_zdt_status(mult_uart_status_t status)
     return ZDT_TURNTABLE_ERR_IO;
 }
 
-/** IC Device只负责语义；这里把它的一笔请求直接交给UART7复用Device。 */
+/** IC协议请求编码后直接交给UART7复用Service。 */
 static void mission_ic_transfer_done(
     void *user_ctx,
-    const mult_uart_device_completion_t *completion)
+    const mux_completion_t *completion)
 {
     mission_ic_transport_t *transport = (mission_ic_transport_t *)user_ctx;
     ic_card_request_t request;
@@ -292,7 +292,7 @@ static ic_card_status_t mission_ic_submit(
     uint32_t queue_timeout_ms)
 {
     mission_ic_transport_t *transport = (mission_ic_transport_t *)submit_ctx;
-    mult_uart_device_transfer_t transfer;
+    mux_transfer_t transfer;
     mult_uart_status_t mult_status;
     ic_card_status_t status;
     size_t tx_len = 0U;
@@ -314,7 +314,7 @@ static ic_card_status_t mission_ic_submit(
     transport->request = *request;
     transport->active = true;
     (void)memset(&transfer, 0, sizeof(transfer));
-    transfer.device_id = MISSION_IC_DEVICE_ID;
+    transfer.device = MISSION_IC_DEVICE_ID;
     transfer.operation = MULT_UART_OP_WRITE_READ;
     transfer.tx_data = transport->tx;
     transfer.tx_len = tx_len;
@@ -323,15 +323,15 @@ static ic_card_status_t mission_ic_submit(
     transfer.queue_timeout_ms = queue_timeout_ms;
     transfer.done_cb = mission_ic_transfer_done;
     transfer.user_ctx = transport;
-    mult_status = mult_uart_device_submit(&transfer);
+    mult_status = mux_submit(&transfer);
     if (mult_status != MULT_UART_OK) transport->active = false;
     return mission_map_ic_status(mult_status);
 }
 
-/** ZDT Device生成的完整帧直接通过UART7复用Device发送并解析。 */
+/** ZDT生成的完整帧直接通过UART7复用Service发送并解析。 */
 static void mission_zdt_transfer_done(
     void *user_ctx,
-    const mult_uart_device_completion_t *completion)
+    const mux_completion_t *completion)
 {
     mission_zdt_transport_t *transport = (mission_zdt_transport_t *)user_ctx;
     zdt_turntable_request_t request;
@@ -362,14 +362,14 @@ static void mission_zdt_transfer_done(
     }
 }
 
-/** 将ZDT Device请求按值保存并提交到复用通道2。 */
+/** 将ZDT请求按值保存并提交到复用通道2。 */
 static zdt_turntable_status_t mission_zdt_submit(
     void *submit_ctx,
     const zdt_turntable_request_t *request)
 {
     mission_zdt_transport_t *transport =
         (mission_zdt_transport_t *)submit_ctx;
-    mult_uart_device_transfer_t transfer;
+    mux_transfer_t transfer;
     mult_uart_status_t status;
 
     if ((transport == NULL) || (request == NULL)) {
@@ -379,7 +379,7 @@ static zdt_turntable_status_t mission_zdt_submit(
     transport->request = *request;
     transport->active = true;
     (void)memset(&transfer, 0, sizeof(transfer));
-    transfer.device_id = MISSION_ZDT_DEVICE_ID;
+    transfer.device = MISSION_ZDT_DEVICE_ID;
     transfer.operation = MULT_UART_OP_WRITE_READ;
     transfer.tx_data = transport->request.frame;
     transfer.tx_len = transport->request.frame_len;
@@ -387,7 +387,7 @@ static zdt_turntable_status_t mission_zdt_submit(
     transfer.io_timeout_ms = request->timeout_ms;
     transfer.done_cb = mission_zdt_transfer_done;
     transfer.user_ctx = transport;
-    status = mult_uart_device_submit(&transfer);
+    status = mux_submit(&transfer);
     if (status != MULT_UART_OK) transport->active = false;
     return mission_map_zdt_status(status);
 }
@@ -433,7 +433,7 @@ static void mission_arm_report(
 /** 复用串口回调只复制Nano回复并唤醒Mission，协议解释仍在Mission任务中。 */
 static void mission_vision_done(
     void *user_ctx,
-    const mult_uart_device_completion_t *completion)
+    const mux_completion_t *completion)
 {
     mission_context_t *ctx = (mission_context_t *)user_ctx;
     size_t copy_len;
@@ -590,12 +590,12 @@ static nano_vision_status_t mission_submit_vision_transfer(
     size_t tx_len,
     uint32_t timeout_ms)
 {
-    mult_uart_device_transfer_t transfer;
+    mux_transfer_t transfer;
     mult_uart_status_t status;
 
     if (ctx->vision.inflight) return NANO_VISION_ERR_BUSY;
     (void)memset(&transfer, 0, sizeof(transfer));
-    transfer.device_id = MISSION_VISION_DEVICE_ID;
+    transfer.device = MISSION_VISION_DEVICE_ID;
     transfer.operation = operation;
     transfer.tx_data = (tx_len > 0U) ? ctx->vision.tx : NULL;
     transfer.tx_len = tx_len;
@@ -605,7 +605,7 @@ static nano_vision_status_t mission_submit_vision_transfer(
     transfer.done_cb = mission_vision_done;
     transfer.user_ctx = ctx;
     ctx->vision.inflight = true;
-    status = mult_uart_device_submit(&transfer);
+    status = mux_submit(&transfer);
     if (status != MULT_UART_OK) ctx->vision.inflight = false;
     return mission_map_vision_status(status);
 }

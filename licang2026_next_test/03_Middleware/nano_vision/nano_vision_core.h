@@ -3,7 +3,7 @@
  * @brief   Jetson Nano与F7之间的视觉轮询/会话事件协议Core。
  *
  * 本层不包含UART、DMA、HAL或FreeRTOS。F7必须由上层通过
- * mult_uart_device_submit()访问UART7通道0；Nano只有在F7建立会话后才允许
+ * mux_submit()访问UART7通道0；Nano只有在F7建立会话后才允许
  * 上报事件，不能控制UART7复用板。流式解析器允许任意分包或粘包数据。
  */
 

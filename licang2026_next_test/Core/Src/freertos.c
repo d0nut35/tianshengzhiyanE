@@ -25,7 +25,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "mult_uart_device.h"
 #include "mux_service.h"
 #include "test_config.h"
 #include "chassis_mission_link.h"
@@ -113,12 +112,7 @@ void MX_FREERTOS_Init(void) {
    * worker，不启动任何测试或业务demo。任务真正运行要等osKernelStart()。
    */
 #if !IC_CARD_FREERTOS_TEST_ENABLED && !ZDT_TURNTABLE_FREERTOS_TEST_ENABLED
-  if (mux_service_init() != MULT_UART_OK)
-  {
-    Error_Handler();
-  }
-
-  if (mult_uart_device_init(NULL, 0U) != MULT_UART_OK)
+  if (mux_init() != MULT_UART_OK)
   {
     Error_Handler();
   }
@@ -143,7 +137,7 @@ void MX_FREERTOS_Init(void) {
 
 #if MULT_UART_FREERTOS_TEST_ENABLED
   /*
-   * 测试任务只通过Device事务层使用复用总线，不直接操作
+   * 测试任务只通过事务Service使用复用总线，不直接操作
    * HAL、DMA或A/B/EN。这可以同时验证完整FreeRTOS分层链路。
    */
   if (mult_uart_freertos_test_init() != MULT_UART_OK)
@@ -160,7 +154,7 @@ void MX_FREERTOS_Init(void) {
 #endif
 
 #if MULT_UART_MODULES_FREERTOS_TEST_ENABLED
-  /* USART1命令任务通过复用Device层测试通道1 IC卡和通道2 ZDT。 */
+  /* USART1命令任务通过复用Service测试通道1 IC卡和通道2 ZDT。 */
   if (mult_uart_modules_freertos_test_init() != MULT_UART_OK)
   {
     Error_Handler();

@@ -18,15 +18,16 @@
 
 typedef struct {
     uint32_t request_id;
+    mux_device_t device;
     mult_uart_operation_t operation;
     mult_uart_channel_t channel;
-    uint8_t tx_data[MULT_UART_SERVICE_TX_MAX];
+    uint8_t tx_data[MUX_TX_MAX];
     size_t tx_len;
-    uint8_t rx_data[MULT_UART_SERVICE_RX_MAX];
+    uint8_t rx_data[MUX_RX_MAX];
     size_t rx_capacity;
     uint32_t io_timeout_ms;
     uint32_t deadline_ms;
-    mult_uart_done_fn_t done_cb;
+    mux_done_fn_t done_cb;
     void *user_ctx;
 } mux_job_t;
 
@@ -46,6 +47,8 @@ typedef struct {
     mux_events_t events;
     osMessageQueueId_t queue;
     osThreadId_t worker;
+    uint32_t next_request_id;
+    uint8_t busy_mask;
 } mux_service_t;
 
 static mux_service_t g_mux;
@@ -103,29 +106,29 @@ static mult_uart_status_t mux_map_os(osStatus_t status)
         MULT_UART_ERR_PARAM : MULT_UART_ERR_IO;
 }
 
-static mult_uart_status_t mux_validate(const mult_uart_request_t *request)
+static mult_uart_status_t mux_validate(const mux_transfer_t *transfer)
 {
-    if ((request == NULL) ||
-        ((uint32_t)request->operation > (uint32_t)MULT_UART_OP_WRITE_READ) ||
-        ((uint32_t)request->channel >= MULT_UART_CHANNEL_COUNT)) {
+    if ((transfer == NULL) ||
+        ((uint32_t)transfer->device >= MULT_UART_CHANNEL_COUNT) ||
+        ((uint32_t)transfer->operation > (uint32_t)MULT_UART_OP_WRITE_READ)) {
         return MULT_UART_ERR_PARAM;
     }
-    if (mux_needs_tx(request->operation)) {
-        if ((request->tx_data == NULL) || (request->tx_len == 0U)) {
+    if (mux_needs_tx(transfer->operation)) {
+        if ((transfer->tx_data == NULL) || (transfer->tx_len == 0U)) {
             return MULT_UART_ERR_PARAM;
         }
-        if (request->tx_len > MULT_UART_SERVICE_TX_MAX) {
+        if (transfer->tx_len > MUX_TX_MAX) {
             return MULT_UART_ERR_OVERFLOW;
         }
-    } else if ((request->tx_data != NULL) || (request->tx_len != 0U)) {
+    } else if ((transfer->tx_data != NULL) || (transfer->tx_len != 0U)) {
         return MULT_UART_ERR_PARAM;
     }
-    if (mux_needs_rx(request->operation)) {
-        if ((request->rx_capacity == 0U) ||
-            (request->rx_capacity > MULT_UART_SERVICE_RX_MAX)) {
+    if (mux_needs_rx(transfer->operation)) {
+        if ((transfer->rx_capacity == 0U) ||
+            (transfer->rx_capacity > MUX_RX_MAX)) {
             return MULT_UART_ERR_OVERFLOW;
         }
-    } else if (request->rx_capacity != 0U) {
+    } else if (transfer->rx_capacity != 0U) {
         return MULT_UART_ERR_PARAM;
     }
     return MULT_UART_OK;
@@ -133,19 +136,20 @@ static mult_uart_status_t mux_validate(const mult_uart_request_t *request)
 
 static void mux_make_job(
     mux_job_t *job,
-    const mult_uart_request_t *request)
+    const mux_transfer_t *transfer)
 {
     (void)memset(job, 0, sizeof(*job));
-    job->request_id = request->request_id;
-    job->operation = request->operation;
-    job->channel = request->channel;
-    job->tx_len = request->tx_len;
-    job->rx_capacity = request->rx_capacity;
-    job->io_timeout_ms = request->io_timeout_ms;
-    job->done_cb = request->done_cb;
-    job->user_ctx = request->user_ctx;
-    if (request->tx_len > 0U) {
-        (void)memcpy(job->tx_data, request->tx_data, request->tx_len);
+    job->device = transfer->device;
+    job->operation = transfer->operation;
+    job->channel = (mult_uart_channel_t)transfer->device;
+    job->tx_len = transfer->tx_len;
+    job->rx_capacity = transfer->rx_capacity;
+    job->io_timeout_ms = (transfer->io_timeout_ms != 0U) ?
+        transfer->io_timeout_ms : MUX_DEFAULT_IO_MS;
+    job->done_cb = transfer->done_cb;
+    job->user_ctx = transfer->user_ctx;
+    if (transfer->tx_len > 0U) {
+        (void)memcpy(job->tx_data, transfer->tx_data, transfer->tx_len);
     }
 }
 
@@ -253,19 +257,20 @@ static void mux_finish(
     mult_uart_status_t status,
     size_t rx_len)
 {
-    mult_uart_completion_t completion;
-    mult_uart_done_fn_t done_cb = ctx->active_job.done_cb;
+    mux_completion_t completion;
+    mux_done_fn_t done_cb = ctx->active_job.done_cb;
     void *done_ctx = ctx->active_job.user_ctx;
 
     completion.request_id = ctx->active_job.request_id;
+    completion.device = ctx->active_job.device;
     completion.status = status;
     completion.operation = ctx->active_job.operation;
-    completion.channel = ctx->active_job.channel;
     completion.rx_data = ((status == MULT_UART_OK) &&
         mux_needs_rx(ctx->active_job.operation)) ?
         ctx->active_job.rx_data : NULL;
     completion.rx_len = (status == MULT_UART_OK) ? rx_len : 0U;
 
+    ctx->busy_mask &= (uint8_t)~(1U << (uint32_t)completion.device);
     ctx->active = false;
     mux_clear_events(ctx);
     if (done_cb != NULL) done_cb(done_ctx, &completion);
@@ -344,7 +349,7 @@ static void mux_worker(void *argument)
     }
 }
 
-mult_uart_status_t mux_service_init(void)
+mult_uart_status_t mux_init(void)
 {
     mux_service_t *ctx = &g_mux;
     uart_dispatch_handler_t handler = {0};
@@ -354,7 +359,7 @@ mult_uart_status_t mux_service_init(void)
     if (ctx->initialized) return MULT_UART_ERR_STATE;
     (void)memset(ctx, 0, sizeof(*ctx));
     ctx->queue = osMessageQueueNew(
-        MULT_UART_SERVICE_QUEUE_DEPTH,
+        MUX_QUEUE_DEPTH,
         sizeof(mux_job_t),
         NULL);
     if (ctx->queue == NULL) return MULT_UART_ERR_IO;
@@ -377,27 +382,35 @@ mult_uart_status_t mux_service_init(void)
     return MULT_UART_OK;
 }
 
-mult_uart_status_t mux_service_submit(
-    const mult_uart_request_t *request,
-    uint32_t queue_timeout_ms)
+mult_uart_status_t mux_submit(const mux_transfer_t *transfer)
 {
     mux_job_t job;
     mult_uart_status_t status;
     osStatus_t os_status;
+    uint8_t device_mask;
 
     if (!g_mux.initialized) {
-        return (request == NULL) ? MULT_UART_ERR_PARAM :
+        return (transfer == NULL) ? MULT_UART_ERR_PARAM :
             MULT_UART_ERR_NOT_INIT;
     }
-    status = mux_validate(request);
+    status = mux_validate(transfer);
     if (status != MULT_UART_OK) return status;
-    mux_make_job(&job, request);
+    device_mask = (uint8_t)(1U << (uint32_t)transfer->device);
+    if ((g_mux.busy_mask & device_mask) != 0U) return MULT_UART_ERR_BUSY;
+    g_mux.busy_mask |= device_mask;
+    ++g_mux.next_request_id;
+    if (g_mux.next_request_id == 0U) ++g_mux.next_request_id;
+    mux_make_job(&job, transfer);
+    job.request_id = g_mux.next_request_id;
     os_status = osMessageQueuePut(
         g_mux.queue,
         &job,
         0U,
-        mux_ms_to_ticks(queue_timeout_ms));
-    if (os_status != osOK) return mux_map_os(os_status);
+        mux_ms_to_ticks(transfer->queue_timeout_ms));
+    if (os_status != osOK) {
+        g_mux.busy_mask &= (uint8_t)~device_mask;
+        return mux_map_os(os_status);
+    }
     (void)osThreadFlagsSet(g_mux.worker, MUX_FLAG_REQUEST);
     return MULT_UART_OK;
 }

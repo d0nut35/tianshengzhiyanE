@@ -23,7 +23,7 @@
 #include "mux_service.h"
 #include "nano_vision_core.h"
 #include "gate.h"
-#include "zdt_turntable_device.h"
+#include "zdt_turntable_service.h"
 
 #define MISSION_FLAG_COMMAND       (1UL << 1)
 #define MISSION_FLAG_ARM_OK        (1UL << 2)
@@ -83,7 +83,6 @@ typedef struct {
 typedef struct {
     volatile ic_card_status_t ic_status;
     ic_ball_t ic_ball;
-    zdt_turntable_device_t zdt;
     volatile zdt_turntable_status_t zdt_status;
     volatile bool zdt_has_response;
     zdt_turntable_response_t zdt_response;
@@ -553,8 +552,7 @@ static zdt_turntable_status_t mission_submit_slot_motion(
     command.speed = emm_speed_rpm;
     command.angle_0p1deg = angle_0p1deg;
     command.emm_acceleration = MISSION_ZDT_ACCEL;
-    return zdt_turntable_device_move_emm_angle(
-        &ctx->storage.zdt, &command, mission_zdt_done, ctx);
+    return turn_move_emm(&command, mission_zdt_done, ctx);
 }
 
 /** 提交ZDT事务前清除旧完成标志，提交后同步等待当前事务结果。 */
@@ -661,10 +659,8 @@ static bool mission_advance_slot(mission_context_t *ctx)
             (void)osDelay(mission_ms_to_ticks(MISSION_ZDT_STATUS_POLL_MS));
             (void)osThreadFlagsClear(MISSION_FLAG_ZDT_DONE);
             ctx->storage.zdt_has_response = false;
-            if ((zdt_turntable_device_query_status(
-                     &ctx->storage.zdt,
-                     mission_zdt_done,
-                     ctx) != ZDT_TURNTABLE_OK) ||
+            if ((turn_query_status(mission_zdt_done, ctx) !=
+                 ZDT_TURNTABLE_OK) ||
                 !mission_wait_zdt(ctx) ||
                 (response->kind != ZDT_TURNTABLE_REPLY_STATUS) ||
                 !response->data.motor_status.enabled ||
@@ -698,13 +694,11 @@ static bool mission_prepare_zdt(mission_context_t *ctx)
 
     (void)osThreadFlagsClear(MISSION_FLAG_ZDT_DONE);
     ctx->storage.zdt_has_response = false;
-    if ((zdt_turntable_device_query_options(
-             &ctx->storage.zdt, mission_zdt_done, ctx) !=
-         ZDT_TURNTABLE_OK) ||
+    if ((turn_query_options(mission_zdt_done, ctx) != ZDT_TURNTABLE_OK) ||
         !mission_wait_zdt(ctx) ||
         (response->kind != ZDT_TURNTABLE_REPLY_OPTIONS) ||
-        !ctx->storage.zdt.firmware_known || !ctx->storage.zdt.closed_loop ||
-        (ctx->storage.zdt.firmware != ZDT_TURNTABLE_FIRMWARE_EMM)) {
+        !response->data.options.closed_loop ||
+        (response->data.options.firmware != ZDT_TURNTABLE_FIRMWARE_EMM)) {
         return false;
     }
     return true;
@@ -1332,16 +1326,12 @@ mission_app_status_t mission_app_init(void)
         return MISSION_APP_ERR_IO;
     }
     {
-        zdt_turntable_device_config_t config = {
+        turn_config_t config = {
             MISSION_ZDT_ADDRESS,
             MISSION_ZDT_IO_TIMEOUT_MS,
             MISSION_ZDT_EMM_PULSES_PER_REV,
         };
-        if (zdt_turntable_device_init_with_submit(
-                &ctx->storage.zdt,
-                turn_service_submit,
-                NULL,
-                &config) != ZDT_TURNTABLE_OK) {
+        if (turn_init(&config) != ZDT_TURNTABLE_OK) {
             return MISSION_APP_ERR_IO;
         }
     }

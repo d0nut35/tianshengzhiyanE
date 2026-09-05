@@ -38,7 +38,7 @@ extern "C" {
 /** 当前已支持响应中最长一帧的字节数。 */
 #define ZDT_TURNTABLE_RESPONSE_MAX         8U
 
-/** Core、Service、Device和HAL adapter共用的状态码。 */
+/** BSP与Service共用的状态码。 */
 typedef enum {
     ZDT_TURNTABLE_OK = 0,
     ZDT_TURNTABLE_ERR_PARAM,

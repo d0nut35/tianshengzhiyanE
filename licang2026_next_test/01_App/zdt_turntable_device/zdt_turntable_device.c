@@ -175,7 +175,7 @@ zdt_turntable_status_t zdt_turntable_device_query_options(
     if (device->options_pending) {
         return ZDT_TURNTABLE_ERR_BUSY;
     }
-    status = zdt_turntable_build_read_options(
+    status = turn_options_frame(
         device->config.address, frame, sizeof(frame), &frame_len);
     if (status != ZDT_TURNTABLE_OK) {
         return status;
@@ -207,7 +207,7 @@ zdt_turntable_status_t zdt_turntable_device_query_status(
     if ((device == NULL) || !device->initialized) {
         return ZDT_TURNTABLE_ERR_NOT_INIT;
     }
-    status = zdt_turntable_build_read_status(
+    status = turn_status_frame(
         device->config.address, frame, sizeof(frame), &frame_len);
     return (status == ZDT_TURNTABLE_OK) ?
         zdt_submit_frame(device, 0x3AU, frame, frame_len, done_cb, user_ctx) :
@@ -230,13 +230,13 @@ zdt_turntable_status_t zdt_turntable_device_query(
         return ZDT_TURNTABLE_ERR_NOT_INIT;
     }
     if (function == 0x1FU) {
-        status = zdt_turntable_build_read_version(
+        status = turn_version_frame(
             device->config.address, frame, sizeof(frame), &frame_len);
     } else if (function == 0x3AU) {
-        status = zdt_turntable_build_read_status(
+        status = turn_status_frame(
             device->config.address, frame, sizeof(frame), &frame_len);
     } else if (function == 0x36U) {
-        status = zdt_turntable_build_read_position(
+        status = turn_position_frame(
             device->config.address, frame, sizeof(frame), &frame_len);
     } else {
         return ZDT_TURNTABLE_ERR_UNSUPPORTED;
@@ -288,7 +288,7 @@ zdt_turntable_status_t zdt_turntable_device_move_emm_angle(
         return ZDT_TURNTABLE_ERR_PARAM;
     }
     pulses = (uint32_t)pulse_result;
-    status = zdt_turntable_build_emm_position(
+    status = turn_emm_frame(
         device->config.address,
         &adjusted,
         pulses,
@@ -335,7 +335,7 @@ zdt_turntable_status_t zdt_turntable_device_move_angle(
             }
             adjusted.angle_0p1deg *= 10U;
         }
-        status = zdt_turntable_build_x_position(
+        status = turn_x_frame(
             device->config.address, &adjusted, frame, sizeof(frame), &frame_len);
     } else {
         if (device->scaled_input) {
@@ -359,7 +359,7 @@ zdt_turntable_status_t zdt_turntable_device_move_angle(
             return ZDT_TURNTABLE_ERR_PARAM;
         }
         pulses = (uint32_t)pulse_result;
-        status = zdt_turntable_build_emm_position(
+        status = turn_emm_frame(
             device->config.address,
             &adjusted,
             pulses,
@@ -386,7 +386,7 @@ zdt_turntable_status_t zdt_turntable_device_stop(
     if ((device == NULL) || !device->initialized) {
         return ZDT_TURNTABLE_ERR_NOT_INIT;
     }
-    status = zdt_turntable_build_stop(
+    status = turn_stop_frame(
         device->config.address, frame, sizeof(frame), &frame_len);
     return (status == ZDT_TURNTABLE_OK) ?
         zdt_submit_frame(device, 0xFEU, frame, frame_len, done_cb, user_ctx) :

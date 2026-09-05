@@ -1,7 +1,7 @@
 /** @file zdt_turntable_baremetal_test.h @brief ZDT UART7直连裸机测试入口。 */
 #ifndef ZDT_TURNTABLE_BAREMETAL_TEST_H
 #define ZDT_TURNTABLE_BAREMETAL_TEST_H
-#include "zdt_turntable_core.h"
+#include "turn_bsp.h"
 
 /**
  * @brief 装配USART1调试口、UART7直连适配器、Service和Device。

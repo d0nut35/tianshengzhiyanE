@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F750xx,RTT_USE_ASM=0,LICANG_RELEASE_MINIMAL=1</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../02_Service/lsc16;../04_Bsp/lsc16;../02_Service/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../02_Service/ic_card;../04_Bsp/ic_card;../01_App/zdt_turntable_device;../02_Service/zdt_turntable;../03_Middleware/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/zdt_turntable;../05_Test/common;../05_Test;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/04_Bsp/ble;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
+              <IncludePath>../Core/Inc;../02_Service/lsc16;../04_Bsp/lsc16;../02_Service/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../02_Service/ic_card;../04_Bsp/ic_card;../01_App/zdt_turntable_device;../02_Service/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/common;../05_Test;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/04_Bsp/ble;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -1866,12 +1866,12 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>03_Middleware/zdt_turntable</GroupName>
+          <GroupName>04_Bsp/zdt_turntable</GroupName>
           <Files>
             <File>
-              <FileName>zdt_turntable_core.c</FileName>
+              <FileName>turn_bsp.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../03_Middleware/zdt_turntable/zdt_turntable_core.c</FilePath>
+              <FilePath>../04_Bsp/zdt_turntable/turn_bsp.c</FilePath>
               <FileOption>
                 <CommonProperty>
                   <UseCPPCompiler>2</UseCPPCompiler>
@@ -1925,64 +1925,9 @@
               </FileOption>
             </File>
             <File>
-              <FileName>zdt_turntable_core.h</FileName>
+              <FileName>turn_bsp.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../03_Middleware/zdt_turntable/zdt_turntable_core.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>04_Bsp/zdt_turntable</GroupName>
-          <Files>
-            <File>
-              <FileName>zdt_turntable_uart7_hal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../04_Bsp/zdt_turntable/zdt_turntable_uart7_hal.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_uart7_hal.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../04_Bsp/zdt_turntable/zdt_turntable_uart7_hal.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>05_Test/zdt_turntable</GroupName>
-          <Files>
-            <File>
-              <FileName>zdt_turntable_test_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_test_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_test_common.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_test_common.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_test_common.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_test_common.h</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_baremetal_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_baremetal_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_baremetal_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_baremetal_test.h</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_freertos_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_freertos_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_freertos_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_freertos_test.h</FilePath>
+              <FilePath>../04_Bsp/zdt_turntable/turn_bsp.h</FilePath>
             </File>
           </Files>
         </Group>

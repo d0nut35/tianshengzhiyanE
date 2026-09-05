@@ -10,7 +10,7 @@
 #include "zdt_turntable_device.h"
 #include "zdt_turntable_test_common.h"
 #include "zdt_turntable_test_config.h"
-#include "zdt_turntable_uart7_hal.h"
+#include "turn_bsp.h"
 
 #if ZDT_TURNTABLE_BAREMETAL_TEST_ENABLED
 
@@ -20,7 +20,6 @@ typedef struct {
     bool pending;
     debug_uart1_t debug;
     zdt_turntable_service_t service;
-    zdt_turntable_uart7_hal_t adapter;
     zdt_turntable_device_t device;
     uart_dispatch_handle_t dispatch_handle;
     char text[160];
@@ -59,7 +58,9 @@ static void zdt_bare_notify(void *ctx)
 static bool zdt_bare_tx(void *ctx, UART_HandleTypeDef *huart)
 {
     zdt_baremetal_context_t *test = (zdt_baremetal_context_t *)ctx;
-    return zdt_turntable_uart7_hal_handle_tx_complete(&test->adapter, huart);
+    if (!turn_bsp_owns(huart)) return false;
+    zdt_turntable_service_on_tx_complete_isr(&test->service);
+    return true;
 }
 
 /**
@@ -72,7 +73,9 @@ static bool zdt_bare_tx(void *ctx, UART_HandleTypeDef *huart)
 static bool zdt_bare_rx(void *ctx, UART_HandleTypeDef *huart, uint16_t len)
 {
     zdt_baremetal_context_t *test = (zdt_baremetal_context_t *)ctx;
-    return zdt_turntable_uart7_hal_handle_rx_event(&test->adapter, huart, len);
+    if (!turn_bsp_owns(huart)) return false;
+    zdt_turntable_service_on_rx_event_isr(&test->service, len);
+    return true;
 }
 
 /**
@@ -84,7 +87,9 @@ static bool zdt_bare_rx(void *ctx, UART_HandleTypeDef *huart, uint16_t len)
 static bool zdt_bare_error(void *ctx, UART_HandleTypeDef *huart)
 {
     zdt_baremetal_context_t *test = (zdt_baremetal_context_t *)ctx;
-    return zdt_turntable_uart7_hal_handle_error(&test->adapter, huart);
+    if (!turn_bsp_owns(huart)) return false;
+    zdt_turntable_service_on_error_isr(&test->service);
+    return true;
 }
 
 /**
@@ -185,8 +190,10 @@ zdt_turntable_status_t zdt_turntable_baremetal_test_init(void)
     (void)memset(test, 0, sizeof(*test));
     test->dispatch_handle = UART_DISPATCH_HANDLE_INVALID;
     if (!debug_uart1_init(&test->debug)) return ZDT_TURNTABLE_ERR_IO;
-    status = zdt_turntable_uart7_hal_bind(&test->adapter, &test->service, &port);
-    if (status != ZDT_TURNTABLE_OK) return status;
+    port.tx_start = turn_bsp_tx;
+    port.rx_start = turn_bsp_rx;
+    port.abort = turn_bsp_abort;
+    port.ctx = NULL;
     /* 全局HAL回调仍只由uart_dispatch拥有，本测试注册句柄过滤handler。 */
     handler.tx_complete = zdt_bare_tx;
     handler.rx_event = zdt_bare_rx;

@@ -21,7 +21,7 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-#include "zdt_turntable_core.h"
+#include "turn_bsp.h"
 
 /** Service按值保存的等待队列深度。 */
 #define ZDT_TURNTABLE_SERVICE_QUEUE_DEPTH 4U

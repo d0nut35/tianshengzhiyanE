@@ -1,14 +1,15 @@
 /**
- * @file    zdt_turntable_core.h
- * @brief   ZDT_X42S转盘电机平台无关协议Core。
+ * @file    turn_bsp.h
+ * @brief   ZDT_X42S协议与固定UART7 HAL BSP。
  *
- * 本层只负责固定0x6B校验模式下的构帧与响应解析，不依赖HAL、DMA或RTOS。
+ * 固定0x6B校验模式的构帧和解析供正式UART7复用事务使用；直连测试所需的
+ * UART7收发也集中在本BSP中，不再保留独立HAL适配对象。
  * X42S同时内置X和Emm固件，两者位置命令格式不同，因此调用者必须先通过
  * 0x1A只读命令确认固件类型，再选择对应构帧接口。
  */
 
-#ifndef ZDT_TURNTABLE_CORE_H
-#define ZDT_TURNTABLE_CORE_H
+#ifndef TURN_BSP_H
+#define TURN_BSP_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +21,14 @@ extern "C" {
 
 #ifndef LICANG_RELEASE_MINIMAL
 #define LICANG_RELEASE_MINIMAL 0
+#endif
+
+#ifndef TURN_BSP_HAL_ENABLE
+#define TURN_BSP_HAL_ENABLE 1
+#endif
+
+#if TURN_BSP_HAL_ENABLE
+#include "stm32f7xx_hal.h"
 #endif
 
 /** 当前驱动固定使用的协议校验字节。 */
@@ -145,7 +154,7 @@ typedef struct {
  * @return 构帧结果；OK只表示本地帧已生成。
  */
 #if !LICANG_RELEASE_MINIMAL
-zdt_turntable_status_t zdt_turntable_build_read_version(
+zdt_turntable_status_t turn_version_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len);
 #endif
 
@@ -157,7 +166,7 @@ zdt_turntable_status_t zdt_turntable_build_read_version(
  * @param frame_len 输出有效帧长。
  * @return 构帧结果。
  */
-zdt_turntable_status_t zdt_turntable_build_read_options(
+zdt_turntable_status_t turn_options_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len);
 
 /**
@@ -168,7 +177,7 @@ zdt_turntable_status_t zdt_turntable_build_read_options(
  * @param frame_len 输出有效帧长。
  * @return 构帧结果。
  */
-zdt_turntable_status_t zdt_turntable_build_read_status(
+zdt_turntable_status_t turn_status_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len);
 
 /**
@@ -180,7 +189,7 @@ zdt_turntable_status_t zdt_turntable_build_read_status(
  * @return 构帧结果。
  */
 #if !LICANG_RELEASE_MINIMAL
-zdt_turntable_status_t zdt_turntable_build_read_position(
+zdt_turntable_status_t turn_position_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len);
 #endif
 
@@ -196,7 +205,7 @@ zdt_turntable_status_t zdt_turntable_build_read_position(
  *       会变为0.01度，测试前必须通过0x1A确认scaled_input为false。
  */
 #if !LICANG_RELEASE_MINIMAL
-zdt_turntable_status_t zdt_turntable_build_x_position(
+zdt_turntable_status_t turn_x_frame(
     uint8_t address,
     const zdt_turntable_position_command_t *command,
     uint8_t *frame,
@@ -214,7 +223,7 @@ zdt_turntable_status_t zdt_turntable_build_x_position(
  * @param frame_len 输出有效帧长。
  * @return 构帧结果。
  */
-zdt_turntable_status_t zdt_turntable_build_emm_position(
+zdt_turntable_status_t turn_emm_frame(
     uint8_t address,
     const zdt_turntable_position_command_t *command,
     uint32_t pulses,
@@ -230,7 +239,7 @@ zdt_turntable_status_t zdt_turntable_build_emm_position(
  * @param frame_len 输出有效帧长。
  * @return 构帧结果。
  */
-zdt_turntable_status_t zdt_turntable_build_stop(
+zdt_turntable_status_t turn_stop_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len);
 
 /**
@@ -246,15 +255,31 @@ zdt_turntable_status_t zdt_turntable_build_stop(
  *       提供完整单帧。本函数不在输入中扫描或拼接多帧。0x1A严格使用
  *       手册和2.01实机均已确认的5字节响应，不接受截断的4字节兼容格式。
  */
-zdt_turntable_status_t zdt_turntable_parse_response(
+zdt_turntable_status_t turn_parse(
     const uint8_t *data,
     size_t len,
     uint8_t expected_address,
     uint8_t expected_function,
     zdt_turntable_response_t *response);
 
+#if TURN_BSP_HAL_ENABLE
+/** 固定UART7异步发送；ctx保留用于Service端口签名。 */
+zdt_turntable_status_t turn_bsp_tx(
+    void *ctx, const uint8_t *data, size_t len);
+
+/** 固定UART7启动ReceiveToIdle DMA；ctx保留用于Service端口签名。 */
+zdt_turntable_status_t turn_bsp_rx(
+    void *ctx, uint8_t *data, size_t capacity);
+
+/** 同步中止UART7收发并清理迟到中断。 */
+zdt_turntable_status_t turn_bsp_abort(void *ctx);
+
+/** 公共UART回调先用本接口过滤固定UART7句柄。 */
+bool turn_bsp_owns(const UART_HandleTypeDef *huart);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* ZDT_TURNTABLE_CORE_H */
+#endif /* TURN_BSP_H */

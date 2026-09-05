@@ -403,7 +403,7 @@ static void modules_zdt_transfer_done(
     transport->active = false;
     status = modules_map_zdt_status(completion->status);
     if (status == ZDT_TURNTABLE_OK) {
-        status = zdt_turntable_parse_response(
+        status = turn_parse(
             completion->rx_data,
             completion->rx_len,
             request.expected_address,

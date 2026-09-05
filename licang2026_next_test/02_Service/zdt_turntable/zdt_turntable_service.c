@@ -148,7 +148,7 @@ void zdt_turntable_service_process_once(zdt_turntable_service_t *service)
         /* ISR写入rx_len后才置rx_ready；普通上下文只消费一次该事件。 */
         rx_len = service->rx_len;
         service->rx_ready = false;
-        status = zdt_turntable_parse_response(
+        status = turn_parse(
             service->rx_buffer,
             rx_len,
             service->active.expected_address,

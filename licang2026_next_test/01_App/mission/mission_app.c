@@ -630,14 +630,22 @@ static bool mission_start_vision(
     nano_vision_status_t status;
     size_t tx_len = 0U;
 
-    (void)layer;
-
     if (ctx->vision.phase != MISSION_VISION_IDLE) return false;
     ++ctx->vision.next_session_id;
     if (ctx->vision.next_session_id == 0U) ++ctx->vision.next_session_id;
     ctx->vision.session_id = ctx->vision.next_session_id;
-    ctx->vision.scene = (scene == MISSION_VISION_SCENE_PLATFORM) ?
-        NANO_VISION_SCENE_TURNTABLE : NANO_VISION_SCENE_STAIR;
+    if (scene == MISSION_VISION_SCENE_PLATFORM) {
+        ctx->vision.scene = NANO_VISION_SCENE_TURNTABLE;
+    } else if (layer == MISSION_STAIR_LOW) {
+        ctx->vision.scene = NANO_VISION_SCENE_STAIR_LOW;
+    } else if (layer == MISSION_STAIR_HIGH) {
+        ctx->vision.scene = NANO_VISION_SCENE_STAIR_HIGH;
+    } else if (layer == MISSION_STAIR_MID) {
+        ctx->vision.scene = NANO_VISION_SCENE_STAIR_MID;
+    } else {
+        mission_reset_vision(ctx);
+        return false;
+    }
     session.session_id = ctx->vision.session_id;
     session.scene = ctx->vision.scene;
     session.target_color = (ctx->color == MISSION_COLOR_RED) ?
@@ -973,6 +981,7 @@ static void mission_handle_vision(mission_context_t *ctx)
     if ((status != NANO_VISION_OK) ||
         (nano_vision_parse_event(&frame, &event) != NANO_VISION_OK) ||
         (event.session_id != ctx->vision.session_id) ||
+        (event.observation.scene != ctx->vision.scene) ||
         (event.observation.status != NANO_VISION_OBS_VALID) ||
         (event.observation.color != ((ctx->color == MISSION_COLOR_RED) ?
             NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE)) ||
@@ -1006,17 +1015,16 @@ static void mission_handle_vision(mission_context_t *ctx)
         mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_PAUSE,
                             MISSION_OPERATION_TIMEOUT_MS);
     } else {
+        /* ACK发送完成后由mission_vision_process启动动作组12。 */
         mission_enter_state(ctx, MISSION_STATE_PLATFORM_WAIT_GRASP,
                             MISSION_OPERATION_TIMEOUT_MS);
-        if (!mission_start_arm(ctx, MISSION_PLATFORM_GRASP_GROUP,
-                               MISSION_STATE_PLATFORM_WAIT_GRASP)) {
-            mission_fail(ctx, MISSION_FAULT_ARM);
-        }
     }
 }
 
 static void mission_vision_process(mission_context_t *ctx)
 {
+    uint8_t grasp_group;
+
     if ((ctx->vision.phase == MISSION_VISION_IDLE) ||
         ctx->vision.inflight) {
         return;
@@ -1029,6 +1037,20 @@ static void mission_vision_process(mission_context_t *ctx)
         }
     } else if (ctx->vision.phase == MISSION_VISION_ACKING) {
         mission_reset_vision(ctx);
+        if (ctx->state == MISSION_STATE_PLATFORM_WAIT_GRASP) {
+            if (!mission_start_arm(ctx, MISSION_PLATFORM_GRASP_GROUP,
+                                   MISSION_STATE_PLATFORM_WAIT_GRASP)) {
+                mission_fail(ctx, MISSION_FAULT_ARM);
+            }
+        } else if (ctx->state == MISSION_STATE_STAIR_WAIT_ACK) {
+            grasp_group = mission_stair_grasp_group(ctx->stair_layer);
+            if ((grasp_group == 0U) ||
+                !mission_start_arm(ctx, grasp_group,
+                                   MISSION_STATE_STAIR_WAIT_GRASP)) {
+                mission_fail(ctx, (grasp_group == 0U) ?
+                    MISSION_FAULT_PROTOCOL : MISSION_FAULT_ARM);
+            }
+        }
     }
 }
 
@@ -1226,6 +1248,11 @@ static void mission_handle_chassis(
     }
     if ((event->type == CHASSIS_CMD_STAIR_PAUSE) &&
         (ctx->state == MISSION_STATE_STAIR_WAIT_PAUSE)) {
+        if (ctx->vision.phase == MISSION_VISION_ACKING) {
+            mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_ACK,
+                                MISSION_OPERATION_TIMEOUT_MS);
+            return;
+        }
         grasp_group = mission_stair_grasp_group(ctx->stair_layer);
         if (grasp_group == 0U) {
             mission_fail(ctx, MISSION_FAULT_PROTOCOL);

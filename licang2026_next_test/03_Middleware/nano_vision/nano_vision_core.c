@@ -7,7 +7,9 @@
 static bool nano_vision_scene_is_valid(nano_vision_scene_t scene)
 {
     return (scene == NANO_VISION_SCENE_TURNTABLE) ||
-           (scene == NANO_VISION_SCENE_STAIR);
+           (scene == NANO_VISION_SCENE_STAIR_LOW) ||
+           (scene == NANO_VISION_SCENE_STAIR_HIGH) ||
+           (scene == NANO_VISION_SCENE_STAIR_MID);
 }
 
 static bool nano_vision_color_is_valid(nano_vision_color_t color)

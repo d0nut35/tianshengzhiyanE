@@ -61,7 +61,11 @@ typedef enum {
 typedef enum {
     NANO_VISION_SCENE_NONE      = 0U,
     NANO_VISION_SCENE_TURNTABLE = 1U,
-    NANO_VISION_SCENE_STAIR     = 2U,
+    NANO_VISION_SCENE_STAIR_LOW  = 2U,
+    NANO_VISION_SCENE_STAIR_HIGH = 3U,
+    NANO_VISION_SCENE_STAIR_MID  = 4U,
+    /* 兼容旧代码；新流程应按具体阶梯层选择场景。 */
+    NANO_VISION_SCENE_STAIR      = NANO_VISION_SCENE_STAIR_LOW,
 } nano_vision_scene_t;
 
 typedef enum {

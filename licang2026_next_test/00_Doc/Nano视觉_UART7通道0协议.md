@@ -6,6 +6,8 @@
 - F7拥有事务和复用板控制权；Nano不得操作复用板选择脚或直接控制其他通道。
 - 旧V1轮询保留供固定假数据和回退测试；轻量抓取使用V2会话事件模式，等待目标期间不发送轮询。
 - F7端所有通道0事务必须通过`mult_uart_device_submit()`提交，设备号0映射通道0。
+- 整场任务需要在同一进程内切换圆盘和阶梯三层参数，Nano正式启动必须使用
+  `--scene auto --mode auto`；固定场景启动只用于单场景标定和诊断。
 - 本协议只冻结当前最小球识别语义，不包含底盘、圆盘区、积木数字或完整比赛状态机。
 - Nano只给出颜色和相对抓取中心的偏差；`BALL_ALIGNED`由F7按容差和连续帧数判定。
 
@@ -45,7 +47,7 @@ CRC参数：多项式`0x1021`、初值`0xFFFF`、不反射、无最终异或；�
 
 | 偏移 | 字段 | 值 |
 |---:|---|---|
-| 0 | SCENE | `1=BALL_TURNTABLE`，`2=BALL_STAIR` |
+| 0 | SCENE | `1=BALL_TURNTABLE`，`2=BALL_STAIR_LOW`，`3=BALL_STAIR_HIGH`，`4=BALL_STAIR_MID` |
 | 1 | TARGET_COLOR | `0=任意`，`1=红`，`2=蓝` |
 
 ## 4. Nano观测 `TYPE=0x81`
@@ -111,11 +113,12 @@ F7在ACK发送完成后才允许触发动作组12，保证Nano不会继续把同
 2. 场景、目标颜色、结果年龄和X/Y偏差全部满足配置时，才累计一次有效对齐样本。
 3. 任一帧不满足条件、协议错误或事务超时，连续计数立即清零。
 4. 必须达到配置的连续确认帧数才产生`BALL_ALIGNED`；禁止单帧触发抓取。
-5. 当前Core的PC测试参数仅为假数据示例：X容差10 px、Y容差8 px、结果年龄100 ms、连续3帧、连续3次超时离线。真实参数必须在机械安装后分别标定`BALL_TURNTABLE`和`BALL_STAIR`。
+5. 当前Core的PC测试参数仅为假数据示例：X容差10 px、Y容差8 px、结果年龄100 ms、连续3帧、连续3次超时离线。真实参数必须在机械安装后分别标定`BALL_TURNTABLE`、`BALL_STAIR_LOW`、`BALL_STAIR_HIGH`和`BALL_STAIR_MID`。
 6. F7链路超时或连续事务超时后标记Nano离线，不触发机械臂动作。
 
 ## 7. 当前验证边界
 
 - V1轮询已通过PC假数据和Nano/F7通道0实机通信；此前20 Hz轮询抓取存在显示负载和触发时序问题，因此不再作为轻量抓取正式路径。
 - V2 START/READY/EVENT/ACK/STOP的Python/C编解码、黄金帧、CRC和主机测试已通过。
-- V2 F7轻量任务已接入`mult_uart_device_submit()`的WRITE_READ、READ和WRITE事务；正式Keil链接及Nano/F7实机尚未验证。
+- V2 F7任务已接入`mult_uart_device_submit()`的WRITE_READ、READ和WRITE事务；
+  低/高/中三层场景的C/Python协议测试及正式Keil链接已通过，Nano/F7分层场景切换实机尚未验证。

@@ -163,6 +163,16 @@ ic_card_status_t ic_card_service_get_stats(
     ic_card_service_stats_t *stats);
 #endif
 
+#if !LICANG_RELEASE_MINIMAL
+/** 仅供独立直连测试；正式Mission统一经mux_service访问UART7。 */
+ic_card_status_t ic_service_init(void);
+ic_card_status_t ic_service_submit(
+    const ic_card_request_t *request,
+    uint32_t queue_timeout_ms);
+void ic_service_process(void);
+ic_card_status_t ic_service_get_stats(ic_card_service_stats_t *stats);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

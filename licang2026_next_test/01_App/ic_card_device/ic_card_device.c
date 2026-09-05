@@ -8,10 +8,6 @@
 #include <stdbool.h>
 #include <string.h>
 
-#if IC_CARD_DEVICE_EXTENDED_API_ENABLE
-#include "ic_card_service_os.h"
-#endif
-
 typedef struct {
     bool initialized;
     ic_card_device_submit_fn_t submit_fn;
@@ -39,7 +35,7 @@ static ic_card_status_t ic_card_device_direct_submit(
     uint32_t queue_timeout_ms)
 {
     (void)submit_ctx;
-    return ic_card_service_os_submit(request, queue_timeout_ms);
+    return ic_service_submit(request, queue_timeout_ms);
 }
 #endif
 
@@ -129,7 +125,7 @@ ic_card_status_t ic_card_device_init(void)
         return IC_CARD_ERR_STATE;
     }
     (void)memset(&g_ic_card_device, 0, sizeof(g_ic_card_device));
-    status = ic_card_service_os_init();
+    status = ic_service_init();
     return (status == IC_CARD_OK) ?
         ic_card_device_init_with_transport(ic_card_device_direct_submit, NULL) :
         status;

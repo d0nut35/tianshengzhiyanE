@@ -1833,16 +1833,6 @@
               <FileType>5</FileType>
               <FilePath>../02_Service/ic_card/ic_card_service.h</FilePath>
             </File>
-            <File>
-              <FileName>ic_card_service_os.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../02_Service/ic_card/ic_card_service_os.c</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_service_os.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../02_Service/ic_card/ic_card_service_os.h</FilePath>
-            </File>
           </Files>
         </Group>
         <Group>

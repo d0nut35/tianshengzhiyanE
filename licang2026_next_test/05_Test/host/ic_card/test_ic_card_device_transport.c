@@ -14,16 +14,6 @@ typedef struct {
 static bool read_done;
 static ic_card_ball_result_t read_result;
 
-/* 仅为链接未使用的直连兼容入口；本测试必须走init_with_transport。 */
-ic_card_status_t ic_card_service_os_init(void) { return IC_CARD_ERR_IO; }
-ic_card_status_t ic_card_service_os_submit(
-    const ic_card_request_t *request, uint32_t timeout)
-{
-    (void)request;
-    (void)timeout;
-    return IC_CARD_ERR_IO;
-}
-
 static ic_card_status_t fake_submit(
     void *ctx,
     const ic_card_request_t *request,

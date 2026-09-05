@@ -8,8 +8,6 @@
 #include <stdbool.h>
 #include <string.h>
 
-#include "lsc16_service_os.h"
-
 typedef struct {
     bool initialized;
     uint32_t next_request_id;
@@ -110,9 +108,7 @@ static lsc16_status_t lsc16_device_submit(lsc16_request_t *request)
             g_lsc16_device.pending[i].user_ctx = request->user_ctx;
             request->done_cb = lsc16_device_done_bridge;
             request->user_ctx = &g_lsc16_device;
-            status = lsc16_service_os_submit(
-                request,
-                LSC16_DEVICE_QUEUE_TIMEOUT_MS);
+            status = lsc16_service_submit(request);
             if (status != LSC16_OK) {
                 g_lsc16_device.pending[i].in_use = false;
             }
@@ -134,7 +130,7 @@ lsc16_status_t lsc16_device_init(void)
         return LSC16_ERR_STATE;
     }
     (void)memset(&g_lsc16_device, 0, sizeof(g_lsc16_device));
-    status = lsc16_service_os_init(
+    status = lsc16_service_init(
         lsc16_device_report_bridge,
         &g_lsc16_device);
     if (status == LSC16_OK) {

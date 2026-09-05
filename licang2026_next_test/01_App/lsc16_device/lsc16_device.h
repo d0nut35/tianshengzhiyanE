@@ -18,8 +18,6 @@ extern "C" {
 
 #include "lsc16_service.h"
 
-#define LSC16_DEVICE_QUEUE_TIMEOUT_MS   0U
-
 /**
  * @brief LSC16语义请求最终完成回调类型。
  * @param user_ctx 提交请求时绑定的用户上下文。

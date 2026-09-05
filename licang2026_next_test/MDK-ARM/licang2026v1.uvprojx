@@ -1873,16 +1873,6 @@
               <FileType>5</FileType>
               <FilePath>../02_Service/lsc16/lsc16_service.h</FilePath>
             </File>
-            <File>
-              <FileName>lsc16_service_os.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../02_Service/lsc16/lsc16_service_os.c</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_service_os.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../02_Service/lsc16/lsc16_service_os.h</FilePath>
-            </File>
           </Files>
         </Group>
         <Group>

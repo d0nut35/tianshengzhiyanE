@@ -1,11 +1,15 @@
 /**
- * @file    ic_card_core.c
- * @brief   M2940B-HA协议构帧、异步缓冲和响应解析实现。
+ * @file    ic_bsp.c
+ * @brief   M2940B-HA协议与可选直连UART7 HAL实现。
  */
 
-#include "ic_card_core.h"
+#include "ic_bsp.h"
 
 #include <string.h>
+
+#if !LICANG_RELEASE_MINIMAL
+#include "usart.h"
+#endif
 
 #define IC_CARD_RESPONSE_PREFIX_SIZE 5U
 
@@ -64,7 +68,7 @@ static bool ic_card_packet_type_is_valid(uint8_t packet_type)
  * @param len_without_checksum 不包含校验字节的长度。
  * @return 计算出的单字节校验值。
  */
-uint8_t ic_card_checksum(const uint8_t *data, size_t len_without_checksum)
+uint8_t ic_checksum(const uint8_t *data, size_t len_without_checksum)
 {
     uint8_t value = 0U;
     size_t i;
@@ -114,13 +118,13 @@ static ic_card_status_t ic_card_build_command8(
     frame[4] = parameter0;
     frame[5] = parameter1;
     frame[6] = parameter2;
-    frame[7] = ic_card_checksum(frame, 7U);
+    frame[7] = ic_checksum(frame, 7U);
     *frame_len = IC_CARD_COMMAND_FRAME_SIZE;
     return IC_CARD_OK;
 }
 
-/** @copydoc ic_card_build_read_block_key_a_frame() */
-ic_card_status_t ic_card_build_read_block_key_a_frame(
+/** @copydoc ic_read_frame() */
+ic_card_status_t ic_read_frame(
     uint8_t address,
     uint8_t block,
     bool led_beep_prompt,
@@ -128,20 +132,24 @@ ic_card_status_t ic_card_build_read_block_key_a_frame(
     size_t capacity,
     size_t *frame_len)
 {
-    return ic_card_build_command8(
-        IC_CARD_PACKET_CARD_OPERATION,
-        IC_CARD_CMD_READ_BLOCK_KEY_A,
-        address,
-        block,
-        led_beep_prompt ? 1U : 0U,
-        0U,
-        frame,
-        capacity,
-        frame_len);
+    if ((frame == NULL) || (frame_len == NULL) ||
+        (capacity < IC_CARD_COMMAND_FRAME_SIZE)) {
+        return IC_CARD_ERR_PARAM;
+    }
+    frame[0] = IC_CARD_PACKET_CARD_OPERATION;
+    frame[1] = IC_CARD_COMMAND_FRAME_SIZE;
+    frame[2] = IC_CARD_CMD_READ_BLOCK_KEY_A;
+    frame[3] = address;
+    frame[4] = block;
+    frame[5] = led_beep_prompt ? 1U : 0U;
+    frame[6] = 0U;
+    frame[7] = ic_checksum(frame, 7U);
+    *frame_len = IC_CARD_COMMAND_FRAME_SIZE;
+    return IC_CARD_OK;
 }
 
-/** @copydoc ic_card_build_query_frame() */
-ic_card_status_t ic_card_build_query_frame(
+/** @copydoc ic_query_frame() */
+ic_card_status_t ic_query_frame(
     ic_card_command_t command,
     uint8_t address,
     uint8_t *frame,
@@ -166,8 +174,8 @@ ic_card_status_t ic_card_build_query_frame(
         frame_len);
 }
 
-/** @copydoc ic_card_parse_response_frame() */
-ic_card_status_t ic_card_parse_response_frame(
+/** @copydoc ic_parse_frame() */
+ic_card_status_t ic_parse_frame(
     const uint8_t *frame,
     size_t frame_len,
     ic_card_response_t *response)
@@ -180,7 +188,7 @@ ic_card_status_t ic_card_parse_response_frame(
     if ((frame_len < 6U) || (frame_len > IC_CARD_FRAME_SIZE_MAX) ||
         (frame[1] != frame_len) ||
         !ic_card_packet_type_is_valid(frame[0]) ||
-        (ic_card_checksum(frame, frame_len - 1U) != frame[frame_len - 1U])) {
+        (ic_checksum(frame, frame_len - 1U) != frame[frame_len - 1U])) {
         return IC_CARD_ERR_PROTOCOL;
     }
     payload_len = frame_len - 6U;
@@ -264,7 +272,7 @@ static void ic_card_commit_frame(ic_card_t *device)
 {
     uint8_t frame_len = device->parse_buffer[1];
 
-    if (ic_card_parse_response_frame(
+    if (ic_parse_frame(
             device->parse_buffer,
             frame_len,
             &device->last_response) == IC_CARD_OK) {
@@ -307,7 +315,7 @@ static void ic_card_parse_byte(ic_card_t *device, uint8_t data)
 
     device->parse_buffer[device->parse_count++] = data;
     if (device->parse_count == device->expected_len) {
-        if (ic_card_checksum(device->parse_buffer, device->expected_len - 1U) ==
+        if (ic_checksum(device->parse_buffer, device->expected_len - 1U) ==
             device->parse_buffer[device->expected_len - 1U]) {
             ic_card_commit_frame(device);
         } else {
@@ -324,7 +332,7 @@ static void ic_card_parse_byte(ic_card_t *device, uint8_t data)
  * @param port 已绑定硬件上下文的异步串口能力。
  * @return 初始化结果；首次RX启动失败时完整清空对象。
  */
-ic_card_status_t ic_card_init(ic_card_t *device, const ic_card_port_t *port)
+ic_card_status_t ic_bsp_init(ic_card_t *device, const ic_card_port_t *port)
 {
     ic_card_status_t status;
 
@@ -351,7 +359,7 @@ ic_card_status_t ic_card_init(ic_card_t *device, const ic_card_port_t *port)
  * @param device Core对象。
  * @return abort成功后返回IC_CARD_OK，否则保留对象供诊断。
  */
-ic_card_status_t ic_card_deinit(ic_card_t *device)
+ic_card_status_t ic_bsp_deinit(ic_card_t *device)
 {
     ic_card_status_t status;
 
@@ -375,7 +383,7 @@ ic_card_status_t ic_card_deinit(ic_card_t *device)
  * @param user_ctx 原样传给notify_cb的上下文。
  * @return 绑定结果。
  */
-ic_card_status_t ic_card_bind_isr_notify(
+ic_card_status_t ic_bsp_bind_notify(
     ic_card_t *device,
     ic_card_isr_notify_fn_t notify_cb,
     void *user_ctx)
@@ -396,7 +404,7 @@ ic_card_status_t ic_card_bind_isr_notify(
  * @param led_beep_prompt 是否请求成功提示。
  * @return 命令DMA启动状态。
  */
-ic_card_status_t ic_card_read_block_key_a(
+ic_card_status_t ic_bsp_read(
     ic_card_t *device,
     uint8_t address,
     uint8_t block,
@@ -419,7 +427,7 @@ ic_card_status_t ic_card_read_block_key_a(
  * @param address 当前设备地址；B0会按手册自动发送地址0。
  * @return 命令DMA启动状态或不支持错误。
  */
-ic_card_status_t ic_card_query(
+ic_card_status_t ic_bsp_query(
     ic_card_t *device,
     ic_card_command_t command,
     uint8_t address)
@@ -446,7 +454,7 @@ ic_card_status_t ic_card_query(
  * @param device Core对象。
  * @note 禁止在ISR中调用；解析期间ISR可继续向环形缓冲写入新数据。
  */
-void ic_card_process(ic_card_t *device)
+void ic_bsp_process(ic_card_t *device)
 {
     uint8_t data;
 
@@ -466,7 +474,7 @@ void ic_card_process(ic_card_t *device)
  * @return abort并重新挂接RX的结果。
  * @note 清空未完成候选帧和旧RX字节，避免污染下一事务。
  */
-ic_card_status_t ic_card_recover(ic_card_t *device)
+ic_card_status_t ic_bsp_recover(ic_card_t *device)
 {
     ic_card_status_t status;
 
@@ -489,7 +497,7 @@ ic_card_status_t ic_card_recover(ic_card_t *device)
  * @param device Core对象。
  * @return 已初始化且TX活动时返回true。
  */
-bool ic_card_is_tx_busy(const ic_card_t *device)
+bool ic_bsp_tx_busy(const ic_card_t *device)
 {
     return (device != NULL) && device->initialized && device->tx_busy;
 }
@@ -501,7 +509,7 @@ bool ic_card_is_tx_busy(const ic_card_t *device)
  * @param response 接收响应副本的输出对象。
  * @return 存在新响应时返回true。
  */
-bool ic_card_take_response(
+bool ic_bsp_take_response(
     const ic_card_t *device,
     uint32_t *last_sequence,
     ic_card_response_t *response)
@@ -522,7 +530,7 @@ bool ic_card_take_response(
  * @param data 接收16字节数据的输出数组。
  * @return 成功、卡错误或协议错误。
  */
-ic_card_status_t ic_card_extract_block_data(
+ic_card_status_t ic_block_data(
     const ic_card_response_t *response,
     uint8_t expected_address,
     uint8_t data[IC_CARD_BLOCK_DATA_SIZE])
@@ -550,7 +558,7 @@ ic_card_status_t ic_card_extract_block_data(
  * @param device Core对象。
  * @warning 仅由拥有该UART的HAL适配器在ISR中调用。
  */
-void ic_card_on_tx_complete_isr(ic_card_t *device)
+void ic_bsp_tx_isr(ic_card_t *device)
 {
     if ((device == NULL) || !device->initialized) {
         return;
@@ -565,7 +573,7 @@ void ic_card_on_tx_complete_isr(ic_card_t *device)
  * @param rx_len DMA缓冲区中的有效字节数。
  * @warning 本函数运行在ISR中，只搬运字节和发布事件，不解析协议。
  */
-void ic_card_on_rx_event_isr(ic_card_t *device, uint16_t rx_len)
+void ic_bsp_rx_isr(ic_card_t *device, uint16_t rx_len)
 {
     uint16_t i;
     uint16_t next_head;
@@ -602,7 +610,7 @@ void ic_card_on_rx_event_isr(ic_card_t *device, uint16_t rx_len)
  * @param device Core对象。
  * @warning ISR中不调用可能阻塞的abort。
  */
-void ic_card_on_error_isr(ic_card_t *device)
+void ic_bsp_error_isr(ic_card_t *device)
 {
     if ((device == NULL) || !device->initialized) {
         return;
@@ -612,3 +620,115 @@ void ic_card_on_error_isr(ic_card_t *device)
     /* HAL abort不在ISR中执行，交给Service或裸机主循环完成恢复。 */
     ic_card_notify_isr(device, IC_CARD_ISR_EVENT_ERROR);
 }
+
+#if !LICANG_RELEASE_MINIMAL
+static ic_card_status_t ic_card_hal_status(HAL_StatusTypeDef status)
+{
+    if (status == HAL_OK) return IC_CARD_OK;
+    return (status == HAL_BUSY) ? IC_CARD_ERR_BUSY : IC_CARD_ERR_IO;
+}
+
+static ic_card_status_t ic_card_hal_tx(
+    void *ctx,
+    const uint8_t *data,
+    size_t len)
+{
+    ic_card_uart7_hal_t *adapter = (ic_card_uart7_hal_t *)ctx;
+
+    if ((adapter == NULL) || (adapter->uart == NULL) || (data == NULL) ||
+        (len == 0U) || (len > UINT16_MAX)) {
+        return IC_CARD_ERR_PARAM;
+    }
+    return ic_card_hal_status(HAL_UART_Transmit_IT(
+        adapter->uart, data, (uint16_t)len));
+}
+
+static ic_card_status_t ic_card_hal_rx(
+    void *ctx,
+    uint8_t *data,
+    size_t capacity)
+{
+    ic_card_uart7_hal_t *adapter = (ic_card_uart7_hal_t *)ctx;
+    HAL_StatusTypeDef status;
+
+    if ((adapter == NULL) || (adapter->uart == NULL) || (data == NULL) ||
+        (capacity == 0U) || (capacity > UINT16_MAX)) {
+        return IC_CARD_ERR_PARAM;
+    }
+    status = HAL_UARTEx_ReceiveToIdle_DMA(
+        adapter->uart, data, (uint16_t)capacity);
+    if ((status == HAL_OK) && (adapter->uart->hdmarx != NULL)) {
+        __HAL_DMA_DISABLE_IT(adapter->uart->hdmarx, DMA_IT_HT);
+    }
+    return ic_card_hal_status(status);
+}
+
+static ic_card_status_t ic_card_hal_abort(void *ctx)
+{
+    ic_card_uart7_hal_t *adapter = (ic_card_uart7_hal_t *)ctx;
+    HAL_StatusTypeDef status;
+
+    if ((adapter == NULL) || (adapter->uart == NULL)) {
+        return IC_CARD_ERR_PARAM;
+    }
+    status = HAL_UART_Abort(adapter->uart);
+    __HAL_UART_CLEAR_OREFLAG(adapter->uart);
+    HAL_NVIC_ClearPendingIRQ(UART7_IRQn);
+    HAL_NVIC_ClearPendingIRQ(DMA1_Stream3_IRQn);
+    return ic_card_hal_status(status);
+}
+
+void ic_uart7_config(ic_card_uart7_hal_config_t *config)
+{
+    if (config != NULL) config->uart = &huart7;
+}
+
+ic_card_status_t ic_uart7_bind(
+    ic_card_uart7_hal_t *adapter,
+    ic_card_t *device,
+    const ic_card_uart7_hal_config_t *config,
+    ic_card_port_t *port)
+{
+    static const ic_card_port_t template_port = {
+        ic_card_hal_tx, ic_card_hal_rx, ic_card_hal_abort, NULL,
+    };
+
+    if ((adapter == NULL) || (device == NULL) || (config == NULL) ||
+        (config->uart == NULL) || (port == NULL)) {
+        return IC_CARD_ERR_PARAM;
+    }
+    adapter->device = device;
+    adapter->uart = config->uart;
+    *port = template_port;
+    port->ctx = adapter;
+    return IC_CARD_OK;
+}
+
+bool ic_uart7_tx_isr(
+    ic_card_uart7_hal_t *adapter,
+    UART_HandleTypeDef *huart)
+{
+    if ((adapter == NULL) || (huart != adapter->uart)) return false;
+    ic_bsp_tx_isr(adapter->device);
+    return true;
+}
+
+bool ic_uart7_rx_isr(
+    ic_card_uart7_hal_t *adapter,
+    UART_HandleTypeDef *huart,
+    uint16_t rx_len)
+{
+    if ((adapter == NULL) || (huart != adapter->uart)) return false;
+    ic_bsp_rx_isr(adapter->device, rx_len);
+    return true;
+}
+
+bool ic_uart7_error_isr(
+    ic_card_uart7_hal_t *adapter,
+    UART_HandleTypeDef *huart)
+{
+    if ((adapter == NULL) || (huart != adapter->uart)) return false;
+    ic_bsp_error_isr(adapter->device);
+    return true;
+}
+#endif

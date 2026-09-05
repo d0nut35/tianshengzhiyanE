@@ -16,7 +16,7 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "ic_card_core.h"
+#include "ic_bsp.h"
 
 #ifndef LICANG_RELEASE_MINIMAL
 #define LICANG_RELEASE_MINIMAL 0

@@ -69,7 +69,7 @@ int main(void)
         0x01U, 0x16U, 0xA3U, 0x20U, 0x00U,
     };
 
-    assert(ic_card_init(&device, &port) == IC_CARD_OK);
+    assert(ic_bsp_init(&device, &port) == IC_CARD_OK);
     assert(ic_card_service_init(&service, &config) == IC_CARD_OK);
     request.request_id = 7U;
     request.type = IC_CARD_REQUEST_READ_BLOCK;
@@ -82,11 +82,11 @@ int main(void)
     assert(ic_card_service_submit(&service, &request) == IC_CARD_OK);
     ic_card_service_process_once(&service);
     assert((fixture.tx_len == 8U) && service.active_valid);
-    ic_card_on_tx_complete_isr(&device);
+    ic_bsp_tx_isr(&device);
     (void)memset(&response_frame[5], 0x31, 16U);
-    response_frame[21] = ic_card_checksum(response_frame, 21U);
+    response_frame[21] = ic_checksum(response_frame, 21U);
     (void)memcpy(fixture.rx, response_frame, sizeof(response_frame));
-    ic_card_on_rx_event_isr(&device, sizeof(response_frame));
+    ic_bsp_rx_isr(&device, sizeof(response_frame));
     ic_card_service_process_once(&service);
     assert((fixture.callback_count == 1U) &&
            (fixture.callback_status == IC_CARD_OK));

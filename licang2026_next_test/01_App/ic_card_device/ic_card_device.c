@@ -93,7 +93,7 @@ static void ic_card_device_read_bridge(
 #if IC_CARD_DEVICE_RAW_RESULT_ENABLE
         result.response = *response;
 #endif
-        status = ic_card_extract_block_data(
+        status = ic_block_data(
             response,
             IC_CARD_DEVICE_ADDRESS,
             block_data);

@@ -16,7 +16,7 @@
 #include "ic_card_service.h"
 #include "ic_card_test_common.h"
 #include "ic_card_test_config.h"
-#include "ic_card_uart7_hal.h"
+#include "ic_bsp.h"
 #include "test_config.h"
 #include "uart_dispatch.h"
 
@@ -72,7 +72,7 @@ static void ic_card_baremetal_notify(void *ctx)
 static bool ic_card_baremetal_dispatch_tx(void *ctx, UART_HandleTypeDef *huart)
 {
     ic_card_baremetal_context_t *test = (ic_card_baremetal_context_t *)ctx;
-    return (test != NULL) && ic_card_uart7_hal_handle_tx_complete(
+    return (test != NULL) && ic_uart7_tx_isr(
         &test->adapter, huart);
 }
 
@@ -89,7 +89,7 @@ static bool ic_card_baremetal_dispatch_rx(
     uint16_t rx_len)
 {
     ic_card_baremetal_context_t *test = (ic_card_baremetal_context_t *)ctx;
-    return (test != NULL) && ic_card_uart7_hal_handle_rx_event(
+    return (test != NULL) && ic_uart7_rx_isr(
         &test->adapter, huart, rx_len);
 }
 
@@ -104,7 +104,7 @@ static bool ic_card_baremetal_dispatch_error(
     UART_HandleTypeDef *huart)
 {
     ic_card_baremetal_context_t *test = (ic_card_baremetal_context_t *)ctx;
-    return (test != NULL) && ic_card_uart7_hal_handle_error(
+    return (test != NULL) && ic_uart7_error_isr(
         &test->adapter, huart);
 }
 
@@ -131,7 +131,7 @@ static void ic_card_baremetal_read_done(
     if ((status == IC_CARD_OK) && (response != NULL)) {
         (void)memset(&result, 0, sizeof(result));
         result.response = *response;
-        status = ic_card_extract_block_data(
+        status = ic_block_data(
             response, IC_CARD_DEVICE_ADDRESS, result.block_data);
         if (status == IC_CARD_OK) {
             if (!ic_ball_rule_2026_decode(result.block_data, &result.ball)) {
@@ -171,7 +171,7 @@ static void ic_card_baremetal_rollback(ic_card_baremetal_context_t *test)
         (void)ic_card_service_deinit(&test->service);
     }
     if (test->device.initialized) {
-        (void)ic_card_deinit(&test->device);
+        (void)ic_bsp_deinit(&test->device);
     }
     debug_uart1_deinit(&test->debug);
     (void)memset(test, 0, sizeof(*test));
@@ -198,8 +198,8 @@ ic_card_status_t ic_card_baremetal_test_init(void)
     if (!debug_uart1_init(&test->debug)) {
         return IC_CARD_ERR_IO;
     }
-    ic_card_uart7_hal_make_config(&hal_config);
-    status = ic_card_uart7_hal_bind(
+    ic_uart7_config(&hal_config);
+    status = ic_uart7_bind(
         &test->adapter, &test->device, &hal_config, &test->port);
     if (status != IC_CARD_OK) {
         ic_card_baremetal_rollback(test);
@@ -214,7 +214,7 @@ ic_card_status_t ic_card_baremetal_test_init(void)
         return IC_CARD_ERR_IO;
     }
     test->dispatch_registered = true;
-    status = ic_card_init(&test->device, &test->port);
+    status = ic_bsp_init(&test->device, &test->port);
     if (status != IC_CARD_OK) {
         ic_card_baremetal_rollback(test);
         return status;

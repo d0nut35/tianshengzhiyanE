@@ -17,7 +17,7 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "ic_card_core.h"
+#include "ic_bsp.h"
 
 typedef enum {
     IC_CARD_BALL_INVALID = 0,

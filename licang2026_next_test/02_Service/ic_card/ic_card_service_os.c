@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "cmsis_os.h"
-#include "ic_card_uart7_hal.h"
+#include "ic_bsp.h"
 #include "uart_dispatch.h"
 
 #if !LICANG_RELEASE_MINIMAL
@@ -97,7 +97,7 @@ static bool ic_card_os_dispatch_tx(void *ctx, UART_HandleTypeDef *huart)
 {
     ic_card_service_os_context_t *os_ctx =
         (ic_card_service_os_context_t *)ctx;
-    return (os_ctx != NULL) && ic_card_uart7_hal_handle_tx_complete(
+    return (os_ctx != NULL) && ic_uart7_tx_isr(
         &os_ctx->adapter,
         huart);
 }
@@ -116,7 +116,7 @@ static bool ic_card_os_dispatch_rx(
 {
     ic_card_service_os_context_t *os_ctx =
         (ic_card_service_os_context_t *)ctx;
-    return (os_ctx != NULL) && ic_card_uart7_hal_handle_rx_event(
+    return (os_ctx != NULL) && ic_uart7_rx_isr(
         &os_ctx->adapter,
         huart,
         rx_len);
@@ -132,7 +132,7 @@ static bool ic_card_os_dispatch_error(void *ctx, UART_HandleTypeDef *huart)
 {
     ic_card_service_os_context_t *os_ctx =
         (ic_card_service_os_context_t *)ctx;
-    return (os_ctx != NULL) && ic_card_uart7_hal_handle_error(
+    return (os_ctx != NULL) && ic_uart7_error_isr(
         &os_ctx->adapter,
         huart);
 }
@@ -152,7 +152,7 @@ static void ic_card_os_rollback(ic_card_service_os_context_t *ctx)
         (void)ic_card_service_deinit(&ctx->service);
     }
     if (ctx->device.initialized) {
-        (void)ic_card_deinit(&ctx->device);
+        (void)ic_bsp_deinit(&ctx->device);
     }
     if (ctx->request_queue != NULL) {
         (void)osMessageQueueDelete(ctx->request_queue);
@@ -231,8 +231,8 @@ ic_card_status_t ic_card_service_os_init(void)
         return IC_CARD_ERR_IO;
     }
 
-    ic_card_uart7_hal_make_config(&hal_config);
-    status = ic_card_uart7_hal_bind(
+    ic_uart7_config(&hal_config);
+    status = ic_uart7_bind(
         &ctx->adapter,
         &ctx->device,
         &hal_config,
@@ -253,7 +253,7 @@ ic_card_status_t ic_card_service_os_init(void)
     }
     ctx->dispatch_registered = true;
 
-    status = ic_card_init(&ctx->device, &ctx->port);
+    status = ic_bsp_init(&ctx->device, &ctx->port);
     if (status != IC_CARD_OK) {
         ic_card_os_rollback(ctx);
         return status;

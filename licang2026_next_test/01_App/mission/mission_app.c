@@ -266,7 +266,7 @@ static void mission_ic_transfer_done(
     transport->active = false;
     status = mission_map_ic_status(completion->status);
     if (status == IC_CARD_OK) {
-        status = ic_card_parse_response_frame(
+        status = ic_parse_frame(
             completion->rx_data, completion->rx_len, &response);
         if ((status == IC_CARD_OK) &&
             (response.command != IC_CARD_CMD_READ_BLOCK_KEY_A)) {
@@ -302,7 +302,7 @@ static ic_card_status_t mission_ic_submit(
     if (request->type != IC_CARD_REQUEST_READ_BLOCK) {
         return IC_CARD_ERR_UNSUPPORTED;
     }
-    status = ic_card_build_read_block_key_a_frame(
+    status = ic_read_frame(
         request->address,
         request->data.read_block.block,
         request->data.read_block.led_beep_prompt,

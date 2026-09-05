@@ -150,13 +150,13 @@ static ic_card_status_t ic_card_service_start_active(
     ic_card_status_t status;
 
     if (service->active.type == IC_CARD_REQUEST_READ_BLOCK) {
-        status = ic_card_read_block_key_a(
+        status = ic_bsp_read(
             service->config.device,
             service->active.address,
             service->active.data.read_block.block,
             service->active.data.read_block.led_beep_prompt);
     } else {
-        status = ic_card_query(
+        status = ic_bsp_query(
             service->config.device,
             service->active.data.query.command,
             service->active.address);
@@ -189,7 +189,7 @@ ic_card_status_t ic_card_service_init(
     service->config = *config;
     service->response_sequence = config->device->response_sequence;
     service->initialized = true;
-    return ic_card_bind_isr_notify(
+    return ic_bsp_bind_notify(
         config->device,
         ic_card_service_isr_notify,
         service);
@@ -211,7 +211,7 @@ ic_card_status_t ic_card_service_deinit(ic_card_service_t *service)
     if (service->active_valid || (service->queue_count > 0U)) {
         return IC_CARD_ERR_BUSY;
     }
-    (void)ic_card_bind_isr_notify(service->config.device, NULL, NULL);
+    (void)ic_bsp_bind_notify(service->config.device, NULL, NULL);
     (void)memset(service, 0, sizeof(*service));
     return IC_CARD_OK;
 }
@@ -267,7 +267,7 @@ void ic_card_service_process_once(ic_card_service_t *service)
         return;
     }
 
-    ic_card_process(service->config.device);
+    ic_bsp_process(service->config.device);
 
     /* UART错误优先，避免同一轮同时到达的旧TX/RX事件误完成请求。 */
     if (service->handled_error_sequence != service->error_sequence) {
@@ -277,7 +277,7 @@ void ic_card_service_process_once(ic_card_service_t *service)
 #if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
         ++service->stats.uart_errors;
 #endif
-        status = ic_card_recover(service->config.device);
+        status = ic_bsp_recover(service->config.device);
         ic_card_service_complete(
             service,
             (status == IC_CARD_OK) ? IC_CARD_ERR_IO : status,
@@ -291,7 +291,7 @@ void ic_card_service_process_once(ic_card_service_t *service)
             service->handled_rx_sequence = service->rx_sequence;
         }
 
-        while (ic_card_take_response(
+        while (ic_bsp_take_response(
             service->config.device,
             &service->response_sequence,
             &response)) {
@@ -314,7 +314,7 @@ void ic_card_service_process_once(ic_card_service_t *service)
 #if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
             ++service->stats.timed_out;
 #endif
-            status = ic_card_recover(service->config.device);
+            status = ic_bsp_recover(service->config.device);
             ic_card_service_complete(
                 service,
                 (status == IC_CARD_OK) ? IC_CARD_ERR_TIMEOUT : status,

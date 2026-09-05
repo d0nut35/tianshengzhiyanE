@@ -19,7 +19,7 @@
 #include "mult_uart_modules_test_config.h"
 #include "mult_uart_service_os.h"
 #include "nano_vision_core.h"
-#include "photo_gate_stm32_hal.h"
+#include "gate.h"
 #include "test_config.h"
 #include "zdt_turntable_device.h"
 #include "zdt_turntable_test_common.h"
@@ -1576,7 +1576,7 @@ static bool modules_gate_is_stably_high(void)
     uint8_t sample;
 
     for (sample = 0U; sample < MULT_UART_MODULES_GATE_CONFIRM_SAMPLES; ++sample) {
-        if (!photo_gate_stm32_hal_read_raw()) return false;
+        if (!gate_read()) return false;
         if ((sample + 1U) < MULT_UART_MODULES_GATE_CONFIRM_SAMPLES) {
             (void)osDelay(modules_ms_to_ticks(
                 MULT_UART_MODULES_GATE_CONFIRM_INTERVAL_MS));
@@ -1606,7 +1606,7 @@ static void modules_slot_finish(
             direction,
             (reason != NULL) ? reason : "UNKNOWN",
             (unsigned)fine_steps,
-            photo_gate_stm32_hal_read_raw() ? 1U : 0U);
+            gate_read() ? 1U : 0U);
     }
     (void)debug_uart1_write_text(&ctx->debug, ctx->text);
     modules_multi_on_slot_finished(ctx, success, reason);
@@ -1974,7 +1974,7 @@ static bool modules_handle_command(const uint8_t *data, size_t len)
     if (modules_command_equals(data, len, "GATE")) {
         (void)snprintf(ctx->text, sizeof(ctx->text),
             "GATE PB0=%u\r\n",
-            photo_gate_stm32_hal_read_raw() ? 1U : 0U);
+            gate_read() ? 1U : 0U);
         (void)debug_uart1_write_text(&ctx->debug, ctx->text);
         return false;
     }

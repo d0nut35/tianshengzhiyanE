@@ -22,7 +22,7 @@
 #include "mission_config.h"
 #include "mult_uart_device.h"
 #include "nano_vision_core.h"
-#include "photo_gate_stm32_hal.h"
+#include "gate.h"
 #include "zdt_turntable_device.h"
 
 #define MISSION_FLAG_COMMAND       (1UL << 1)
@@ -705,7 +705,7 @@ static bool mission_gate_is_stably_high(void)
     uint8_t sample;
 
     for (sample = 0U; sample < MISSION_GATE_CONFIRM_SAMPLES; ++sample) {
-        if (!photo_gate_stm32_hal_read_raw()) return false;
+        if (!gate_read()) return false;
         if ((sample + 1U) < MISSION_GATE_CONFIRM_SAMPLES) {
             (void)osDelay(mission_ms_to_ticks(
                 MISSION_GATE_CONFIRM_INTERVAL_MS));

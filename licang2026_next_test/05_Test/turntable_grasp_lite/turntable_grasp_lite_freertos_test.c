@@ -19,7 +19,7 @@
 #include "lsc16_device.h"
 #include "mult_uart_device.h"
 #include "nano_vision_core.h"
-#include "photo_gate_stm32_hal.h"
+#include "gate.h"
 #include "task.h"
 #include "test_config.h"
 #include "turntable_grasp_lite_config.h"
@@ -658,7 +658,7 @@ static bool lite_gate_is_stably_high(void)
     uint8_t sample;
 
     for (sample = 0U; sample < TURN_GRASP_LITE_GATE_CONFIRM_SAMPLES; ++sample) {
-        if (!photo_gate_stm32_hal_read_raw()) return false;
+        if (!gate_read()) return false;
         if ((sample + 1U) < TURN_GRASP_LITE_GATE_CONFIRM_SAMPLES) {
             (void)osDelay(lite_ms_to_ticks(
                 TURN_GRASP_LITE_GATE_CONFIRM_INTERVAL_MS));
@@ -763,7 +763,7 @@ static void lite_slot_finish(
         (void)snprintf(ctx->text, sizeof(ctx->text),
             "SLOT ERROR DIR=%s FINE=%u PB0=%u %s\r\n",
             direction, (unsigned)fine_steps,
-            photo_gate_stm32_hal_read_raw() ? 1U : 0U,
+            gate_read() ? 1U : 0U,
             (reason != NULL) ? reason : "UNKNOWN");
     }
     (void)debug_uart1_write_text(&ctx->debug, ctx->text);
@@ -1549,7 +1549,7 @@ static void lite_print_status(lite_context_t *ctx)
         (unsigned)ctx->slot.phase,
         (unsigned)ctx->slot.fine_steps,
         ctx->zdt.firmware_known ? 1U : 0U,
-        photo_gate_stm32_hal_read_raw() ? 1U : 0U,
+        gate_read() ? 1U : 0U,
         (ctx->multi_fault != NULL) ? ctx->multi_fault : "NONE");
     (void)debug_uart1_write_text(&ctx->debug, ctx->text);
 }

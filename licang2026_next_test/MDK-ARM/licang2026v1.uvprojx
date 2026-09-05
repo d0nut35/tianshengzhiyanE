@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F750xx,RTT_USE_ASM=0,LICANG_RELEASE_MINIMAL=1</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../01_App/lsc16_device;../02_Service/lsc16;../03_Middleware/lsc16;../04_Bsp/lsc16;../05_Test/lsc16;../01_App/mult_uart_device;../02_Service/mult_uart;../03_Middleware/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../01_App/ic_card_device;../02_Service/ic_card;../03_Middleware/ic_card;../04_Bsp/ic_card;../01_App/zdt_turntable_device;../02_Service/zdt_turntable;../03_Middleware/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/zdt_turntable;../05_Test/common;../05_Test;../05_Test/mult_uart;../05_Test/mult_uart_modules;../05_Test/turntable_grasp_lite;../05_Test/ic_card;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/04_Bsp/ble;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
+              <IncludePath>../Core/Inc;../02_Service/lsc16;../04_Bsp/lsc16;../02_Service/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../02_Service/ic_card;../04_Bsp/ic_card;../02_Service/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/common;../05_Test;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/04_Bsp/ble;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -1431,78 +1431,12 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>01_App/mult_uart_device</GroupName>
-          <Files>
-            <File>
-              <FileName>mult_uart_device.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../01_App/mult_uart_device/mult_uart_device.c</FilePath>
-              <FileOption>
-                <CommonProperty>
-                  <UseCPPCompiler>2</UseCPPCompiler>
-                  <RVCTCodeConst>0</RVCTCodeConst>
-                  <RVCTZI>0</RVCTZI>
-                  <RVCTOtherData>0</RVCTOtherData>
-                  <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
-                  <AlwaysBuild>2</AlwaysBuild>
-                  <GenerateAssemblyFile>2</GenerateAssemblyFile>
-                  <AssembleAssemblyFile>2</AssembleAssemblyFile>
-                  <PublicsOnly>2</PublicsOnly>
-                  <StopOnExitCode>11</StopOnExitCode>
-                  <CustomArgument></CustomArgument>
-                  <IncludeLibraryModules></IncludeLibraryModules>
-                  <ComprImg>1</ComprImg>
-                </CommonProperty>
-                <FileArmAds>
-                  <Cads>
-                    <interw>2</interw>
-                    <Optim>0</Optim>
-                    <oTime>2</oTime>
-                    <SplitLS>2</SplitLS>
-                    <OneElfS>2</OneElfS>
-                    <Strict>2</Strict>
-                    <EnumInt>2</EnumInt>
-                    <PlainCh>2</PlainCh>
-                    <Ropi>2</Ropi>
-                    <Rwpi>2</Rwpi>
-                    <wLevel>0</wLevel>
-                    <uThumb>2</uThumb>
-                    <uSurpInc>2</uSurpInc>
-                    <uC99>2</uC99>
-                    <uGnu>2</uGnu>
-                    <useXO>2</useXO>
-                    <v6Lang>0</v6Lang>
-                    <v6LangP>0</v6LangP>
-                    <vShortEn>2</vShortEn>
-                    <vShortWch>2</vShortWch>
-                    <v6Lto>2</v6Lto>
-                    <v6WtE>2</v6WtE>
-                    <v6Rtti>2</v6Rtti>
-                    <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
-                      <Define></Define>
-                      <Undefine></Undefine>
-                      <IncludePath></IncludePath>
-                    </VariousControls>
-                  </Cads>
-                </FileArmAds>
-              </FileOption>
-            </File>
-            <File>
-              <FileName>mult_uart_device.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../01_App/mult_uart_device/mult_uart_device.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
           <GroupName>02_Service/mult_uart</GroupName>
           <Files>
             <File>
-              <FileName>mult_uart_service.c</FileName>
+              <FileName>mux_service.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../02_Service/mult_uart/mult_uart_service.c</FilePath>
+              <FilePath>../02_Service/mult_uart/mux_service.c</FilePath>
               <FileOption>
                 <CommonProperty>
                   <UseCPPCompiler>2</UseCPPCompiler>
@@ -1556,85 +1490,9 @@
               </FileOption>
             </File>
             <File>
-              <FileName>mult_uart_service.h</FileName>
+              <FileName>mux_service.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../02_Service/mult_uart/mult_uart_service.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_service_os.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../02_Service/mult_uart/mult_uart_service_os.c</FilePath>
-              <FileOption>
-                <CommonProperty>
-                  <UseCPPCompiler>2</UseCPPCompiler>
-                  <RVCTCodeConst>0</RVCTCodeConst>
-                  <RVCTZI>0</RVCTZI>
-                  <RVCTOtherData>0</RVCTOtherData>
-                  <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
-                  <AlwaysBuild>2</AlwaysBuild>
-                  <GenerateAssemblyFile>2</GenerateAssemblyFile>
-                  <AssembleAssemblyFile>2</AssembleAssemblyFile>
-                  <PublicsOnly>2</PublicsOnly>
-                  <StopOnExitCode>11</StopOnExitCode>
-                  <CustomArgument></CustomArgument>
-                  <IncludeLibraryModules></IncludeLibraryModules>
-                  <ComprImg>1</ComprImg>
-                </CommonProperty>
-                <FileArmAds>
-                  <Cads>
-                    <interw>2</interw>
-                    <Optim>0</Optim>
-                    <oTime>2</oTime>
-                    <SplitLS>2</SplitLS>
-                    <OneElfS>2</OneElfS>
-                    <Strict>2</Strict>
-                    <EnumInt>2</EnumInt>
-                    <PlainCh>2</PlainCh>
-                    <Ropi>2</Ropi>
-                    <Rwpi>2</Rwpi>
-                    <wLevel>0</wLevel>
-                    <uThumb>2</uThumb>
-                    <uSurpInc>2</uSurpInc>
-                    <uC99>2</uC99>
-                    <uGnu>2</uGnu>
-                    <useXO>2</useXO>
-                    <v6Lang>0</v6Lang>
-                    <v6LangP>0</v6LangP>
-                    <vShortEn>2</vShortEn>
-                    <vShortWch>2</vShortWch>
-                    <v6Lto>2</v6Lto>
-                    <v6WtE>2</v6WtE>
-                    <v6Rtti>2</v6Rtti>
-                    <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
-                      <Define></Define>
-                      <Undefine></Undefine>
-                      <IncludePath></IncludePath>
-                    </VariousControls>
-                  </Cads>
-                </FileArmAds>
-              </FileOption>
-            </File>
-            <File>
-              <FileName>mult_uart_service_os.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../02_Service/mult_uart/mult_uart_service_os.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>03_Middleware/mult_uart</GroupName>
-          <Files>
-            <File>
-              <FileName>mult_uart_core.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../03_Middleware/mult_uart/mult_uart_core.c</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_core.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../03_Middleware/mult_uart/mult_uart_core.h</FilePath>
+              <FilePath>../02_Service/mult_uart/mux_service.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -1642,19 +1500,14 @@
           <GroupName>04_Bsp/mult_uart</GroupName>
           <Files>
             <File>
-              <FileName>mult_uart_stm32_hal.c</FileName>
+              <FileName>mux_bsp.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../04_Bsp/mult_uart/mult_uart_stm32_hal.c</FilePath>
+              <FilePath>../04_Bsp/mult_uart/mux_bsp.c</FilePath>
             </File>
             <File>
-              <FileName>mult_uart_stm32_hal.h</FileName>
+              <FileName>mux_bsp.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../04_Bsp/mult_uart/mult_uart_stm32_hal.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_board_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../04_Bsp/mult_uart/mult_uart_board_config.h</FilePath>
+              <FilePath>../04_Bsp/mult_uart/mux_bsp.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -1806,97 +1659,17 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>05_Test/mult_uart</GroupName>
-          <Files>
-            <File>
-              <FileName>test_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/test_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_test_protocol.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_test_protocol.c</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_test_protocol.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_test_protocol.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_baremetal_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_baremetal_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_baremetal_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_baremetal_test.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_freertos_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_freertos_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_freertos_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/mult_uart/mult_uart_freertos_test.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>01_App/lsc16_device</GroupName>
-          <Files>
-            <File>
-              <FileName>lsc16_device.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../01_App/lsc16_device/lsc16_device.c</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_device.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../01_App/lsc16_device/lsc16_device.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
           <GroupName>02_Service/lsc16</GroupName>
           <Files>
             <File>
-              <FileName>lsc16_service.c</FileName>
+              <FileName>arm.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../02_Service/lsc16/lsc16_service.c</FilePath>
+              <FilePath>../02_Service/lsc16/arm.c</FilePath>
             </File>
             <File>
-              <FileName>lsc16_service.h</FileName>
+              <FileName>arm.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../02_Service/lsc16/lsc16_service.h</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_service_os.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../02_Service/lsc16/lsc16_service_os.c</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_service_os.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../02_Service/lsc16/lsc16_service_os.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>03_Middleware/lsc16</GroupName>
-          <Files>
-            <File>
-              <FileName>lsc16_core.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../03_Middleware/lsc16/lsc16_core.c</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_core.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../03_Middleware/lsc16/lsc16_core.h</FilePath>
+              <FilePath>../02_Service/lsc16/arm.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -1904,186 +1677,14 @@
           <GroupName>04_Bsp/lsc16</GroupName>
           <Files>
             <File>
-              <FileName>lsc16_stm32_hal.c</FileName>
+              <FileName>arm_bsp.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../04_Bsp/lsc16/lsc16_stm32_hal.c</FilePath>
+              <FilePath>../04_Bsp/lsc16/arm_bsp.c</FilePath>
             </File>
             <File>
-              <FileName>lsc16_stm32_hal.h</FileName>
+              <FileName>arm_bsp.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../04_Bsp/lsc16/lsc16_stm32_hal.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>05_Test/lsc16</GroupName>
-          <Files>
-            <File>
-              <FileName>lsc16_test_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/lsc16/lsc16_test_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_test_common.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/lsc16/lsc16_test_common.c</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_test_common.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/lsc16/lsc16_test_common.h</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_baremetal_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/lsc16/lsc16_baremetal_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_baremetal_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/lsc16/lsc16_baremetal_test.h</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_freertos_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/lsc16/lsc16_freertos_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>lsc16_freertos_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/lsc16/lsc16_freertos_test.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>01_App/ic_card_device</GroupName>
-          <Files>
-            <File>
-              <FileName>ic_card_device.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../01_App/ic_card_device/ic_card_device.c</FilePath>
-              <FileOption>
-                <CommonProperty>
-                  <UseCPPCompiler>2</UseCPPCompiler>
-                  <RVCTCodeConst>0</RVCTCodeConst>
-                  <RVCTZI>0</RVCTZI>
-                  <RVCTOtherData>0</RVCTOtherData>
-                  <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
-                  <AlwaysBuild>2</AlwaysBuild>
-                  <GenerateAssemblyFile>2</GenerateAssemblyFile>
-                  <AssembleAssemblyFile>2</AssembleAssemblyFile>
-                  <PublicsOnly>2</PublicsOnly>
-                  <StopOnExitCode>11</StopOnExitCode>
-                  <CustomArgument></CustomArgument>
-                  <IncludeLibraryModules></IncludeLibraryModules>
-                  <ComprImg>1</ComprImg>
-                </CommonProperty>
-                <FileArmAds>
-                  <Cads>
-                    <interw>2</interw>
-                    <Optim>0</Optim>
-                    <oTime>2</oTime>
-                    <SplitLS>2</SplitLS>
-                    <OneElfS>2</OneElfS>
-                    <Strict>2</Strict>
-                    <EnumInt>2</EnumInt>
-                    <PlainCh>2</PlainCh>
-                    <Ropi>2</Ropi>
-                    <Rwpi>2</Rwpi>
-                    <wLevel>0</wLevel>
-                    <uThumb>2</uThumb>
-                    <uSurpInc>2</uSurpInc>
-                    <uC99>2</uC99>
-                    <uGnu>2</uGnu>
-                    <useXO>2</useXO>
-                    <v6Lang>0</v6Lang>
-                    <v6LangP>0</v6LangP>
-                    <vShortEn>2</vShortEn>
-                    <vShortWch>2</vShortWch>
-                    <v6Lto>2</v6Lto>
-                    <v6WtE>2</v6WtE>
-                    <v6Rtti>2</v6Rtti>
-                    <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
-                      <Define></Define>
-                      <Undefine></Undefine>
-                      <IncludePath></IncludePath>
-                    </VariousControls>
-                  </Cads>
-                </FileArmAds>
-              </FileOption>
-            </File>
-            <File>
-              <FileName>ic_card_device.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../01_App/ic_card_device/ic_card_device.h</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_device_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../01_App/ic_card_device/ic_card_device_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>ic_ball_rule_2026.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../01_App/ic_card_device/ic_ball_rule_2026.c</FilePath>
-              <FileOption>
-                <CommonProperty>
-                  <UseCPPCompiler>2</UseCPPCompiler>
-                  <RVCTCodeConst>0</RVCTCodeConst>
-                  <RVCTZI>0</RVCTZI>
-                  <RVCTOtherData>0</RVCTOtherData>
-                  <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
-                  <AlwaysBuild>2</AlwaysBuild>
-                  <GenerateAssemblyFile>2</GenerateAssemblyFile>
-                  <AssembleAssemblyFile>2</AssembleAssemblyFile>
-                  <PublicsOnly>2</PublicsOnly>
-                  <StopOnExitCode>11</StopOnExitCode>
-                  <CustomArgument></CustomArgument>
-                  <IncludeLibraryModules></IncludeLibraryModules>
-                  <ComprImg>1</ComprImg>
-                </CommonProperty>
-                <FileArmAds>
-                  <Cads>
-                    <interw>2</interw>
-                    <Optim>0</Optim>
-                    <oTime>2</oTime>
-                    <SplitLS>2</SplitLS>
-                    <OneElfS>2</OneElfS>
-                    <Strict>2</Strict>
-                    <EnumInt>2</EnumInt>
-                    <PlainCh>2</PlainCh>
-                    <Ropi>2</Ropi>
-                    <Rwpi>2</Rwpi>
-                    <wLevel>0</wLevel>
-                    <uThumb>2</uThumb>
-                    <uSurpInc>2</uSurpInc>
-                    <uC99>2</uC99>
-                    <uGnu>2</uGnu>
-                    <useXO>2</useXO>
-                    <v6Lang>0</v6Lang>
-                    <v6LangP>0</v6LangP>
-                    <vShortEn>2</vShortEn>
-                    <vShortWch>2</vShortWch>
-                    <v6Lto>2</v6Lto>
-                    <v6WtE>2</v6WtE>
-                    <v6Rtti>2</v6Rtti>
-                    <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
-                      <Define></Define>
-                      <Undefine></Undefine>
-                      <IncludePath></IncludePath>
-                    </VariousControls>
-                  </Cads>
-                </FileArmAds>
-              </FileOption>
-            </File>
-            <File>
-              <FileName>ic_ball_rule_2026.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../01_App/ic_card_device/ic_ball_rule_2026.h</FilePath>
+              <FilePath>../04_Bsp/lsc16/arm_bsp.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -2100,25 +1701,15 @@
               <FileType>5</FileType>
               <FilePath>../02_Service/ic_card/ic_card_service.h</FilePath>
             </File>
-            <File>
-              <FileName>ic_card_service_os.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../02_Service/ic_card/ic_card_service_os.c</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_service_os.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../02_Service/ic_card/ic_card_service_os.h</FilePath>
-            </File>
           </Files>
         </Group>
         <Group>
-          <GroupName>03_Middleware/ic_card</GroupName>
+          <GroupName>04_Bsp/ic_card</GroupName>
           <Files>
             <File>
-              <FileName>ic_card_core.c</FileName>
+              <FileName>ic_bsp.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../03_Middleware/ic_card/ic_card_core.c</FilePath>
+              <FilePath>../04_Bsp/ic_card/ic_bsp.c</FilePath>
               <FileOption>
                 <CommonProperty>
                   <UseCPPCompiler>2</UseCPPCompiler>
@@ -2172,24 +1763,9 @@
               </FileOption>
             </File>
             <File>
-              <FileName>ic_card_core.h</FileName>
+              <FileName>ic_bsp.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../03_Middleware/ic_card/ic_card_core.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>04_Bsp/ic_card</GroupName>
-          <Files>
-            <File>
-              <FileName>ic_card_uart7_hal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../04_Bsp/ic_card/ic_card_uart7_hal.c</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_uart7_hal.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../04_Bsp/ic_card/ic_card_uart7_hal.h</FilePath>
+              <FilePath>../04_Bsp/ic_card/ic_bsp.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -2209,112 +1785,6 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>05_Test/ic_card</GroupName>
-          <Files>
-            <File>
-              <FileName>ic_card_test_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/ic_card/ic_card_test_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_test_common.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/ic_card/ic_card_test_common.c</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_test_common.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/ic_card/ic_card_test_common.h</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_baremetal_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/ic_card/ic_card_baremetal_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_baremetal_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/ic_card/ic_card_baremetal_test.h</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_freertos_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/ic_card/ic_card_freertos_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>ic_card_freertos_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/ic_card/ic_card_freertos_test.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>01_App/zdt_turntable_device</GroupName>
-          <Files>
-            <File>
-              <FileName>zdt_turntable_device.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../01_App/zdt_turntable_device/zdt_turntable_device.c</FilePath>
-              <FileOption>
-                <CommonProperty>
-                  <UseCPPCompiler>2</UseCPPCompiler>
-                  <RVCTCodeConst>0</RVCTCodeConst>
-                  <RVCTZI>0</RVCTZI>
-                  <RVCTOtherData>0</RVCTOtherData>
-                  <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
-                  <AlwaysBuild>2</AlwaysBuild>
-                  <GenerateAssemblyFile>2</GenerateAssemblyFile>
-                  <AssembleAssemblyFile>2</AssembleAssemblyFile>
-                  <PublicsOnly>2</PublicsOnly>
-                  <StopOnExitCode>11</StopOnExitCode>
-                  <CustomArgument></CustomArgument>
-                  <IncludeLibraryModules></IncludeLibraryModules>
-                  <ComprImg>1</ComprImg>
-                </CommonProperty>
-                <FileArmAds>
-                  <Cads>
-                    <interw>2</interw>
-                    <Optim>0</Optim>
-                    <oTime>2</oTime>
-                    <SplitLS>2</SplitLS>
-                    <OneElfS>2</OneElfS>
-                    <Strict>2</Strict>
-                    <EnumInt>2</EnumInt>
-                    <PlainCh>2</PlainCh>
-                    <Ropi>2</Ropi>
-                    <Rwpi>2</Rwpi>
-                    <wLevel>0</wLevel>
-                    <uThumb>2</uThumb>
-                    <uSurpInc>2</uSurpInc>
-                    <uC99>2</uC99>
-                    <uGnu>2</uGnu>
-                    <useXO>2</useXO>
-                    <v6Lang>0</v6Lang>
-                    <v6LangP>0</v6LangP>
-                    <vShortEn>2</vShortEn>
-                    <vShortWch>2</vShortWch>
-                    <v6Lto>2</v6Lto>
-                    <v6WtE>2</v6WtE>
-                    <v6Rtti>2</v6Rtti>
-                    <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
-                      <Define></Define>
-                      <Undefine></Undefine>
-                      <IncludePath></IncludePath>
-                    </VariousControls>
-                  </Cads>
-                </FileArmAds>
-              </FileOption>
-            </File>
-            <File>
-              <FileName>zdt_turntable_device.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../01_App/zdt_turntable_device/zdt_turntable_device.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
           <GroupName>02_Service/zdt_turntable</GroupName>
           <Files>
             <File>
@@ -2330,12 +1800,12 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>03_Middleware/zdt_turntable</GroupName>
+          <GroupName>04_Bsp/zdt_turntable</GroupName>
           <Files>
             <File>
-              <FileName>zdt_turntable_core.c</FileName>
+              <FileName>turn_bsp.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../03_Middleware/zdt_turntable/zdt_turntable_core.c</FilePath>
+              <FilePath>../04_Bsp/zdt_turntable/turn_bsp.c</FilePath>
               <FileOption>
                 <CommonProperty>
                   <UseCPPCompiler>2</UseCPPCompiler>
@@ -2389,64 +1859,9 @@
               </FileOption>
             </File>
             <File>
-              <FileName>zdt_turntable_core.h</FileName>
+              <FileName>turn_bsp.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../03_Middleware/zdt_turntable/zdt_turntable_core.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>04_Bsp/zdt_turntable</GroupName>
-          <Files>
-            <File>
-              <FileName>zdt_turntable_uart7_hal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../04_Bsp/zdt_turntable/zdt_turntable_uart7_hal.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_uart7_hal.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../04_Bsp/zdt_turntable/zdt_turntable_uart7_hal.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>05_Test/zdt_turntable</GroupName>
-          <Files>
-            <File>
-              <FileName>zdt_turntable_test_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_test_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_test_common.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_test_common.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_test_common.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_test_common.h</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_baremetal_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_baremetal_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_baremetal_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_baremetal_test.h</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_freertos_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_freertos_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_turntable_freertos_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/zdt_turntable/zdt_turntable_freertos_test.h</FilePath>
+              <FilePath>../04_Bsp/zdt_turntable/turn_bsp.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -2454,110 +1869,9 @@
           <GroupName>04_Bsp/photo_gate</GroupName>
           <Files>
             <File>
-              <FileName>photo_gate_board_config.h</FileName>
+              <FileName>gate.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../04_Bsp/photo_gate/photo_gate_board_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>photo_gate_stm32_hal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../04_Bsp/photo_gate/photo_gate_stm32_hal.c</FilePath>
-              <FileOption>
-                <CommonProperty>
-                  <UseCPPCompiler>2</UseCPPCompiler>
-                  <RVCTCodeConst>0</RVCTCodeConst>
-                  <RVCTZI>0</RVCTZI>
-                  <RVCTOtherData>0</RVCTOtherData>
-                  <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
-                  <AlwaysBuild>2</AlwaysBuild>
-                  <GenerateAssemblyFile>2</GenerateAssemblyFile>
-                  <AssembleAssemblyFile>2</AssembleAssemblyFile>
-                  <PublicsOnly>2</PublicsOnly>
-                  <StopOnExitCode>11</StopOnExitCode>
-                  <CustomArgument></CustomArgument>
-                  <IncludeLibraryModules></IncludeLibraryModules>
-                  <ComprImg>1</ComprImg>
-                </CommonProperty>
-                <FileArmAds>
-                  <Cads>
-                    <interw>2</interw>
-                    <Optim>0</Optim>
-                    <oTime>2</oTime>
-                    <SplitLS>2</SplitLS>
-                    <OneElfS>2</OneElfS>
-                    <Strict>2</Strict>
-                    <EnumInt>2</EnumInt>
-                    <PlainCh>2</PlainCh>
-                    <Ropi>2</Ropi>
-                    <Rwpi>2</Rwpi>
-                    <wLevel>0</wLevel>
-                    <uThumb>2</uThumb>
-                    <uSurpInc>2</uSurpInc>
-                    <uC99>2</uC99>
-                    <uGnu>2</uGnu>
-                    <useXO>2</useXO>
-                    <v6Lang>0</v6Lang>
-                    <v6LangP>0</v6LangP>
-                    <vShortEn>2</vShortEn>
-                    <vShortWch>2</vShortWch>
-                    <v6Lto>2</v6Lto>
-                    <v6WtE>2</v6WtE>
-                    <v6Rtti>2</v6Rtti>
-                    <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
-                      <Define></Define>
-                      <Undefine></Undefine>
-                      <IncludePath></IncludePath>
-                    </VariousControls>
-                  </Cads>
-                </FileArmAds>
-              </FileOption>
-            </File>
-            <File>
-              <FileName>photo_gate_stm32_hal.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../04_Bsp/photo_gate/photo_gate_stm32_hal.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>05_Test/mult_uart_modules</GroupName>
-          <Files>
-            <File>
-              <FileName>mult_uart_modules_test_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/mult_uart_modules/mult_uart_modules_test_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_modules_freertos_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/mult_uart_modules/mult_uart_modules_freertos_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>mult_uart_modules_freertos_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/mult_uart_modules/mult_uart_modules_freertos_test.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>05_Test/turntable_grasp_lite</GroupName>
-          <Files>
-            <File>
-              <FileName>turntable_grasp_lite_config.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/turntable_grasp_lite/turntable_grasp_lite_config.h</FilePath>
-            </File>
-            <File>
-              <FileName>turntable_grasp_lite_freertos_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../05_Test/turntable_grasp_lite/turntable_grasp_lite_freertos_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>turntable_grasp_lite_freertos_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../05_Test/turntable_grasp_lite/turntable_grasp_lite_freertos_test.h</FilePath>
+              <FilePath>../04_Bsp/photo_gate/gate.h</FilePath>
             </File>
           </Files>
         </Group>

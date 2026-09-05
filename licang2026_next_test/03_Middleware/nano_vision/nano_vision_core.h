@@ -3,7 +3,7 @@
  * @brief   Jetson Nano与F7之间的视觉轮询/会话事件协议Core。
  *
  * 本层不包含UART、DMA、HAL或FreeRTOS。F7必须由上层通过
- * mult_uart_device_submit()访问UART7通道0；Nano只有在F7建立会话后才允许
+ * mux_submit()访问UART7通道0；Nano只有在F7建立会话后才允许
  * 上报事件，不能控制UART7复用板。流式解析器允许任意分包或粘包数据。
  */
 
@@ -242,6 +242,24 @@ nano_vision_status_t nano_vision_decode_frame(
     const uint8_t *data,
     size_t len,
     nano_vision_frame_t *frame);
+
+/** 正式会话路径直接校验并解析READY，避免复制通用frame载荷。 */
+nano_vision_status_t nano_vision_decode_session_ready(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_session_t *session);
+
+/** 正式会话路径直接校验并解析STOPPED。 */
+nano_vision_status_t nano_vision_decode_session_stopped(
+    const uint8_t *data,
+    size_t len,
+    uint16_t *session_id);
+
+/** 正式会话路径直接校验并解析视觉事件。 */
+nano_vision_status_t nano_vision_decode_event(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_event_t *event);
 
 nano_vision_status_t nano_vision_parse_poll(
     const nano_vision_frame_t *frame,

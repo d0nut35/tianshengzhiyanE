@@ -6,7 +6,7 @@
 #ifndef IC_CARD_BAREMETAL_TEST_H
 #define IC_CARD_BAREMETAL_TEST_H
 
-#include "ic_card_core.h"
+#include "ic_bsp.h"
 
 /**
  * @brief 初始化UART7直连IC卡裸机测试。

@@ -1,149 +1,109 @@
-/**
- * @file    test_zdt_turntable_service.c
- * @brief   ZDT平台无关事务Service的PC fake传输测试。
- */
-
+/** @file test_zdt_turntable_service.c @brief ZDT合并Service主机测试。 */
 #include <stdio.h>
 #include <string.h>
-
 #include "zdt_turntable_service.h"
+#include "mux_service.h"
 
 static int failures;
-/** 记录失败但继续执行同一进程中的其余断言。 */
-#define CHECK(x) do { if (!(x)) { printf("FAIL line %d: %s\n", __LINE__, #x); failures++; } } while (0)
+#define CHECK(x) do { if (!(x)) { printf("FAIL line %d: %s\n", __LINE__, #x); ++failures; } } while (0)
+static mux_transfer_t transfer;
+static uint8_t tx[ZDT_TURNTABLE_FRAME_MAX];
+static mult_uart_status_t submit_status = MULT_UART_OK;
+static unsigned submit_count, done_count;
+static uint32_t done_id, previous_id;
+static zdt_turntable_status_t done_status;
+static zdt_turntable_response_t response;
 
-/** fake UART、时基和完成结果的可观测状态。 */
-typedef struct {
-    zdt_turntable_service_t *service;
-    uint32_t now;
-    uint8_t *rx;
-    size_t rx_capacity;
-    unsigned tx_count;
-    unsigned abort_count;
-    unsigned done_count;
-    zdt_turntable_status_t done_status;
-    zdt_turntable_response_t response;
-} fake_t;
-
-/** @brief 模拟异步TX启动并记录启动次数。 */
-static zdt_turntable_status_t fake_tx(void *ctx, const uint8_t *data, size_t len)
+mult_uart_status_t mux_submit(const mux_transfer_t *request)
 {
-    fake_t *fake = (fake_t *)ctx;
-    CHECK(data != NULL && len > 0U);
-    fake->tx_count++;
-    return ZDT_TURNTABLE_OK;
+    CHECK(request != NULL);
+    ++submit_count;
+    if (submit_status != MULT_UART_OK) return submit_status;
+    transfer = *request;
+    CHECK(request->tx_len <= sizeof(tx));
+    memcpy(tx, request->tx_data, request->tx_len);
+    transfer.tx_data = tx;
+    return MULT_UART_OK;
 }
-
-/** @brief 捕获Service提供的长期RX缓冲区，供用例注入设备响应。 */
-static zdt_turntable_status_t fake_rx(void *ctx, uint8_t *data, size_t capacity)
+static void done(void *ctx, uint32_t id, zdt_turntable_status_t status,
+    const zdt_turntable_response_t *reply)
 {
-    fake_t *fake = (fake_t *)ctx;
-    fake->rx = data;
-    fake->rx_capacity = capacity;
-    return ZDT_TURNTABLE_OK;
+    CHECK(ctx == &done_count);
+    ++done_count; done_id = id; done_status = status;
+    if (reply != NULL) response = *reply;
 }
-
-/** @brief 模拟同步abort并记录调用次数。 */
-static zdt_turntable_status_t fake_abort(void *ctx)
+static void complete(mult_uart_status_t status, const uint8_t *data, size_t len)
 {
-    ((fake_t *)ctx)->abort_count++;
-    return ZDT_TURNTABLE_OK;
+    mux_completion_t result = {0};
+    result.device = MUX_DEVICE_2;
+    result.operation = MULT_UART_OP_WRITE_READ;
+    result.status = status; result.rx_data = data; result.rx_len = len;
+    transfer.done_cb(transfer.user_ctx, &result);
 }
-
-/** @brief 返回用例可控的毫秒时基。 */
-static uint32_t fake_now(void *ctx) { return ((fake_t *)ctx)->now; }
-/** @brief PC单线程测试无需真实worker唤醒。 */
-static void fake_notify(void *ctx) { (void)ctx; }
-
-/** @brief 捕获Service完成状态和按值复制的解析响应。 */
-static void fake_done(void *ctx, uint32_t id, zdt_turntable_status_t status,
-                      const zdt_turntable_response_t *response)
+static void check_transfer(uint8_t function, size_t len)
 {
-    fake_t *fake = (fake_t *)ctx;
-    CHECK(id == 7U);
-    fake->done_count++;
-    fake->done_status = status;
-    if (response != NULL) fake->response = *response;
+    CHECK(transfer.device == MUX_DEVICE_2);
+    CHECK(transfer.operation == MULT_UART_OP_WRITE_READ);
+    CHECK(transfer.tx_len == len && transfer.tx_data[1] == function);
+    CHECK(transfer.rx_capacity == ZDT_TURNTABLE_RESPONSE_MAX);
+    CHECK(transfer.io_timeout_ms == 500U);
 }
-
-/** @brief 用fake port和fake时基初始化一套独立Service。 */
-static void init_service(zdt_turntable_service_t *service, fake_t *fake)
+static void test_options_and_emm(void)
 {
-    zdt_turntable_service_config_t config;
-    memset(service, 0, sizeof(*service));
-    memset(fake, 0, sizeof(*fake));
-    fake->service = service;
-    memset(&config, 0, sizeof(config));
-    config.port.tx_start = fake_tx;
-    config.port.rx_start = fake_rx;
-    config.port.abort = fake_abort;
-    config.port.ctx = fake;
-    config.now_ms = fake_now;
-    config.time_ctx = fake;
-    config.notify_worker = fake_notify;
-    config.notify_ctx = fake;
-    CHECK(zdt_turntable_service_init(service, &config) == ZDT_TURNTABLE_OK);
-}
+    const uint8_t options[] = {1U, 0x1AU, 0x03U, 0xB7U, 0x6BU};
+    const uint8_t ack[] = {1U, 0xFDU, 0x02U, 0x6BU};
+    zdt_turntable_position_command_t cmd = {
+        ZDT_TURNTABLE_DIR_CW, ZDT_TURNTABLE_POS_RELATIVE_LAST_TARGET,
+        60U, 0U, 0U, 100U, 50U
+    };
+    CHECK(turn_query_options(done, &done_count) == ZDT_TURNTABLE_OK);
+    check_transfer(0x1AU, 3U);
+    CHECK(turn_query_status(done, &done_count) == ZDT_TURNTABLE_ERR_BUSY);
+    complete(MULT_UART_OK, options, sizeof(options));
+    CHECK(done_count == 1U && done_status == ZDT_TURNTABLE_OK);
+    CHECK(response.kind == ZDT_TURNTABLE_REPLY_OPTIONS);
+    CHECK(response.data.options.closed_loop);
+    CHECK(response.data.options.firmware == ZDT_TURNTABLE_FIRMWARE_EMM);
+    CHECK(done_id != 0U); previous_id = done_id;
 
-/** @brief 构造固定ID的0x3A状态查询事务。 */
-static zdt_turntable_request_t make_request(fake_t *fake)
+    CHECK(turn_move_emm(&cmd, done, &done_count) == ZDT_TURNTABLE_OK);
+    check_transfer(0xFDU, 13U);
+    CHECK(tx[3] == 0x02U && tx[4] == 0x58U);
+    CHECK(tx[6] == 0U && tx[7] == 0U && tx[8] == 0U && tx[9] == 89U);
+    complete(MULT_UART_OK, ack, sizeof(ack));
+    CHECK(done_count == 2U && done_status == ZDT_TURNTABLE_OK);
+    CHECK(response.kind == ZDT_TURNTABLE_REPLY_ACK && done_id != previous_id);
+}
+static void test_status_stop_and_errors(void)
 {
-    zdt_turntable_request_t request;
-    memset(&request, 0, sizeof(request));
-    request.request_id = 7U;
-    request.frame[0] = 1U; request.frame[1] = 0x3AU; request.frame[2] = 0x6BU;
-    request.frame_len = 3U;
-    request.expected_address = 1U;
-    request.expected_function = 0x3AU;
-    request.timeout_ms = 100U;
-    request.done_cb = fake_done;
-    request.user_ctx = fake;
-    return request;
+    const uint8_t status[] = {1U, 0x3AU, 0x83U, 0x6BU};
+    const uint8_t stop_ack[] = {1U, 0xFEU, 0x02U, 0x6BU};
+    CHECK(turn_query_status(done, &done_count) == ZDT_TURNTABLE_OK);
+    check_transfer(0x3AU, 3U); complete(MULT_UART_OK, status, sizeof(status));
+    CHECK(response.kind == ZDT_TURNTABLE_REPLY_STATUS);
+    CHECK(response.data.motor_status.enabled && response.data.motor_status.reached);
+    CHECK(turn_stop(done, &done_count) == ZDT_TURNTABLE_OK);
+    check_transfer(0xFEU, 5U); complete(MULT_UART_OK, stop_ack, sizeof(stop_ack));
+    CHECK(response.kind == ZDT_TURNTABLE_REPLY_ACK);
+    CHECK(turn_query_status(done, &done_count) == ZDT_TURNTABLE_OK);
+    complete(MULT_UART_ERR_TIMEOUT, NULL, 0U);
+    CHECK(done_status == ZDT_TURNTABLE_ERR_TIMEOUT);
+    submit_status = MULT_UART_ERR_QUEUE_FULL;
+    CHECK(turn_query_status(done, &done_count) == ZDT_TURNTABLE_ERR_QUEUE_FULL);
+    submit_status = MULT_UART_OK;
+    CHECK(turn_query_status(done, &done_count) == ZDT_TURNTABLE_OK);
+    complete(MULT_UART_ERR_IO, NULL, 0U);
+    CHECK(done_status == ZDT_TURNTABLE_ERR_IO);
 }
-
-/** @brief 验证先RX后TX、响应解析、完成回调和收尾abort。 */
-static void test_success(void)
-{
-    zdt_turntable_service_t service;
-    fake_t fake;
-    zdt_turntable_request_t request;
-    const uint8_t reply[] = {1U, 0x3AU, 0x83U, 0x6BU};
-    init_service(&service, &fake);
-    request = make_request(&fake);
-    CHECK(zdt_turntable_service_submit(&service, &request) == ZDT_TURNTABLE_OK);
-    zdt_turntable_service_process_once(&service);
-    CHECK(fake.tx_count == 1U && fake.rx != NULL);
-    memcpy(fake.rx, reply, sizeof(reply));
-    zdt_turntable_service_on_rx_event_isr(&service, sizeof(reply));
-    zdt_turntable_service_process_once(&service);
-    CHECK(fake.done_count == 1U);
-    CHECK(fake.done_status == ZDT_TURNTABLE_OK);
-    CHECK(fake.response.kind == ZDT_TURNTABLE_REPLY_STATUS);
-    CHECK(fake.abort_count == 1U);
-}
-
-/** @brief 验证无响应达到deadline时abort并回调超时。 */
-static void test_timeout(void)
-{
-    zdt_turntable_service_t service;
-    fake_t fake;
-    zdt_turntable_request_t request;
-    init_service(&service, &fake);
-    request = make_request(&fake);
-    CHECK(zdt_turntable_service_submit(&service, &request) == ZDT_TURNTABLE_OK);
-    zdt_turntable_service_process_once(&service);
-    fake.now = 100U;
-    zdt_turntable_service_process_once(&service);
-    CHECK(fake.done_count == 1U);
-    CHECK(fake.done_status == ZDT_TURNTABLE_ERR_TIMEOUT);
-    CHECK(fake.abort_count == 1U);
-}
-
-/** @brief 运行全部ZDT Service PC fake测试。 */
 int main(void)
 {
-    test_success();
-    test_timeout();
+    turn_config_t config = {1U, 500U, 3200U};
+    CHECK(turn_query_status(done, &done_count) == ZDT_TURNTABLE_ERR_NOT_INIT);
+    CHECK(turn_init(NULL) == ZDT_TURNTABLE_ERR_PARAM);
+    CHECK(turn_init(&config) == ZDT_TURNTABLE_OK);
+    CHECK(turn_init(&config) == ZDT_TURNTABLE_ERR_STATE);
+    test_options_and_emm();
+    test_status_stop_and_errors();
     if (failures != 0) return 1;
     puts("zdt_turntable_service tests passed");
     return 0;

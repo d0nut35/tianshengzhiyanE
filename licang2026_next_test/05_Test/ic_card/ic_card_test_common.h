@@ -14,7 +14,7 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-#include "ic_card_device.h"
+#include "ic_card_service.h"
 
 /**
  * @brief 判断电脑输入是否为读球触发命令。
@@ -32,7 +32,7 @@ bool ic_card_test_is_read_trigger(const uint8_t *data, size_t len);
  * @return 实际字符数；容量不足或参数无效时返回0。
  */
 size_t ic_card_test_format_success(
-    const ic_card_ball_result_t *result,
+    const ic_result_t *result,
     char *text,
     size_t capacity);
 

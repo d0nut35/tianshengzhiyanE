@@ -368,6 +368,8 @@ static void test_event_session_codec(void)
     assert(nano_vision_decode_frame(frame, frame_len, &decoded) == NANO_VISION_OK);
     assert(nano_vision_parse_session_ready(
         &decoded, &parsed_session) == NANO_VISION_OK);
+    assert(nano_vision_decode_session_ready(
+        frame, frame_len, &parsed_session) == NANO_VISION_OK);
 
     assert(nano_vision_build_event_frame(
         2U, &event, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
@@ -375,6 +377,8 @@ static void test_event_session_codec(void)
     assert(memcmp(frame, event_golden, sizeof(event_golden)) == 0);
     assert(nano_vision_decode_frame(frame, frame_len, &decoded) == NANO_VISION_OK);
     assert(nano_vision_parse_event(&decoded, &parsed_event) == NANO_VISION_OK);
+    assert(nano_vision_decode_event(
+        frame, frame_len, &parsed_event) == NANO_VISION_OK);
     assert(parsed_event.session_id == event.session_id);
     assert(parsed_event.observation.frame_id == event.observation.frame_id);
     assert(parsed_event.observation.color == event.observation.color);
@@ -400,6 +404,8 @@ static void test_event_session_codec(void)
     assert(nano_vision_decode_frame(frame, frame_len, &decoded) == NANO_VISION_OK);
     assert(nano_vision_parse_session_stopped(
         &decoded, &parsed_session_id) == NANO_VISION_OK);
+    assert(nano_vision_decode_session_stopped(
+        frame, frame_len, &parsed_session_id) == NANO_VISION_OK);
     assert(parsed_session_id == session.session_id);
 
     session.session_id = 0U;

@@ -7,6 +7,155 @@
 
 #include <string.h>
 
+#include "mux_service.h"
+
+#if !LICANG_RELEASE_MINIMAL
+#include "cmsis_os.h"
+#include "uart_dispatch.h"
+#endif
+
+typedef struct {
+    bool initialized;
+    bool active;
+    uint32_t next_request_id;
+    uint32_t request_id;
+    ic_done_fn_t done_cb;
+    void *user_ctx;
+    uint8_t tx[IC_CARD_COMMAND_FRAME_SIZE];
+} ic_context_t;
+
+static ic_context_t g_ic;
+
+static ic_card_status_t ic_map_mux(mult_uart_status_t status)
+{
+    if (status == MULT_UART_OK) return IC_CARD_OK;
+    if (status == MULT_UART_ERR_TIMEOUT) return IC_CARD_ERR_TIMEOUT;
+    if (status == MULT_UART_ERR_BUSY) return IC_CARD_ERR_BUSY;
+    if (status == MULT_UART_ERR_QUEUE_FULL) return IC_CARD_ERR_QUEUE_FULL;
+    if ((status == MULT_UART_ERR_PARAM) || (status == MULT_UART_ERR_OVERFLOW)) {
+        return IC_CARD_ERR_PARAM;
+    }
+    return IC_CARD_ERR_IO;
+}
+
+bool ic_decode_ball(
+    const uint8_t data[IC_CARD_BLOCK_DATA_SIZE],
+    ic_ball_t *ball)
+{
+    uint8_t i;
+    uint8_t row;
+    uint8_t column;
+
+    if ((data == NULL) || (ball == NULL)) return false;
+    (void)memset(ball, 0, sizeof(*ball));
+    for (i = 1U; i < IC_CARD_BLOCK_DATA_SIZE; ++i) {
+        if (data[i] != data[0]) return false;
+    }
+    row = (uint8_t)(data[0] >> 4);
+    column = (uint8_t)(data[0] & 0x0FU);
+    if ((row < 1U) || (row > 3U) || (column < 1U) || (column > 4U)) {
+        return false;
+    }
+    ball->kind = IC_BALL_TARGET;
+    ball->code = data[0];
+    ball->row = row;
+    ball->column = column;
+    return true;
+}
+
+static void ic_mux_done(void *user_ctx, const mux_completion_t *completion)
+{
+    ic_context_t *ctx = (ic_context_t *)user_ctx;
+    ic_card_response_t response;
+    ic_result_t result;
+    uint8_t block[IC_CARD_BLOCK_DATA_SIZE];
+    ic_done_fn_t done_cb;
+    void *done_ctx;
+    uint32_t request_id;
+    ic_card_status_t status;
+
+    if ((ctx == NULL) || !ctx->active || (completion == NULL)) return;
+    done_cb = ctx->done_cb;
+    done_ctx = ctx->user_ctx;
+    request_id = ctx->request_id;
+    ctx->active = false;
+    ctx->done_cb = NULL;
+    ctx->user_ctx = NULL;
+
+    status = ic_map_mux(completion->status);
+    if (status == IC_CARD_OK) {
+        status = ic_parse_frame(
+            completion->rx_data, completion->rx_len, &response);
+    }
+    if (status == IC_CARD_OK) {
+        status = ic_block_data(&response, IC_ADDRESS, block);
+    }
+    if ((status == IC_CARD_OK) && !ic_decode_ball(block, &result.ball)) {
+        status = IC_CARD_ERR_PROTOCOL;
+    }
+    if (done_cb != NULL) {
+        done_cb(
+            done_ctx,
+            request_id,
+            status,
+            (status == IC_CARD_OK) ? &result : NULL);
+    }
+}
+
+ic_card_status_t ic_init(void)
+{
+    if (g_ic.initialized) return IC_CARD_ERR_STATE;
+    (void)memset(&g_ic, 0, sizeof(g_ic));
+    g_ic.initialized = true;
+    return IC_CARD_OK;
+}
+
+ic_card_status_t ic_read(
+    bool led_beep_prompt,
+    ic_done_fn_t done_cb,
+    void *user_ctx)
+{
+    mux_transfer_t transfer;
+    mult_uart_status_t mux_status;
+    ic_card_status_t status;
+    size_t tx_len;
+
+    if (!g_ic.initialized) return IC_CARD_ERR_NOT_INIT;
+    if (g_ic.active) return IC_CARD_ERR_BUSY;
+    status = ic_read_frame(
+        IC_ADDRESS,
+        IC_DATA_BLOCK,
+        led_beep_prompt,
+        g_ic.tx,
+        sizeof(g_ic.tx),
+        &tx_len);
+    if (status != IC_CARD_OK) return status;
+
+    ++g_ic.next_request_id;
+    if (g_ic.next_request_id == 0U) ++g_ic.next_request_id;
+    g_ic.request_id = g_ic.next_request_id;
+    g_ic.done_cb = done_cb;
+    g_ic.user_ctx = user_ctx;
+    g_ic.active = true;
+
+    (void)memset(&transfer, 0, sizeof(transfer));
+    transfer.device = MUX_DEVICE_1;
+    transfer.operation = MULT_UART_OP_WRITE_READ;
+    transfer.tx_data = g_ic.tx;
+    transfer.tx_len = tx_len;
+    transfer.rx_capacity = IC_CARD_FRAME_SIZE_MAX;
+    transfer.io_timeout_ms = IC_READ_TIMEOUT_MS;
+    transfer.done_cb = ic_mux_done;
+    transfer.user_ctx = &g_ic;
+    mux_status = mux_submit(&transfer);
+    if (mux_status != MULT_UART_OK) {
+        g_ic.active = false;
+        g_ic.done_cb = NULL;
+        g_ic.user_ctx = NULL;
+    }
+    return ic_map_mux(mux_status);
+}
+
 /**
  * @brief 判断32位毫秒期限是否已经到达。
  * @param now 当前毫秒计数。
@@ -138,6 +287,231 @@ static void ic_card_service_complete(
     }
 }
 
+#if !LICANG_RELEASE_MINIMAL
+#define IC_SERVICE_FLAG_REQUEST       (1UL << 0)
+#define IC_SERVICE_FLAG_ISR_EVENT     (1UL << 1)
+#define IC_SERVICE_WAIT_SLICE_MS      10U
+#define IC_SERVICE_QUEUE_DEPTH        4U
+#define IC_SERVICE_WORKER_STACK       (512U * 4U)
+
+typedef struct {
+    bool initialized;
+    ic_card_t device;
+    ic_card_port_t port;
+    ic_card_uart7_hal_t adapter;
+    ic_card_service_t service;
+    osMessageQueueId_t request_queue;
+    osThreadId_t worker_thread;
+    uart_dispatch_handle_t dispatch_handle;
+    bool dispatch_registered;
+} ic_service_context_t;
+
+static ic_service_context_t g_ic_service;
+
+static const osThreadAttr_t g_ic_worker_attr = {
+    .name = "icCardSvc",
+    .stack_size = IC_SERVICE_WORKER_STACK,
+    .priority = (osPriority_t)osPriorityNormal,
+};
+
+static uint32_t ic_service_ticks(uint32_t timeout_ms)
+{
+    uint64_t ticks;
+    uint32_t frequency;
+
+    if ((timeout_ms == 0U) || (timeout_ms == osWaitForever)) {
+        return timeout_ms;
+    }
+    frequency = osKernelGetTickFreq();
+    ticks = ((uint64_t)timeout_ms * frequency + 999ULL) / 1000ULL;
+    if (ticks == 0ULL) ticks = 1ULL;
+    return (ticks > UINT32_MAX) ? UINT32_MAX : (uint32_t)ticks;
+}
+
+static uint32_t ic_service_now(void *ctx)
+{
+    (void)ctx;
+    return HAL_GetTick();
+}
+
+static void ic_service_notify(void *ctx)
+{
+    ic_service_context_t *service = (ic_service_context_t *)ctx;
+
+    if ((service != NULL) && (service->worker_thread != NULL)) {
+        (void)osThreadFlagsSet(
+            service->worker_thread, IC_SERVICE_FLAG_ISR_EVENT);
+    }
+}
+
+static bool ic_service_tx_isr(void *ctx, UART_HandleTypeDef *huart)
+{
+    ic_service_context_t *service = (ic_service_context_t *)ctx;
+    return (service != NULL) && ic_uart7_tx_isr(&service->adapter, huart);
+}
+
+static bool ic_service_rx_isr(
+    void *ctx,
+    UART_HandleTypeDef *huart,
+    uint16_t rx_len)
+{
+    ic_service_context_t *service = (ic_service_context_t *)ctx;
+    return (service != NULL) &&
+        ic_uart7_rx_isr(&service->adapter, huart, rx_len);
+}
+
+static bool ic_service_error_isr(void *ctx, UART_HandleTypeDef *huart)
+{
+    ic_service_context_t *service = (ic_service_context_t *)ctx;
+    return (service != NULL) && ic_uart7_error_isr(&service->adapter, huart);
+}
+
+static void ic_service_rollback(ic_service_context_t *ctx)
+{
+    if (ctx->dispatch_registered) {
+        (void)uart_dispatch_unregister(ctx->dispatch_handle);
+    }
+    if (ctx->service.initialized && !ctx->service.active_valid &&
+        (ctx->service.queue_count == 0U)) {
+        (void)ic_card_service_deinit(&ctx->service);
+    }
+    if (ctx->device.initialized) {
+        (void)ic_bsp_deinit(&ctx->device);
+    }
+    if (ctx->request_queue != NULL) {
+        (void)osMessageQueueDelete(ctx->request_queue);
+    }
+    (void)memset(ctx, 0, sizeof(*ctx));
+}
+
+static void ic_service_drain(ic_service_context_t *ctx)
+{
+    ic_card_request_t request;
+    ic_card_status_t status;
+
+    while (ctx->service.queue_count < IC_CARD_SERVICE_QUEUE_DEPTH) {
+        if (osMessageQueueGet(ctx->request_queue, &request, NULL, 0U) != osOK) {
+            return;
+        }
+        status = ic_card_service_submit(&ctx->service, &request);
+        if ((status != IC_CARD_OK) && (request.done_cb != NULL)) {
+            request.done_cb(
+                request.user_ctx, request.request_id, status, NULL);
+        }
+    }
+}
+
+static void ic_service_worker(void *argument)
+{
+    ic_service_context_t *ctx = (ic_service_context_t *)argument;
+
+    for (;;) {
+        ic_service_drain(ctx);
+        ic_card_service_process_once(&ctx->service);
+        (void)osThreadFlagsWait(
+            IC_SERVICE_FLAG_REQUEST | IC_SERVICE_FLAG_ISR_EVENT,
+            osFlagsWaitAny,
+            ic_service_ticks(IC_SERVICE_WAIT_SLICE_MS));
+    }
+}
+
+ic_card_status_t ic_service_init(void)
+{
+    ic_service_context_t *ctx = &g_ic_service;
+    ic_card_uart7_hal_config_t hal_config;
+    ic_card_service_config_t service_config;
+    uart_dispatch_handler_t handler = {0};
+    ic_card_status_t status;
+
+    if (ctx->initialized) return IC_CARD_ERR_STATE;
+    (void)memset(ctx, 0, sizeof(*ctx));
+    ctx->dispatch_handle = UART_DISPATCH_HANDLE_INVALID;
+    ctx->request_queue = osMessageQueueNew(
+        IC_SERVICE_QUEUE_DEPTH, sizeof(ic_card_request_t), NULL);
+    if (ctx->request_queue == NULL) return IC_CARD_ERR_IO;
+
+    ic_uart7_config(&hal_config);
+    status = ic_uart7_bind(
+        &ctx->adapter, &ctx->device, &hal_config, &ctx->port);
+    if (status != IC_CARD_OK) {
+        ic_service_rollback(ctx);
+        return status;
+    }
+
+    handler.tx_complete = ic_service_tx_isr;
+    handler.rx_event = ic_service_rx_isr;
+    handler.error = ic_service_error_isr;
+    handler.user_ctx = ctx;
+    if (!uart_dispatch_register(&handler, &ctx->dispatch_handle)) {
+        ic_service_rollback(ctx);
+        return IC_CARD_ERR_IO;
+    }
+    ctx->dispatch_registered = true;
+
+    status = ic_bsp_init(&ctx->device, &ctx->port);
+    if (status != IC_CARD_OK) {
+        ic_service_rollback(ctx);
+        return status;
+    }
+
+    (void)memset(&service_config, 0, sizeof(service_config));
+    service_config.device = &ctx->device;
+    service_config.now_ms = ic_service_now;
+    service_config.notify_worker = ic_service_notify;
+    service_config.notify_ctx = ctx;
+    status = ic_card_service_init(&ctx->service, &service_config);
+    if (status != IC_CARD_OK) {
+        ic_service_rollback(ctx);
+        return status;
+    }
+
+    ctx->worker_thread = osThreadNew(
+        ic_service_worker, ctx, &g_ic_worker_attr);
+    if (ctx->worker_thread == NULL) {
+        ic_service_rollback(ctx);
+        return IC_CARD_ERR_IO;
+    }
+    ctx->initialized = true;
+    return IC_CARD_OK;
+}
+
+ic_card_status_t ic_service_submit(
+    const ic_card_request_t *request,
+    uint32_t queue_timeout_ms)
+{
+    osStatus_t status;
+
+    if (request == NULL) return IC_CARD_ERR_PARAM;
+    if (!g_ic_service.initialized) return IC_CARD_ERR_NOT_INIT;
+    status = osMessageQueuePut(
+        g_ic_service.request_queue,
+        request,
+        0U,
+        ic_service_ticks(queue_timeout_ms));
+    if (status != osOK) {
+        return ((status == osErrorResource) || (status == osErrorTimeout)) ?
+            IC_CARD_ERR_QUEUE_FULL : IC_CARD_ERR_IO;
+    }
+    (void)osThreadFlagsSet(
+        g_ic_service.worker_thread, IC_SERVICE_FLAG_REQUEST);
+    return IC_CARD_OK;
+}
+
+void ic_service_process(void)
+{
+    if (g_ic_service.initialized) {
+        ic_service_drain(&g_ic_service);
+        ic_card_service_process_once(&g_ic_service.service);
+    }
+}
+
+ic_card_status_t ic_service_get_stats(ic_card_service_stats_t *stats)
+{
+    if (!g_ic_service.initialized) return IC_CARD_ERR_NOT_INIT;
+    return ic_card_service_get_stats(&g_ic_service.service, stats);
+}
+#endif
+
 /**
  * @brief 把当前活动请求翻译为Core命令并启动事务超时计时。
  * @param service 已装载active请求的Service对象。
@@ -150,13 +524,13 @@ static ic_card_status_t ic_card_service_start_active(
     ic_card_status_t status;
 
     if (service->active.type == IC_CARD_REQUEST_READ_BLOCK) {
-        status = ic_card_read_block_key_a(
+        status = ic_bsp_read(
             service->config.device,
             service->active.address,
             service->active.data.read_block.block,
             service->active.data.read_block.led_beep_prompt);
     } else {
-        status = ic_card_query(
+        status = ic_bsp_query(
             service->config.device,
             service->active.data.query.command,
             service->active.address);
@@ -189,7 +563,7 @@ ic_card_status_t ic_card_service_init(
     service->config = *config;
     service->response_sequence = config->device->response_sequence;
     service->initialized = true;
-    return ic_card_bind_isr_notify(
+    return ic_bsp_bind_notify(
         config->device,
         ic_card_service_isr_notify,
         service);
@@ -211,7 +585,7 @@ ic_card_status_t ic_card_service_deinit(ic_card_service_t *service)
     if (service->active_valid || (service->queue_count > 0U)) {
         return IC_CARD_ERR_BUSY;
     }
-    (void)ic_card_bind_isr_notify(service->config.device, NULL, NULL);
+    (void)ic_bsp_bind_notify(service->config.device, NULL, NULL);
     (void)memset(service, 0, sizeof(*service));
     return IC_CARD_OK;
 }
@@ -267,7 +641,7 @@ void ic_card_service_process_once(ic_card_service_t *service)
         return;
     }
 
-    ic_card_process(service->config.device);
+    ic_bsp_process(service->config.device);
 
     /* UART错误优先，避免同一轮同时到达的旧TX/RX事件误完成请求。 */
     if (service->handled_error_sequence != service->error_sequence) {
@@ -277,7 +651,7 @@ void ic_card_service_process_once(ic_card_service_t *service)
 #if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
         ++service->stats.uart_errors;
 #endif
-        status = ic_card_recover(service->config.device);
+        status = ic_bsp_recover(service->config.device);
         ic_card_service_complete(
             service,
             (status == IC_CARD_OK) ? IC_CARD_ERR_IO : status,
@@ -291,7 +665,7 @@ void ic_card_service_process_once(ic_card_service_t *service)
             service->handled_rx_sequence = service->rx_sequence;
         }
 
-        while (ic_card_take_response(
+        while (ic_bsp_take_response(
             service->config.device,
             &service->response_sequence,
             &response)) {
@@ -314,7 +688,7 @@ void ic_card_service_process_once(ic_card_service_t *service)
 #if IC_CARD_SERVICE_DIAGNOSTICS_ENABLE
             ++service->stats.timed_out;
 #endif
-            status = ic_card_recover(service->config.device);
+            status = ic_bsp_recover(service->config.device);
             ic_card_service_complete(
                 service,
                 (status == IC_CARD_OK) ? IC_CARD_ERR_TIMEOUT : status,

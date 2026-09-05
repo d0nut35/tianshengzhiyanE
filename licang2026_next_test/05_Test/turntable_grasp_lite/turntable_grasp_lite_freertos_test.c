@@ -19,7 +19,7 @@
 #include "lsc16_device.h"
 #include "mult_uart_device.h"
 #include "nano_vision_core.h"
-#include "photo_gate_stm32_hal.h"
+#include "gate.h"
 #include "task.h"
 #include "test_config.h"
 #include "turntable_grasp_lite_config.h"
@@ -258,7 +258,7 @@ static void lite_ic_transfer_done(
     transport->active = false;
     status = lite_map_ic_status(completion->status);
     if (status == IC_CARD_OK) {
-        status = ic_card_parse_response_frame(
+        status = ic_parse_frame(
             completion->rx_data, completion->rx_len, &response);
         if ((status == IC_CARD_OK) &&
             (response.command != ((request.type == IC_CARD_REQUEST_READ_BLOCK) ?
@@ -291,13 +291,13 @@ static ic_card_status_t lite_ic_submit(
     if ((transport == NULL) || (request == NULL)) return IC_CARD_ERR_PARAM;
     if (transport->active) return IC_CARD_ERR_BUSY;
     if (request->type == IC_CARD_REQUEST_READ_BLOCK) {
-        status = ic_card_build_read_block_key_a_frame(
+        status = ic_read_frame(
             request->address,
             request->data.read_block.block,
             request->data.read_block.led_beep_prompt,
             transport->tx, sizeof(transport->tx), &tx_len);
     } else if (request->type == IC_CARD_REQUEST_QUERY) {
-        status = ic_card_build_query_frame(
+        status = ic_query_frame(
             request->data.query.command, request->address,
             transport->tx, sizeof(transport->tx), &tx_len);
     } else {
@@ -337,7 +337,7 @@ static void lite_zdt_transfer_done(
     transport->active = false;
     status = lite_map_zdt_status(completion->status);
     if (status == ZDT_TURNTABLE_OK) {
-        status = zdt_turntable_parse_response(
+        status = turn_parse(
             completion->rx_data, completion->rx_len,
             request.expected_address, request.expected_function, &response);
     }
@@ -658,7 +658,7 @@ static bool lite_gate_is_stably_high(void)
     uint8_t sample;
 
     for (sample = 0U; sample < TURN_GRASP_LITE_GATE_CONFIRM_SAMPLES; ++sample) {
-        if (!photo_gate_stm32_hal_read_raw()) return false;
+        if (!gate_read()) return false;
         if ((sample + 1U) < TURN_GRASP_LITE_GATE_CONFIRM_SAMPLES) {
             (void)osDelay(lite_ms_to_ticks(
                 TURN_GRASP_LITE_GATE_CONFIRM_INTERVAL_MS));
@@ -763,7 +763,7 @@ static void lite_slot_finish(
         (void)snprintf(ctx->text, sizeof(ctx->text),
             "SLOT ERROR DIR=%s FINE=%u PB0=%u %s\r\n",
             direction, (unsigned)fine_steps,
-            photo_gate_stm32_hal_read_raw() ? 1U : 0U,
+            gate_read() ? 1U : 0U,
             (reason != NULL) ? reason : "UNKNOWN");
     }
     (void)debug_uart1_write_text(&ctx->debug, ctx->text);
@@ -1549,7 +1549,7 @@ static void lite_print_status(lite_context_t *ctx)
         (unsigned)ctx->slot.phase,
         (unsigned)ctx->slot.fine_steps,
         ctx->zdt.firmware_known ? 1U : 0U,
-        photo_gate_stm32_hal_read_raw() ? 1U : 0U,
+        gate_read() ? 1U : 0U,
         (ctx->multi_fault != NULL) ? ctx->multi_fault : "NONE");
     (void)debug_uart1_write_text(&ctx->debug, ctx->text);
 }

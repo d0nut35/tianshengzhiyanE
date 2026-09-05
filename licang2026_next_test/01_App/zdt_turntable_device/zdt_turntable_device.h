@@ -45,9 +45,6 @@ typedef struct {
     bool closed_loop;
     bool scaled_input;
     bool options_pending;
-#if !LICANG_RELEASE_MINIMAL
-    zdt_turntable_service_t *service;
-#endif
     zdt_turntable_device_submit_fn_t submit_fn;
     void *submit_ctx;
     zdt_turntable_device_config_t config;
@@ -57,27 +54,13 @@ typedef struct {
 } zdt_turntable_device_t;
 
 /**
- * @brief 绑定Service和电机地址；不发送任何电机命令。
- * @param device 待初始化语义对象。
- * @param service 已初始化且由本设备使用的事务Service。
- * @param config 非零地址、超时和Emm每圈脉冲数。
- * @return 初始化结果。
- */
-#if !LICANG_RELEASE_MINIMAL
-zdt_turntable_status_t zdt_turntable_device_init(
-    zdt_turntable_device_t *device,
-    zdt_turntable_service_t *service,
-    const zdt_turntable_device_config_t *config);
-#endif
-
-/**
  * @brief 使用抽象事务提交函数初始化转盘Device。
  * @param device 待初始化对象。
  * @param submit_fn 已装配链路的非阻塞提交函数。
  * @param submit_ctx 原样传给submit_fn的上下文。
  * @param config 电机地址、超时和Emm每圈脉冲数。
  * @return 初始化结果。
- * @note 用于UART7复用链路；语义层无需知道通道选择或HAL细节。
+ * @note 语义层无需知道复用通道、RTOS或HAL细节。
  */
 zdt_turntable_status_t zdt_turntable_device_init_with_submit(
     zdt_turntable_device_t *device,

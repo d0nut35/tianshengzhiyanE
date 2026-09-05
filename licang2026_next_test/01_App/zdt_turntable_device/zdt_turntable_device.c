@@ -5,23 +5,6 @@
 #include <string.h>
 
 /**
- * @brief 兼容原直连接口的Service提交包装。
- * @param submit_ctx zdt_turntable_service_t对象。
- * @param request 待排队请求。
- * @return Service提交结果。
- */
-#if !LICANG_RELEASE_MINIMAL
-static zdt_turntable_status_t zdt_service_submit_adapter(
-    void *submit_ctx,
-    const zdt_turntable_request_t *request)
-{
-    return zdt_turntable_service_submit(
-        (zdt_turntable_service_t *)submit_ctx,
-        request);
-}
-#endif
-
-/**
  * @brief 生成非零、单调递增的本地请求标识。
  * @param device 设备对象。
  * @return 新请求ID；uint32_t回绕时跳过0。
@@ -71,34 +54,6 @@ static zdt_turntable_status_t zdt_submit_frame(
     request.user_ctx = user_ctx;
     return device->submit_fn(device->submit_ctx, &request);
 }
-
-/** @copydoc zdt_turntable_device_init() */
-#if !LICANG_RELEASE_MINIMAL
-zdt_turntable_status_t zdt_turntable_device_init(
-    zdt_turntable_device_t *device,
-    zdt_turntable_service_t *service,
-    const zdt_turntable_device_config_t *config)
-{
-    if ((device == NULL) || (service == NULL) || (config == NULL) ||
-        !service->initialized || (config->address == 0U) ||
-        (config->timeout_ms == 0U) ||
-        (config->emm_pulses_per_revolution == 0U)) {
-        return ZDT_TURNTABLE_ERR_PARAM;
-    }
-    zdt_turntable_status_t status;
-
-    status = zdt_turntable_device_init_with_submit(
-        device,
-        zdt_service_submit_adapter,
-        service,
-        config);
-    if (status == ZDT_TURNTABLE_OK) {
-        /* 保留原接口可诊断的Service关联；抽象提交仍以submit_fn为唯一入口。 */
-        device->service = service;
-    }
-    return status;
-}
-#endif
 
 /** @copydoc zdt_turntable_device_init_with_submit() */
 zdt_turntable_status_t zdt_turntable_device_init_with_submit(

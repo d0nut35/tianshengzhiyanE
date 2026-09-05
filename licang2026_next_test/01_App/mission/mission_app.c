@@ -67,11 +67,6 @@ typedef enum {
 } mission_fault_t;
 
 typedef struct {
-    bool active;
-    zdt_turntable_request_t request;
-} mission_zdt_transport_t;
-
-typedef struct {
     mission_vision_phase_t phase;
     bool inflight;
     bool stop_requested;
@@ -88,7 +83,6 @@ typedef struct {
 typedef struct {
     volatile ic_card_status_t ic_status;
     ic_ball_t ic_ball;
-    mission_zdt_transport_t zdt_transport;
     zdt_turntable_device_t zdt;
     volatile zdt_turntable_status_t zdt_status;
     volatile bool zdt_has_response;
@@ -212,85 +206,6 @@ static nano_vision_status_t mission_map_vision_status(mult_uart_status_t status)
     if (status == MULT_UART_ERR_BUSY) return NANO_VISION_ERR_BUSY;
     if (status == MULT_UART_ERR_QUEUE_FULL) return NANO_VISION_ERR_QUEUE_FULL;
     return NANO_VISION_ERR_IO;
-}
-
-/** 把复用串口事务结果转换为ZDT协议层状态。 */
-static zdt_turntable_status_t mission_map_zdt_status(mult_uart_status_t status)
-{
-    if (status == MULT_UART_OK) return ZDT_TURNTABLE_OK;
-    if (status == MULT_UART_ERR_TIMEOUT) return ZDT_TURNTABLE_ERR_TIMEOUT;
-    if (status == MULT_UART_ERR_BUSY) return ZDT_TURNTABLE_ERR_BUSY;
-    if (status == MULT_UART_ERR_QUEUE_FULL) {
-        return ZDT_TURNTABLE_ERR_QUEUE_FULL;
-    }
-    if ((status == MULT_UART_ERR_PARAM) || (status == MULT_UART_ERR_OVERFLOW)) {
-        return ZDT_TURNTABLE_ERR_PARAM;
-    }
-    return ZDT_TURNTABLE_ERR_IO;
-}
-
-/** ZDT生成的完整帧直接通过UART7复用Service发送并解析。 */
-static void mission_zdt_transfer_done(
-    void *user_ctx,
-    const mux_completion_t *completion)
-{
-    mission_zdt_transport_t *transport = (mission_zdt_transport_t *)user_ctx;
-    zdt_turntable_request_t request;
-    zdt_turntable_response_t response;
-    zdt_turntable_status_t status;
-
-    if ((transport == NULL) || !transport->active || (completion == NULL)) {
-        return;
-    }
-    request = transport->request;
-    transport->active = false;
-    status = mission_map_zdt_status(completion->status);
-    if (status == ZDT_TURNTABLE_OK) {
-        status = turn_parse(
-            completion->rx_data,
-            completion->rx_len,
-            request.expected_address,
-            request.expected_function,
-            &response);
-    }
-    if (request.done_cb != NULL) {
-        request.done_cb(
-            request.user_ctx,
-            request.request_id,
-            status,
-            ((status == ZDT_TURNTABLE_OK) ||
-             (status == ZDT_TURNTABLE_ERR_DEVICE)) ? &response : NULL);
-    }
-}
-
-/** 将ZDT请求按值保存并提交到复用通道2。 */
-static zdt_turntable_status_t mission_zdt_submit(
-    void *submit_ctx,
-    const zdt_turntable_request_t *request)
-{
-    mission_zdt_transport_t *transport =
-        (mission_zdt_transport_t *)submit_ctx;
-    mux_transfer_t transfer;
-    mult_uart_status_t status;
-
-    if ((transport == NULL) || (request == NULL)) {
-        return ZDT_TURNTABLE_ERR_PARAM;
-    }
-    if (transport->active) return ZDT_TURNTABLE_ERR_BUSY;
-    transport->request = *request;
-    transport->active = true;
-    (void)memset(&transfer, 0, sizeof(transfer));
-    transfer.device = MISSION_ZDT_DEVICE_ID;
-    transfer.operation = MULT_UART_OP_WRITE_READ;
-    transfer.tx_data = transport->request.frame;
-    transfer.tx_len = transport->request.frame_len;
-    transfer.rx_capacity = ZDT_TURNTABLE_RESPONSE_MAX;
-    transfer.io_timeout_ms = request->timeout_ms;
-    transfer.done_cb = mission_zdt_transfer_done;
-    transfer.user_ctx = transport;
-    status = mux_submit(&transfer);
-    if (status != MULT_UART_OK) transport->active = false;
-    return mission_map_zdt_status(status);
 }
 
 /** LSC16命令事务失败时唤醒Mission；发送成功仍需等待动作组0x08回报。 */
@@ -1424,8 +1339,8 @@ mission_app_status_t mission_app_init(void)
         };
         if (zdt_turntable_device_init_with_submit(
                 &ctx->storage.zdt,
-                mission_zdt_submit,
-                &ctx->storage.zdt_transport,
+                turn_service_submit,
+                NULL,
                 &config) != ZDT_TURNTABLE_OK) {
             return MISSION_APP_ERR_IO;
         }

@@ -5,6 +5,8 @@
  * @note    - 时序：system_assembly_init → csvc_init → csvc_set_pose → BLE
  *          - BLE：ISR(on_rx_raw)入队 → app_task 取队 ble_adp_process → on_nav
  *          - on_nav 给 rad，本层转 deg 再投 csvc（csvc 对上统一 deg）
+ *          - Mission：app_task 阻塞读 chassis_command_queue 取阶段命令，
+ *            到位后经 mission_event_queue 回执（request_id 原样带回）
  */
 
 #include "app_main.h"
@@ -18,6 +20,9 @@
 #include "ble_adaption.h"
 #include "hwt101_adaption.h"
 #include "lsensor/lsensor_handler.h"
+
+
+#include "chassis_mission_link.h"
 
 /* ===== 调试日志：0=不编译进固件，1=经 RTT 输出 ===== */
 #ifndef APP_LOG_EN
@@ -50,6 +55,11 @@
 #define APP_IMU_ZERO_MS   510U      /* 置零后到保存帧的间隔，ms */
 #define APP_SWEEP_TMO_MS  6000U     /* 单向找线边缘超时，ms */
 #define APP_TURN_TMO_MS   6000U     /* 回到中值角度超时，ms */
+
+/* Mission 链路参数 */
+#define APP_LINK_BOOT_REQ_ID 1U     /* 握手事件的非零请求编号 */
+#define APP_LINK_RETRY_MS    1000U  /* 未收到 Mission 就绪时重发间隔，ms */
+#define APP_LINK_POST_MS     100U   /* 事件入队等待上限，ms */
 
 /* 上电初始位姿（世界系，按场地标定） */
 #define APP_START_X_MM    1200
@@ -94,6 +104,11 @@ static app_status_t app_go_platform(void);
 static app_status_t app_go_stairs(void);
 static app_status_t app_go_depot(void);
 static app_status_t app_go_home(void);
+static app_status_t app_link_post(chassis_command_type_t type,
+                                  uint16_t req_id, uint8_t is_ready);
+static app_status_t app_link_wait(mission_command_type_t type,
+                                  uint16_t *req_id, uint32_t timeout_ticks);
+static void app_link_handshake(void);
 
 /**
  * @brief  BLE 原始字节回调（ISR 上下文）：拷贝入队，非阻塞
@@ -534,29 +549,124 @@ static app_status_t app_go_home(void)
 }
 
 /**
- * @brief  应用主任务：串行执行任务点后转 BLE 调度循环
+ * @brief  向 Mission 事件队列上报一条底盘事件并唤醒 Mission 任务
+ * @param  type     事件类型 CHASSIS_CMD_xxx
+ * @param  req_id   原样带回的命令请求编号
+ * @param  is_ready 1=成功/就绪，0=失败
+ * @retval APP_OK / APP_ERR
+ */
+static app_status_t app_link_post(chassis_command_type_t type,
+                                  uint16_t req_id, uint8_t is_ready)
+{
+    chassis_mission_event_t evt; /* 待上报事件 */
+
+    evt.request_id = req_id;
+    evt.type = type;
+    evt.is_ready = is_ready;
+    if (!chassis_mission_link_post_event(&evt,
+                                         app_ms_ticks(APP_LINK_POST_MS))) {
+        APP_LOGE("post evt %d fail", (int)type);
+        return APP_ERR;
+    }
+    return APP_OK;
+}
+
+/**
+ * @brief  阻塞等待指定 Mission 命令，其余命令丢弃
+ * @param  type          期望的命令类型 MISSION_CMD_xxx
+ * @param  req_id        输出该命令的请求编号，回执时原样带回
+ * @param  timeout_ticks 单次出队等待 tick 数，可为 osWaitForever
+ * @retval APP_OK=已收到 / APP_ERR=超时或队列未建立
+ * @note   等待期间底盘静止，收到 MISSION_CMD_STOP 直接回 CHASSIS_CMD_STOPPED
+ */
+static app_status_t app_link_wait(mission_command_type_t type,
+                                  uint16_t *req_id, uint32_t timeout_ticks)
+{
+    chassis_mission_command_t cmd; /* 出队的 Mission 命令 */
+
+    if ((req_id == NULL) || (chassis_command_queue == NULL)) {
+        return APP_ERR;
+    }
+    for (;;) {
+        if (osMessageQueueGet(chassis_command_queue, &cmd, NULL,
+                              timeout_ticks) != osOK) {
+            return APP_ERR;
+        }
+        if (cmd.type == type) {
+            *req_id = cmd.request_id;
+            return APP_OK;
+        }
+        if (cmd.type == MISSION_CMD_STOP) {
+            (void)app_stop_motion();
+            (void)app_link_post(CHASSIS_CMD_STOPPED, cmd.request_id, 1U);
+        } else {
+            APP_LOGE("drop cmd %d", (int)cmd.type);
+        }
+    }
+}
+
+/**
+ * @brief  与 Mission 握手：上报底盘就绪，直到收到 MISSION_CMD_MISSION_READY
+ * @note   Mission 只在收到底盘就绪后才回 READY，因此底盘先发、超时重发
+ */
+static void app_link_handshake(void)
+{
+    uint16_t req_id; /* Mission 回执编号，握手阶段不使用 */
+
+    for (;;) {
+        (void)app_link_post(CHASSIS_CMD_MISSION_READY,
+                            APP_LINK_BOOT_REQ_ID, 1U);
+        if (app_link_wait(MISSION_CMD_MISSION_READY, &req_id,
+                          app_ms_ticks(APP_LINK_RETRY_MS)) == APP_OK) {
+            APP_LOGI("mission link up");
+            return;
+        }
+    }
+}
+
+/**
+ * @brief  应用主任务：按 Mission 命令串行执行任务点后转 BLE 调度循环
  * @param  arg 未用
+ * @note   握手、去圆盘、去阶梯、低层放行已接 chassis_mission_link 队列；
+ *         阶梯横移及之后仍为固定延时流程，见各 TODO(link)
  */
 static void app_task(void *arg)
 {
-    app_chunk_t chunk; /* 出队字节块 */
+    app_chunk_t chunk;                                    /* 出队字节块 */
+    uint16_t req_id = CHASSIS_MISSION_REQUEST_ID_INVALID; /* 阶段请求编号 */
+    uint8_t ok;                                           /* 阶段结果，1=成功 */
 
     (void)arg;
     /* 等待应用启动 */
     while (g_app_up == 0U) {
         osDelay(10U);
     }
+
     osDelay(1000U); /* 等底盘服务稳定 */
+    app_link_handshake();
 
-    // /* 画圆：半径 350mm，线速度 250mm/s（可调） */
-    // (void)csvc_arc(250.0f, -350.0f, false);
+    /* 阶段失败以 is_ready=0 回执，由 Mission 决定停机；底盘不自行中止流程 */
+    if (app_link_wait(MISSION_CMD_GO_PLATFORM, &req_id,
+                      osWaitForever) == APP_OK) {
+        ok = (app_go_platform() == APP_OK) ? 1U : 0U;
+        (void)app_link_post(CHASSIS_CMD_PLATFORM_READY, req_id, ok);
+    }
+    if (app_link_wait(MISSION_CMD_GO_STAIRS, &req_id,
+                      osWaitForever) == APP_OK) {
+        ok = (app_go_stairs() == APP_OK) ? 1U : 0U;
+        (void)app_link_post(CHASSIS_CMD_STAIRS_READY, req_id, ok);
+        /* 阶梯起始位即低层扫描起点：Mission 收到层就绪后才会回 CAM_READY */
+        (void)app_link_post(CHASSIS_CMD_STAIR_LOW, req_id, ok);
+    }
+    (void)app_link_wait(MISSION_CMD_CAM_READY, &req_id, osWaitForever);
 
-    /* 任务点失败只记日志，继续执行后续任务点 */
-    (void)app_go_platform();
-    osDelay(3000U);
-    (void)app_go_stairs();
-    osDelay(3000U);
-
+    /* TODO(link): 阶梯横移段——到高/中层起点时上报 CHASSIS_CMD_STAIR_HIGH/MID
+     *             并等 MISSION_CMD_CAM_READY，两个上报点坐标待定；
+     *             中层走完上报 CHASSIS_CMD_STAIRS_FINISHED */
+    /* TODO(link): 横移中收 MISSION_CMD_STAIR_STOP 停车并回 CHASSIS_CMD_STAIR_PAUSE，
+     *             收 MISSION_CMD_STAIR_RESUME 续行并回 CHASSIS_CMD_STAIR_RESUME；
+     *             g_nav_fin 忙等需改成可被命令队列打断 */
+    
     /* 直线导航（不走 A*）到 (1700,2500) → (1550,2500)，航向 180°，到点后画圆 */
     g_nav_fin = 0U;
     if (csvc_nav(CSVC_NAV_LINE, (map_point_t){.x_mm = 1700, .y_mm = 2520},
@@ -580,12 +690,14 @@ static void app_task(void *arg)
             (void)csvc_arc(200.0f, -350.0f, false);
         }
     }
-    osDelay(10000U);
+    osDelay(10000U); /* TODO(link): 改为等机械臂夹球全部完成的命令，协议暂无需补 */
+    /* TODO(link): 仓库/回原点协议暂无，需补 MISSION_CMD_GO_DEPOT/GO_HOME 及对应 READY 事件 */
     (void)app_go_depot();
     osDelay(3000U);
     (void)app_go_home();
     osDelay(3000U);
 
+    /* TODO(link): 命令源由 BLE 字节队列改为 chassis_mission_command_t 队列，事件经 sink 上报 */
     for (;;) {
         if (osMessageQueueGet(g_ble_q, &chunk, NULL, osWaitForever) == osOK) {
             (void)ble_adp_process(chunk.data, chunk.len);

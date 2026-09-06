@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F750xx,RTT_USE_ASM=0,LICANG_RELEASE_MINIMAL=1</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../02_Service/lsc16;../04_Bsp/lsc16;../02_Service/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../02_Service/ic_card;../04_Bsp/ic_card;../02_Service/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/common;../05_Test;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/04_Bsp/ble;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
+              <IncludePath>../Core/Inc;../02_Service/lsc16;../04_Bsp/lsc16;../02_Service/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../02_Service/ic_card;../04_Bsp/ic_card;../02_Service/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/common;../05_Test;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -2140,16 +2140,6 @@
           <GroupName>lhy/04_Bsp/hwt101</GroupName>
           <Files>
             <File>
-              <FileName>hwt101.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../lhy/04_Bsp/hwt101/hwt101.c</FilePath>
-            </File>
-            <File>
-              <FileName>hwt101.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../lhy/04_Bsp/hwt101/hwt101.h</FilePath>
-            </File>
-            <File>
               <FileName>hwt101_adaption.c</FileName>
               <FileType>1</FileType>
               <FilePath>../lhy/04_Bsp/hwt101/hwt101_adaption.c</FilePath>
@@ -2158,31 +2148,6 @@
               <FileName>hwt101_adaption.h</FileName>
               <FileType>5</FileType>
               <FilePath>../lhy/04_Bsp/hwt101/hwt101_adaption.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>lhy/04_Bsp/ble</GroupName>
-          <Files>
-            <File>
-              <FileName>ble.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../lhy/04_Bsp/ble/ble.c</FilePath>
-            </File>
-            <File>
-              <FileName>ble.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../lhy/04_Bsp/ble/ble.h</FilePath>
-            </File>
-            <File>
-              <FileName>ble_adaption.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../lhy/04_Bsp/ble/ble_adaption.c</FilePath>
-            </File>
-            <File>
-              <FileName>ble_adaption.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../lhy/04_Bsp/ble/ble_adaption.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -2251,8 +2216,8 @@
   <RTE>
     <apis/>
     <components>
-      <component Cclass="CMSIS" Cgroup="CORE" Cvendor="ARM" Cversion="6.2.0" condition="ARMv6_7_8-M Device" ymlID="CMSIS:CORE">
-        <package name="CMSIS" schemaVersion="1.7.53" url="https://www.keil.com/pack/" vendor="ARM" version="6.3.0"/>
+      <component Cclass="CMSIS" Cgroup="CORE" Cvendor="ARM" Cversion="6.1.0" condition="ARMv6_7_8-M Device">
+        <package name="CMSIS" schemaVersion="1.7.36" url="https://www.keil.com/pack/" vendor="ARM" version="6.1.0"/>
         <targetInfos>
           <targetInfo name="licang2026v1"/>
         </targetInfos>

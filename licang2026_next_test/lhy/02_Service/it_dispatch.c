@@ -3,7 +3,7 @@
  * @brief   中断适配层：HAL UART 回调按句柄路由（电机 huart3~6 + 陀螺仪 huart2）
  * @author  haoyu
  * @note    - huart3/4/5/6 = 电机 1/2/3/4 回传，路由到 zdt_adp_rx_isr(idx, size)
- *          - huart2 = 陀螺仪(hwt101)；huart1 = BLE 待适配层落地后接入
+ *          - huart2 = 陀螺仪(hwt101)
  *          - idx 顺序须与 zdt_motor_adaption.c 的 g_cfg 一致
  *          - RX 正常路径高频，此处不打日志；仅异常分支记一笔
  */
@@ -15,7 +15,6 @@
 
 #include "zdt_motor_adaption.h"
 #include "hwt101_adaption.h"
-#include "ble_adaption.h"
 
 /* ===== 调试日志：0=不编译进固件，1=经 RTT 输出 ===== */
 #ifndef IT_DISP_LOG_EN
@@ -50,8 +49,6 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
     } else if (huart == &huart2) {
         /* 陀螺仪：记长度+切缓冲+重启 */
         (void)hwt101_adp_rx_isr(size);
-    } else if (huart == &huart1) {
-        (void)ble_adp_rx_isr(size);         /* BLE：拷帧+入队+重启 */
     } else {
         /* 其它 UART 暂未接入 */
     }
@@ -74,8 +71,6 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         (void)zdt_adp_err_isr(3U);
     } else if (huart == &huart2) {
         (void)hwt101_adp_err_isr();         /* 陀螺仪：重启接收 */
-    } else if (huart == &huart1) {
-        (void)ble_adp_err_isr();            /* BLE：重启接收 */
     } else {
         IT_LOGW("error on unmapped uart");
     }

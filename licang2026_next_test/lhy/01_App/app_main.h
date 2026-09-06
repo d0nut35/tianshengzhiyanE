@@ -1,9 +1,9 @@
 /**
  * @file    app_main.h
- * @brief   应用入口：上电时序编排 + BLE 调度（App 层）
+ * @brief   应用入口：上电时序编排 + 底盘任务调度
  * @author  haoyu
  * @note    - 由 freertos.c 的 MX_FREERTOS_Init 调一次
- *          - 编排：system_assembly_init → csvc_init → 对齐位姿 → BLE 调度
+ *          - 编排：system_assembly_init → csvc_init → 对齐位姿
  */
 
 #ifndef APP_MAIN_H
@@ -20,7 +20,7 @@ typedef enum {
 } app_status_t;
 
 /**
- * @brief  应用上电初始化：装配子系统 + 起底盘服务 + 起 BLE 调度任务
+ * @brief  应用上电初始化：装配子系统、底盘服务和底盘任务
  * @retval APP_OK / APP_ERR
  */
 app_status_t app_init(void);

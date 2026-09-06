@@ -1,23 +1,18 @@
 /**
  * @file    app_main.c
- * @brief   应用入口：上电时序 + BLE 调度
+ * @brief   应用入口：上电时序 + 底盘任务调度
  * @author  haoyu
- * @note    - 时序：system_assembly_init → csvc_init → csvc_set_pose → BLE
- *          - BLE：ISR(on_rx_raw)入队 → app_task 取队 ble_adp_process → on_nav
- *          - on_nav 给 rad，本层转 deg 再投 csvc（csvc 对上统一 deg）
+ * @note    - 时序：system_assembly_init → csvc_init → csvc_set_pose
  *          - Mission：app_task 阻塞读 chassis_command_queue 取阶段命令，
  *            到位后经 mission_event_queue 回执（request_id 原样带回）
  */
 
 #include "app_main.h"
 
-#include <string.h>
-
 #include "cmsis_os2.h"
 
 #include "system_assembly.h"
 #include "chassis_service.h"
-#include "ble_adaption.h"
 #include "hwt101_adaption.h"
 #include "lsensor/lsensor_handler.h"
 
@@ -37,10 +32,7 @@
 #define APP_LOGE(fmt, ...)  do {} while (0)
 #endif
 
-#define APP_RAD2DEG       57.29578f /* rad→deg */
-#define APP_BLE_CHUNK     64U       /* 单次 BLE 字节块上限 */
-#define APP_BLE_QDEPTH    8U        /* BLE 字节块队列深度 */
-#define APP_TASK_STACK    2048U     /* BLE 调度任务栈字节 */
+#define APP_TASK_STACK    2048U     /* 底盘任务栈字节 */
 
 /* 第二点白线对齐参数 */
 #define APP_CW_W_DEG      (-5.0f)  /* 顺时针扫描角速度，deg/s */
@@ -66,26 +58,16 @@
 #define APP_START_Y_MM    350
 #define APP_START_YAW_DEG 0.0f
 
-/* BLE 原始字节块（ISR 拷入 → 任务取出喂解析器） */
-typedef struct {
-    uint8_t  data[APP_BLE_CHUNK]; /* 字节缓冲 */
-    uint16_t len;                 /* 有效长度 */
-} app_chunk_t;
-
-static osMessageQueueId_t g_ble_q = NULL; /* BLE 字节块队列 */
-static osThreadId_t       g_task = NULL;  /* BLE 调度任务 */
+static osThreadId_t       g_task = NULL;  /* 底盘任务 */
 static uint8_t            g_nav_fin = 1U; /* 导航完成标志，1=空闲 */
 static uint8_t            g_app_up = 0;  /* 应用启动标志 */
 
 static const osThreadAttr_t g_task_attr = {
-    .name       = "app_ble",
+    .name       = "chassis",
     .stack_size = APP_TASK_STACK,
     .priority   = osPriorityNormal,
 };
 
-static void app_on_rx_raw(const uint8_t *data, uint16_t len);
-static void app_on_nav(ble_nav_mode_t mode, float x_mm, float y_mm,
-                       float yaw_rad, float v_mm_s, float w_rad_s);
 static void app_task(void *arg);
 static uint32_t app_ms_ticks(uint32_t ms);
 static float app_ang_norm(float angle);
@@ -109,45 +91,6 @@ static app_status_t app_link_post(chassis_command_type_t type,
 static app_status_t app_link_wait(mission_command_type_t type,
                                   uint16_t *req_id, uint32_t timeout_ticks);
 static void app_link_handshake(void);
-
-/**
- * @brief  BLE 原始字节回调（ISR 上下文）：拷贝入队，非阻塞
- * @param  data 字节缓冲
- * @param  len  字节长度
- */
-static void app_on_rx_raw(const uint8_t *data, uint16_t len)
-{
-    app_chunk_t chunk; /* 待入队字节块 */
-
-    if ((data == NULL) || (len == 0U) || (g_ble_q == NULL)) {
-        return;
-    }
-    chunk.len = (len > APP_BLE_CHUNK) ? APP_BLE_CHUNK : len;
-    (void)memcpy(chunk.data, data, chunk.len);
-    (void)osMessageQueuePut(g_ble_q, &chunk, 0U, 0U); /* ISR 非阻塞 */
-}
-
-/**
- * @brief  BLE 导航命令回调（任务上下文）：rad→deg 后投 csvc
- * @param  mode    导航模式
- * @param  x_mm    目标 x，mm
- * @param  y_mm    目标 y，mm
- * @param  yaw_rad 目标航向，rad
- * @param  v_mm_s  线速度，mm/s
- * @param  w_rad_s 角速度，rad/s
- */
-static void app_on_nav(ble_nav_mode_t mode, float x_mm, float y_mm,
-                       float yaw_rad, float v_mm_s, float w_rad_s)
-{
-    uint8_t     svc_mode; /* csvc 导航模式 */
-    map_point_t tgt;      /* 目标点 */
-
-    svc_mode = (mode == BLE_NAV_PATH) ? CSVC_NAV_PATH : CSVC_NAV_LINE;
-    tgt.x_mm = (int16_t)x_mm;
-    tgt.y_mm = (int16_t)y_mm;
-    (void)csvc_nav(svc_mode, tgt, yaw_rad * APP_RAD2DEG, v_mm_s,
-                   w_rad_s * APP_RAD2DEG, &g_nav_fin);
-}
 
 /**
  * @brief  将毫秒转换成当前 CMSIS-OS tick 数
@@ -625,14 +568,13 @@ static void app_link_handshake(void)
 }
 
 /**
- * @brief  应用主任务：按 Mission 命令串行执行任务点后转 BLE 调度循环
+ * @brief  应用主任务：按 Mission 命令串行执行底盘任务点
  * @param  arg 未用
  * @note   握手、去圆盘、去阶梯、低层放行已接 chassis_mission_link 队列；
  *         阶梯横移及之后仍为固定延时流程，见各 TODO(link)
  */
 static void app_task(void *arg)
 {
-    app_chunk_t chunk;                                    /* 出队字节块 */
     uint16_t req_id = CHASSIS_MISSION_REQUEST_ID_INVALID; /* 阶段请求编号 */
     uint8_t ok;                                           /* 阶段结果，1=成功 */
 
@@ -697,11 +639,9 @@ static void app_task(void *arg)
     (void)app_go_home();
     osDelay(3000U);
 
-    /* TODO(link): 命令源由 BLE 字节队列改为 chassis_mission_command_t 队列，事件经 sink 上报 */
+    /* 当前 Mission 流程到此结束，任务保持低功耗等待。 */
     for (;;) {
-        if (osMessageQueueGet(g_ble_q, &chunk, NULL, osWaitForever) == osOK) {
-            (void)ble_adp_process(chunk.data, chunk.len);
-        }
+        osDelay(1000U);
     }
 }
 
@@ -729,19 +669,7 @@ app_status_t app_init(void)
     start.x_mm = (int16_t)APP_START_X_MM;
     start.y_mm = (int16_t)APP_START_Y_MM;
     (void)csvc_set_pose(start, APP_START_YAW_DEG);
-    /* 4) BLE 字节队列 + 适配层（注入 ISR 入队 / 命令上抛回调） */
-    g_ble_q = osMessageQueueNew(APP_BLE_QDEPTH, sizeof(app_chunk_t), NULL);
-    if (g_ble_q == NULL) {
-        APP_LOGE("ble queue fail");
-        return APP_ERR;
-    }
-    APP_LOGI("ble queue init success");
-    if (ble_adp_init(app_on_rx_raw, app_on_nav) != BLE_OK) {
-        APP_LOGE("ble adp init fail");
-        return APP_ERR;
-    }
-    APP_LOGI("ble adp init success");
-    /* 5) 起 BLE 调度任务 */
+    /* 4) 起底盘任务 */
     g_task = osThreadNew(app_task, NULL, &g_task_attr);
     if (g_task == NULL) {
         APP_LOGE("app task fail");

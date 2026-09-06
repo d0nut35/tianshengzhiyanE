@@ -1,217 +1,297 @@
 /**
  * @file    hwt101_adaption.c
- * @brief   HWT101 平台适配层（STM32 HAL UART2 + DMA 双缓冲，懒扫描）
- * @author  haoyu
- * @note    - 固定 huart2；ReceiveToIdle + ping-pong 双缓冲，
- *            关半传输中断
- *          - rx_isr(ISR) 只记长度 + 切缓冲 + 重启 DMA，
- *            不解析（最短中断）
- *          - read(任务) 扫描最近收完缓冲调 hwt101_parse；
- *            扫描期又收完则丢弃本次
+ * @brief   固定 huart2 的 HWT101 收发、协议解析与航向标定
+ * @note    DMA 使用 2 x 64 字节缓冲，ISR 只切换接收资源。
+ *          任务按接收序号发布原始值缓存；短临界区保护共享状态，
+ *          扫描期间发生接收或错误事件时丢弃本次结果。
  */
 
 #include "hwt101_adaption.h"
 
-#include "main.h"
+#include <math.h>
+#include <stddef.h>
 #include "usart.h"
 
-#define HWT101_RX_LEN   64U    /* 每块 DMA 接收缓冲字节数 */
-#define HWT101_TX_TMO   100U   /* 寄存器写阻塞发送超时 ms */
+#define HWT101_RX_LEN      64U          /* 单块 DMA 缓冲长度 */
+#define HWT101_TX_TMO      100U         /* 寄存器发送超时，ms */
+#define HWT101_HAS_YAW     1U           /* 本批存在有效 yaw */
+#define HWT101_HAS_GYRO    2U           /* 本批存在有效 Wz */
+#define HWT101_YAW_SCALE   0.0054931640625f /* 180 / 32768 */
+#define HWT101_GYRO_SCALE  0.06103515625f   /* 2000 / 32768 */
 
-/* HWT101 所在 UART（板级固定 huart2） */
-static UART_HandleTypeDef *g_uart = &huart2;
-static uint8_t  g_buf[2][HWT101_RX_LEN];      /* ping-pong 双缓冲 */
-/* 每块最近收完有效长度(ISR写/任务读) */
-static volatile uint16_t g_len[2] = {0U, 0U};
-/* DMA 正写入的缓冲下标(ISR写/任务读) */
-static volatile uint8_t  g_active = 0U;
-static uint8_t g_inited = 0U;                 /* 是否已实例化 */
-static uint8_t g_started = 0U;                /* 是否已启动接收 */
-static float   g_yaw_ofs = 0.0f;              /* 软件航向偏置，deg */
+/* 缓存只存原始值，改变软件偏置无需重新扫描同一批数据。 */
+typedef struct {
+    float    yaw;     /* 原始航向，deg */
+    float    gyro;    /* 原始角速度，deg/s */
+    uint8_t  flags;   /* 本批有效量，禁止跨批拼接 */
+} hwt_sample_t;
+
+static uint8_t g_buf[2][HWT101_RX_LEN]; /* DMA 生命周期内始终有效 */
+static volatile uint32_t g_rx_seq;     /* 每次接收/失效递增，允许回绕 */
+static volatile uint16_t g_rx_len;     /* 最近完成块的长度 */
+static volatile uint8_t g_active;      /* DMA 当前写入的块 */
+static volatile uint8_t g_started;     /* DMA 已启动或正在挂接 */
+static uint8_t g_inited;               /* 固定资源是否已检查 */
+static uint8_t g_cached;               /* 当前批次是否已有解析缓存 */
+static hwt_sample_t g_sample;          /* 任务在短临界区内读写 */
+static float g_yaw_ofs;                /* 任务在短临界区内更新偏置 */
 
 /**
- * @brief  在指定缓冲上重启 ReceiveToIdle DMA，并关半传输中断
- * @param  idx 目标缓冲下标，0/1
- * @retval HWT101_OK / HWT101_ERR
+ * @brief  在指定块挂接接收；失败使数据失效，允许 start 重试
+ * @param  idx 已检查的缓冲下标，0/1
+ * @param  size 刚完成块长度；启动或错误恢复传 0，使旧数据失效
+ * @return HWT101_OK / HWT101_ERR
+ * @note   发布下标早于 HAL 使能接收，避免立即到来的 IRQ 用错块。
  */
-static hwt101_status_t arm_dma(uint8_t idx)
+static hwt101_status_t arm_dma(uint8_t idx, uint16_t size)
 {
-    if (HAL_UARTEx_ReceiveToIdle_DMA(g_uart,
-                                     g_buf[idx],
-                                     HWT101_RX_LEN) != HAL_OK) {
-        __HAL_UART_DISABLE_IT(g_uart, UART_IT_IDLE);
+    g_rx_len = (size <= HWT101_RX_LEN) ? size : HWT101_RX_LEN;
+    g_cached = 0U;
+    g_rx_seq++;
+    g_active = idx;
+    g_started = 1U;
+    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_buf[idx],
+                                   HWT101_RX_LEN) != HAL_OK) {
+        __HAL_UART_DISABLE_IT(&huart2, UART_IT_IDLE);
+        g_started = 0U;
+        g_rx_len = 0U;
         return HWT101_ERR;
     }
-    /* 只在空闲/完成触发 */
-    __HAL_DMA_DISABLE_IT(g_uart->hdmarx, DMA_IT_HT);
-    /* 标记 DMA 当前写入块 */
-    g_active = idx;
+    __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
     return HWT101_OK;
 }
 
 /**
- * @brief  将角度归一化到 [-180, 180)
- * @param  angle 待归一化角度，deg
- * @retval 归一化角度，deg
+ * @brief  扫描完整子帧，各量取本批最后一帧；尾部残帧不跨批拼接
+ * @param  data 完成块首地址，len 已限制在 DMA 缓冲容量内
+ * @param  len 有效字节数
+ * @param  out 内部解析结果，调用方须在发布前复核接收序号
  */
-static float norm_deg(float angle)
+static void parse_buf(const uint8_t *data, size_t len, hwt_sample_t *out)
 {
-    while (angle >= 180.0f) {
-        angle -= 360.0f;
+    size_t pos = 0U;       /* 子帧候选位置 */
+    int16_t yaw = 0;       /* 最后一帧原始 yaw */
+    int16_t gyro = 0;      /* 最后一帧原始 Wz */
+    uint8_t flags = 0U;    /* 本批有效量 */
+    uint8_t id;            /* 候选帧类型 */
+    uint8_t sum;           /* 模 256 校验和 */
+    int16_t raw;           /* 小端有符号测量值 */
+    const uint8_t *frame;  /* 已确认足够长的候选帧 */
+
+    while ((len - pos) >= HWT101_FRAME_LEN) {
+        frame = &data[pos];
+        id = frame[1];
+        if ((frame[0] != HWT101_FRAME_HEAD) ||
+            ((id != HWT101_ID_GYRO) && (id != HWT101_ID_ANGLE))) {
+            pos++;
+            continue;
+        }
+        sum = (uint8_t)(frame[0] + frame[1] + frame[2] + frame[3] +
+                        frame[4] + frame[5] + frame[6] + frame[7] +
+                        frame[8] + frame[9]);
+        if (sum != frame[HWT101_FRAME_LEN - 1U]) {
+            pos++;
+            continue;
+        }
+        raw = (int16_t)((uint16_t)frame[6] | ((uint16_t)frame[7] << 8U));
+        if (id == HWT101_ID_ANGLE) {
+            yaw = raw;
+            flags |= HWT101_HAS_YAW;
+        } else {
+            gyro = raw;
+            flags |= HWT101_HAS_GYRO;
+        }
+        pos += HWT101_FRAME_LEN;
     }
-    while (angle < -180.0f) {
+    out->yaw = (float)yaw * HWT101_YAW_SCALE;
+    out->gyro = (float)gyro * HWT101_GYRO_SCALE;
+    out->flags = flags;
+}
+
+/**
+ * @brief  获取当前批次的原始值；命中缓存时不再读取 DMA 数据
+ * @param  out 调用方私有快照，只有返回 OK 时可作为有效 yaw 使用
+ * @return HWT101_OK / HWT101_ERR_INIT / HWT101_ERR_RES
+ * @note   多任务可在锁外重复解析，但只能发布序号仍匹配的结果。
+ */
+static hwt101_status_t read_raw(hwt_sample_t *out)
+{
+    uint32_t irq;       /* 调用前的中断屏蔽状态 */
+    uint32_t seq;       /* 扫描开始时的接收序号 */
+    uint16_t len;       /* 完成块有效长度 */
+    uint8_t idx;        /* 完成块下标 */
+
+    irq = __get_PRIMASK();
+    __disable_irq();
+    if (g_inited == 0U) {
+        __set_PRIMASK(irq);
+        return HWT101_ERR_INIT;
+    }
+    if (g_cached != 0U) {
+        *out = g_sample;
+        __set_PRIMASK(irq);
+    } else {
+        seq = g_rx_seq;
+        len = g_rx_len;
+        idx = (uint8_t)(g_active ^ 1U);
+        __set_PRIMASK(irq);
+        parse_buf(g_buf[idx], len, out);
+        irq = __get_PRIMASK();
+        __disable_irq();
+        /* 下标切换两次会复原，必须比较完整序号后才能发布。 */
+        if (seq != g_rx_seq) {
+            __set_PRIMASK(irq);
+            return HWT101_ERR_RES;
+        }
+        g_sample = *out;
+        g_cached = 1U;
+        __set_PRIMASK(irq);
+    }
+    return ((out->flags & HWT101_HAS_YAW) != 0U) ?
+           HWT101_OK : HWT101_ERR_RES;
+}
+
+/**
+ * @brief  归一化已在 [-360, 360) 内的角度，至多一次修正
+ * @param  angle 原始 yaw 与归一化偏置之和，或标定余角
+ * @return [-180, 180) 内的角度
+ */
+static float wrap_yaw(float angle)
+{
+    if (angle >= 180.0f) {
+        angle -= 360.0f;
+    } else if (angle < -180.0f) {
         angle += 360.0f;
     }
     return angle;
 }
 
+/** @copydoc hwt101_adp_init */
 hwt101_status_t hwt101_adp_init(void)
 {
-    g_uart = &huart2;
-    /* 校验 UART 及其 RX DMA 绑定 */
-    if ((g_uart == NULL) || (g_uart->hdmarx == NULL)) {
+    uint32_t irq; /* 保存调用前中断状态 */
+
+    if (huart2.hdmarx == NULL) {
         return HWT101_ERR_PARAM;
     }
+    irq = __get_PRIMASK();
+    __disable_irq();
+    /* 接收活动中不能重置缓冲归属，调用方必须在启动前初始化。 */
+    if (g_started != 0U) {
+        __set_PRIMASK(irq);
+        return HWT101_ERR;
+    }
     g_active = 0U;
-    g_len[0] = 0U;
-    g_len[1] = 0U;
+    g_rx_len = 0U;
+    g_rx_seq++;
+    g_cached = 0U;
     g_yaw_ofs = 0.0f;
-    g_started = 0U;
     g_inited = 1U;
+    __set_PRIMASK(irq);
     return HWT101_OK;
 }
 
+/** @copydoc hwt101_adp_start */
 hwt101_status_t hwt101_adp_start(void)
 {
-    hwt101_status_t ret;     /* 启动结果 */
-
     if (g_inited == 0U) {
         return HWT101_ERR_INIT;
     }
-    if (g_started == 1U) {
+    if (g_started != 0U) {
         return HWT101_OK;
     }
-    /* 从干净状态起：清长度，从缓冲 0 开始接收 */
-    g_active = 0U;
-    g_len[0] = 0U;
-    g_len[1] = 0U;
-    ret = arm_dma(0U);
-    if (ret != HWT101_OK) {
-        return ret;
-    }
-    g_started = 1U;
-    return HWT101_OK;
+    return arm_dma(0U, 0U);
 }
 
-/**
- * @brief  懒扫描最近收完缓冲，解出原始（未加偏置）角速度 / 角度
- * @param  gyro_dps 输出角速度 Wz，度/秒（本段存在才写）
- * @param  yaw_deg  输出原始偏航角，度
- * @retval 同 hwt101_adp_read
- */
-static hwt101_status_t read_raw(float *gyro_dps, float *yaw_deg)
+/** @copydoc hwt101_adp_read */
+hwt101_status_t hwt101_adp_read(float *gyro_dps, float *yaw_deg)
 {
-    hwt101_sample_t s;      /* 本次解析结果 */
-    uint8_t  finished;      /* 最近收完的缓冲下标 */
-    uint16_t len;           /* 该缓冲有效长度 */
+    hwt_sample_t sample; /* 本次任务私有的原始值快照 */
+    hwt101_status_t ret; /* 读取状态 */
 
     if ((gyro_dps == NULL) || (yaw_deg == NULL)) {
         return HWT101_ERR_PARAM;
     }
-    if (g_inited == 0U) {
-        return HWT101_ERR_INIT;
-    }
-    /* DMA 正写 g_active，最近收完的是另一块 */
-    finished = (uint8_t)(g_active ^ 1U);
-    len = g_len[finished];
-    if (len > HWT101_RX_LEN) {
-        len = HWT101_RX_LEN;
-    }
-    if (hwt101_parse(g_buf[finished], len, &s) != HWT101_OK) {
-        return HWT101_ERR_RES;          /* 本段无任何有效帧 */
-    }
-    /* 扫描期间又收完一块，DMA 可能已回头覆盖该块，丢弃本次 */
-    if ((uint8_t)(g_active ^ 1U) != finished) {
-        return HWT101_ERR_RES;
-    }
-    if (s.has_yaw == 0U) {
-        /* 以 yaw 为准，无新 yaw 即无新数据 */
-        return HWT101_ERR_RES;
-    }
-    *yaw_deg = s.yaw_deg;
-    if (s.has_gyro != 0U) {
-        *gyro_dps = s.gyro_dps;         /* gyro 附带量，存在才写 */
-    }
-    return HWT101_OK;
-}
-
-hwt101_status_t hwt101_adp_read(float *gyro_dps, float *yaw_deg)
-{
-    hwt101_status_t ret;    /* 原始读取结果 */
-
-    ret = read_raw(gyro_dps, yaw_deg);
-    if (ret == HWT101_OK) {
-        *yaw_deg = norm_deg(*yaw_deg + g_yaw_ofs);
-    }
-    return ret;
-}
-
-hwt101_status_t hwt101_adp_set_yaw(float yaw_deg)
-{
-    float gyro = 0.0f;      /* 附带角速度，弃用 */
-    float raw = 0.0f;       /* 当前原始 yaw，deg */
-    hwt101_status_t ret;    /* 原始读取结果 */
-
-    ret = read_raw(&gyro, &raw);
+    ret = read_raw(&sample);
     if (ret != HWT101_OK) {
         return ret;
     }
-    g_yaw_ofs = norm_deg(yaw_deg - raw);
+    *yaw_deg = wrap_yaw(sample.yaw + g_yaw_ofs);
+    if ((sample.flags & HWT101_HAS_GYRO) != 0U) {
+        *gyro_dps = sample.gyro;
+    }
     return HWT101_OK;
 }
 
+/** @copydoc hwt101_adp_set_yaw */
+hwt101_status_t hwt101_adp_set_yaw(float yaw_deg)
+{
+    hwt_sample_t sample; /* 当前批次的原始航向 */
+    hwt101_status_t ret; /* 原始读取状态 */
+    uint32_t irq;        /* 保存调用前中断状态 */
+    float offset;        /* 待发布的软件偏置 */
+    float mag;           /* 多圈偏置的绝对值 */
+    float step;          /* 不超过 mag 的 360 度二次幂倍数 */
+
+    if (!isfinite(yaw_deg)) {
+        return HWT101_ERR_PARAM;
+    }
+    ret = read_raw(&sample);
+    if (ret != HWT101_OK) {
+        return ret;
+    }
+    offset = yaw_deg - sample.yaw;
+    /* 二分消去整圈，有限浮点输入最多约 120 轮，不引入取余库。 */
+    if ((offset >= 360.0f) || (offset < -360.0f)) {
+        mag = fabsf(offset);
+        step = 360.0f;
+        while (step <= (mag * 0.5f)) {
+            step *= 2.0f;
+        }
+        do {
+            if (mag >= step) {
+                mag -= step;
+            }
+            step *= 0.5f;
+        } while (step >= 360.0f);
+        offset = (offset < 0.0f) ? -mag : mag;
+    }
+    irq = __get_PRIMASK();
+    __disable_irq();
+    g_yaw_ofs = wrap_yaw(offset);
+    __set_PRIMASK(irq);
+    return HWT101_OK;
+}
+
+/** @copydoc hwt101_adp_write_reg */
 hwt101_status_t hwt101_adp_write_reg(uint8_t reg, uint8_t lo, uint8_t hi)
 {
-    uint8_t frame[5];           /* FF AA reg lo hi */
-    HAL_StatusTypeDef ret;      /* HAL 发送结果 */
+    uint8_t frame[5] = {0xFFU, 0xAAU, reg, lo, hi}; /* 固定寄存器写帧 */
+    HAL_StatusTypeDef ret; /* HAL 发送状态 */
 
-    frame[0] = 0xFFU;
-    frame[1] = 0xAAU;
-    frame[2] = reg;
-    frame[3] = lo;
-    frame[4] = hi;
-    ret = HAL_UART_Transmit(g_uart, frame, (uint16_t)sizeof(frame),
+    ret = HAL_UART_Transmit(&huart2, frame, (uint16_t)sizeof(frame),
                             HWT101_TX_TMO);
     if (ret == HAL_TIMEOUT) {
         return HWT101_ERR_TMO;
     }
-    if (ret != HAL_OK) {
-        return HWT101_ERR;
-    }
-    return HWT101_OK;
+    return (ret == HAL_OK) ? HWT101_OK : HWT101_ERR;
 }
 
+/** @copydoc hwt101_adp_rx_isr */
 hwt101_status_t hwt101_adp_rx_isr(uint16_t size)
 {
-    uint8_t finished;       /* 刚收完的缓冲下标 */
-    uint8_t next;           /* 下一块写入缓冲下标 */
-
     if (g_inited == 0U) {
         return HWT101_ERR_INIT;
     }
-    /* 当前 DMA 写的就是刚收完的块，记录其有效长度 */
-    finished = g_active;
-    g_len[finished] = (size <= HWT101_RX_LEN) ? size : HWT101_RX_LEN;
-    /* 切到另一块继续收，形成 ping-pong（arm_dma 内更新 g_active） */
-    next = (uint8_t)(finished ^ 1U);
-    return arm_dma(next);
+    return arm_dma((uint8_t)(g_active ^ 1U), size);
 }
 
+/** @copydoc hwt101_adp_err_isr */
 hwt101_status_t hwt101_adp_err_isr(void)
 {
     if (g_inited == 0U) {
         return HWT101_ERR_INIT;
     }
-    /* 在当前活动缓冲上直接重启接收（沿用原版错误恢复方式） */
-    return arm_dma(g_active);
+    /* 错误批次不参与读取；下一次正常完成事件重新发布长度。 */
+    return arm_dma(g_active, 0U);
 }

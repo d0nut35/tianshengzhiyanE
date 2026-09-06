@@ -5,14 +5,13 @@
  * @note    - 里程计线程(20ms)：清四位→广播读→WaitAll 四轮→持锁写 chassis_odom；
  *            广播读下发与等待全程锁外，连续 10 次超时报故障
  *          - 控制线程(20ms,主角)：整段持锁——读位姿→按命令算控制→下发(~70µs)，
- *            故障置位则跳过运动；上报走 UART 留在锁外
+ *            故障置位则跳过运动
  *          - 监控线程：等故障信号→持锁停车 + latch，竞赛先用简单停车
  *          - 位姿锁置本层(osMutex)，只护跨线程位姿读写；命令队列深度 1 覆盖式
  */
 
 #include "chassis_service.h"
 
-#include <stdio.h>
 #include <string.h>
 
 #include "cmsis_os2.h"
@@ -37,7 +36,6 @@
 
 #define CSVC_PERIOD_MS    20U        /* 控制/采集周期 ms */
 #define CSVC_ODOM_DT_S    0.02f      /* 里程计积分周期 s（=20ms） */
-#define CSVC_RAD2DEG      57.29578f  /* rad→deg */
 #define CSVC_PATH_MAX     128U       /* 路径点缓存上限 */
 #define CSVC_TASK_STACK   2048U      /* 里程计/控制任务栈字节 */
 #define CSVC_GUARD_STACK  1024U      /* 监控任务栈字节 */
@@ -97,27 +95,12 @@ static const osThreadAttr_t g_guard_attr = {
     .priority   = osPriorityNormal,
 };
 
-static void csvc_report(const chassis_odom_t *odom);
 static void csvc_cancel_nav(void);
 static csvc_status_t csvc_post(const csvc_cmd_t *cmd);
 static csvc_status_t csvc_plan(map_point_t target, uint16_t *out_len);
 static void csvc_odom_task(void *arg);
 static void csvc_ctrl_task(void *arg);
 static void csvc_guard_task(void *arg);
-
-/**
- * @brief  上报里程计快照给上位机（printf 重定向到上报 UART）
- * @param  odom 里程计快照
- */
-static void csvc_report(const chassis_odom_t *odom)
-{
-    /* 6 元组：x,y,yaw(deg),vx,vy,w(deg/s)，与上位机网页约定 */
-    printf("%d,%d,%d,%d,%d,%d\r\n",
-           (int)odom->x_mm, (int)odom->y_mm,
-           (int)(odom->yaw_rad * CSVC_RAD2DEG),
-           (int)odom->vx, (int)odom->vy,
-           (int)(odom->w * CSVC_RAD2DEG));
-}
 
 /**
  * @brief  取消进行中的导航（手动速度打断时把旧导航标记结束）
@@ -233,7 +216,7 @@ static void csvc_odom_task(void *arg)
 /**
  * @brief  控制线程（主角）：整段持锁读位姿→算控制→下发（20ms）
  * @param  arg 未用
- * @note   实测整段 ~70µs，下发(mh_speed)为非阻塞入队；上报走 UART 留在锁外
+ * @note   实测整段 ~70µs，下发(mh_speed)为非阻塞入队
  */
 static void csvc_ctrl_task(void *arg)
 {
@@ -281,8 +264,6 @@ static void csvc_ctrl_task(void *arg)
                     break;
             }
         }
-        /* 3) */
-        csvc_report(&odom);
         (void)osMutexRelease(g_pose_lock);
 
 

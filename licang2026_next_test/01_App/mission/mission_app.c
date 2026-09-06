@@ -1308,6 +1308,108 @@ static void mission_task_entry(void *argument)
     }
 }
 
+/**
+ * @brief 最小联调任务：动作组11完成后读卡一次，再让转盘完整前进一格。
+ * @param argument 指向本文件唯一Mission上下文。
+ * @note 读卡只提交一次；无论读卡是否成功都继续测试转盘，结果保存在storage中。
+ */
+static void ap_test_task(void *argument)
+{
+    mission_context_t *ctx = (mission_context_t *)argument;
+    uint32_t flags;
+
+    /* 动作组完成必须以舵控板主动回报为准，UART发送完成不代表机械动作完成。 */
+    ctx->active_arm_group = MISSION_PLATFORM_VISION_GROUP;
+    if (arm_run(
+            MISSION_PLATFORM_VISION_GROUP,
+            1U,
+            mission_arm_tx_done,
+            ctx) != LSC16_OK) {
+        goto failed;
+    }
+    flags = osThreadFlagsWait(
+        MISSION_FLAG_ARM_OK | MISSION_FLAG_ARM_FAIL,
+        osFlagsWaitAny,
+        mission_ms_to_ticks(MISSION_OPERATION_TIMEOUT_MS));
+    if (((flags & osFlagsError) != 0U) ||
+        ((flags & MISSION_FLAG_ARM_OK) == 0U)) {
+        goto failed;
+    }
+
+    /* 读卡回调按值保存球号、行列和状态；本测试不重试，也不写入球档案。 */
+    (void)osThreadFlagsClear(MISSION_FLAG_IC_DONE);
+    ctx->storage.ic_status = IC_CARD_ERR_BUSY;
+    if (ic_read(
+            MISSION_IC_OPERATION_PROMPT != 0U,
+            mission_ic_done,
+            ctx) == IC_CARD_OK) {
+        (void)mission_wait_device(
+            MISSION_FLAG_IC_DONE,
+            IC_READ_TIMEOUT_MS + 100U);
+    }
+
+    /* Emm运动前先查询并缓存固件、闭环和Scale配置。 */
+    if (!mission_prepare_zdt(ctx)) {
+        goto failed;
+    }
+
+    /* 沿用正式Mission的粗转、到位轮询、PB0确认和逐步微调闭环。 */
+    if (!mission_advance_slot(ctx)) {
+        goto failed;
+    }
+
+    ctx->storage_slot = 1U;
+    ctx->state = MISSION_STATE_COMPLETE;
+    for (;;) {
+        (void)osDelay(1000U);
+    }
+
+failed:
+    ctx->fault_code = (uint8_t)MISSION_FAULT_STORAGE;
+    ctx->state = MISSION_STATE_FAULT;
+    /* 联调失败后只请求一次转盘停止，不创建恢复或重试流程。 */
+    (void)turn_stop(NULL, NULL);
+    for (;;) {
+        (void)osDelay(1000U);
+    }
+}
+
+/** 初始化IC和转盘语义层，注册机械臂回报并创建唯一联调任务。 */
+mission_app_status_t ap_test_init(void)
+{
+    mission_context_t *ctx = &g_mission;
+    turn_config_t turn_config = {
+        MISSION_ZDT_ADDRESS,
+        MISSION_ZDT_IO_TIMEOUT_MS,
+        MISSION_ZDT_EMM_PULSES_PER_REV,
+    };
+
+    if (ctx->initialized) {
+        return MISSION_APP_ERR_STATE;
+    }
+    (void)memset(ctx, 0, sizeof(*ctx));
+
+    /* mux_init()和arm_init()已由MX_FREERTOS_Init()先行完成。 */
+    if (ic_init() != IC_CARD_OK) {
+        return MISSION_APP_ERR_IO;
+    }
+    if (turn_init(&turn_config) != ZDT_TURNTABLE_OK) {
+        return MISSION_APP_ERR_IO;
+    }
+    if (arm_on_report(mission_arm_report, ctx) != LSC16_OK) {
+        return MISSION_APP_ERR_IO;
+    }
+
+    ctx->state = MISSION_STATE_BOOT;
+    ctx->initialized = true;
+    ctx->task = osThreadNew(ap_test_task, ctx, &g_mission_task_attr);
+    if (ctx->task == NULL) {
+        ctx->initialized = false;
+        return MISSION_APP_ERR_RESOURCE;
+    }
+    return MISSION_APP_OK;
+}
+
 mission_app_status_t mission_app_init(void)
 {
     mission_context_t *ctx = &g_mission;

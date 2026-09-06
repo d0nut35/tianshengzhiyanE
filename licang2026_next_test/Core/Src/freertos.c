@@ -198,7 +198,8 @@ void MX_FREERTOS_Init(void) {
     Error_Handler();
   }
 
-  if (mission_app_init() != MISSION_APP_OK)
+  /* 当前上层联调入口：动作组11、单次读卡、转盘完整前进一格。 */
+  if (ap_test_init() != MISSION_APP_OK)
   {
     Error_Handler();
   }

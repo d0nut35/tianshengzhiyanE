@@ -95,6 +95,12 @@ typedef struct {
 /** 注册现有Device回调，并创建Mission命令队列和唯一Mission任务。 */
 mission_app_status_t mission_app_init(void);
 
+/**
+ * @brief 创建最小联调任务，依次执行动作组11、单次读卡和转盘完整前进一格。
+ * @note 与mission_app_init()互斥，只能选择一个入口初始化同一组Service。
+ */
+mission_app_status_t ap_test_init(void);
+
 /** 从任务上下文提交红方、蓝方或停止命令。 */
 mission_app_status_t mission_app_submit_command(mission_user_command_t command);
 

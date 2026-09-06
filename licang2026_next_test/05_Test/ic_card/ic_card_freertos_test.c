@@ -1,8 +1,8 @@
 /**
  * @file    ic_card_freertos_test.c
- * @brief   IC卡Device/Service OS/Core/UART7完整FreeRTOS链路测试。
+ * @brief   IC卡Service OS/Core/UART7完整FreeRTOS链路测试。
  *
- * 测试任务轮询USART1命令，BALL_READY只提交一次Device事务；读卡完成回调只
+ * 测试任务轮询USART1命令，BALL_READY只提交一次Service事务；读卡完成回调只
  * 复制结果并置线程标志，文本格式化和阻塞发送留在测试任务，避免占用Service worker。
  */
 
@@ -13,7 +13,7 @@
 
 #include "cmsis_os.h"
 #include "debug_uart1.h"
-#include "ic_card_device.h"
+#include "ic_card_service.h"
 #include "ic_card_test_common.h"
 #include "ic_card_test_config.h"
 #include "test_config.h"
@@ -31,7 +31,8 @@ typedef struct {
     osThreadId_t task;
     volatile bool result_ready;
     volatile ic_card_status_t result_status;
-    ic_card_ball_result_t result;
+    uint32_t next_request_id;
+    ic_result_t result;
     char text[128];
 } ic_card_freertos_context_t;
 
@@ -49,25 +50,30 @@ static const osThreadAttr_t g_ic_card_test_task_attr = {
  * @param request_id 已完成请求编号。
  * @param status 最终读球状态。
  * @param result 成功时的球结果，失败时为NULL。
- * @note Device回调运行在IC Service worker中，按值复制后立刻返回，避免
+ * @note 回调运行在IC Service worker中，按值复制后立刻返回，避免
  *       USART1阻塞发送拖住UART7事务调度。
  */
 static void ic_card_freertos_read_done(
     void *ctx,
     uint32_t request_id,
     ic_card_status_t status,
-    const ic_card_ball_result_t *result)
+    const ic_card_response_t *response)
 {
     ic_card_freertos_context_t *test = (ic_card_freertos_context_t *)ctx;
+    uint8_t block[IC_CARD_BLOCK_DATA_SIZE];
 
     (void)request_id;
     if (test == NULL) {
         return;
     }
-    test->result_status = status;
-    if ((status == IC_CARD_OK) && (result != NULL)) {
-        test->result = *result;
+    if ((status == IC_CARD_OK) && (response != NULL)) {
+        status = ic_block_data(response, IC_ADDRESS, block);
+        if ((status == IC_CARD_OK) &&
+            !ic_decode_ball(block, &test->result.ball)) {
+            status = IC_CARD_ERR_PROTOCOL;
+        }
     }
+    test->result_status = status;
     test->result_ready = true;
     if (test->task != NULL) {
         (void)osThreadFlagsSet(test->task, IC_CARD_TEST_FLAG_DONE);
@@ -86,6 +92,7 @@ static void ic_card_freertos_task_entry(void *argument)
     size_t command_len;
     size_t text_len;
     ic_card_status_t status;
+    ic_card_request_t request;
 
     (void)debug_uart1_write_text(
         &test->debug,
@@ -119,10 +126,19 @@ static void ic_card_freertos_task_entry(void *argument)
                 (void)debug_uart1_write_text(
                     &test->debug, "BALL READ BUSY\r\n");
             } else {
-                status = ic_card_device_read_competition_ball(
-                    (IC_CARD_TEST_LED_BEEP_PROMPT != 0U),
-                    ic_card_freertos_read_done,
-                    test);
+                (void)memset(&request, 0, sizeof(request));
+                ++test->next_request_id;
+                if (test->next_request_id == 0U) ++test->next_request_id;
+                request.request_id = test->next_request_id;
+                request.type = IC_CARD_REQUEST_READ_BLOCK;
+                request.address = IC_ADDRESS;
+                request.timeout_ms = IC_READ_TIMEOUT_MS;
+                request.data.read_block.block = IC_DATA_BLOCK;
+                request.data.read_block.led_beep_prompt =
+                    (IC_CARD_TEST_LED_BEEP_PROMPT != 0U);
+                request.done_cb = ic_card_freertos_read_done;
+                request.user_ctx = test;
+                status = ic_service_submit(&request, 0U);
                 if (status == IC_CARD_OK) {
                     test->read_pending = true;
                     (void)debug_uart1_write_text(
@@ -148,7 +164,7 @@ static void ic_card_freertos_task_entry(void *argument)
 }
 
 /**
- * @brief 初始化IC Device层、USART1调试口和独立测试任务。
+ * @brief 初始化USART1调试口和独立测试任务。
  * @return 初始化成功返回IC_CARD_OK，否则回滚已建立资源。
  */
 ic_card_status_t ic_card_freertos_test_init(void)

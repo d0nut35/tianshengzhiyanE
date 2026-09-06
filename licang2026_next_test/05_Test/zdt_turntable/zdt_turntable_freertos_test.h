@@ -1,7 +1,7 @@
 /** @file zdt_turntable_freertos_test.h @brief ZDT UART7直连RTOS测试入口。 */
 #ifndef ZDT_TURNTABLE_FREERTOS_TEST_H
 #define ZDT_TURNTABLE_FREERTOS_TEST_H
-#include "zdt_turntable_core.h"
+#include "turn_bsp.h"
 
 /**
  * @brief 装配ZDT直连链路并创建唯一测试worker。

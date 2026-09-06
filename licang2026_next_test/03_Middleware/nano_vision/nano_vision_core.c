@@ -7,7 +7,9 @@
 static bool nano_vision_scene_is_valid(nano_vision_scene_t scene)
 {
     return (scene == NANO_VISION_SCENE_TURNTABLE) ||
-           (scene == NANO_VISION_SCENE_STAIR);
+           (scene == NANO_VISION_SCENE_STAIR_LOW) ||
+           (scene == NANO_VISION_SCENE_STAIR_HIGH) ||
+           (scene == NANO_VISION_SCENE_STAIR_MID);
 }
 
 static bool nano_vision_color_is_valid(nano_vision_color_t color)
@@ -280,16 +282,16 @@ nano_vision_status_t nano_vision_build_event_ack_frame(
         frame, capacity, frame_len);
 }
 
-nano_vision_status_t nano_vision_decode_frame(
+/** 校验完整帧头、长度和CRC；不复制载荷。 */
+static nano_vision_status_t nano_vision_validate_frame(
     const uint8_t *data,
-    size_t len,
-    nano_vision_frame_t *frame)
+    size_t len)
 {
     size_t expected;
     uint16_t actual_crc;
     uint16_t expected_crc;
 
-    if ((data == NULL) || (frame == NULL)) return NANO_VISION_ERR_PARAM;
+    if (data == NULL) return NANO_VISION_ERR_PARAM;
     if (len < (NANO_VISION_HEADER_SIZE + NANO_VISION_CRC_SIZE)) {
         return NANO_VISION_ERR_LENGTH;
     }
@@ -305,11 +307,104 @@ nano_vision_status_t nano_vision_decode_frame(
     expected_crc = nano_vision_read_u16_le(&data[NANO_VISION_HEADER_SIZE + data[5]]);
     if (actual_crc != expected_crc) return NANO_VISION_ERR_CRC;
 
+    return NANO_VISION_OK;
+}
+
+nano_vision_status_t nano_vision_decode_frame(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_frame_t *frame)
+{
+    nano_vision_status_t status;
+
+    if (frame == NULL) return NANO_VISION_ERR_PARAM;
+    status = nano_vision_validate_frame(data, len);
+    if (status != NANO_VISION_OK) return status;
+
     frame->version = data[2];
     frame->type = (nano_vision_message_type_t)data[3];
     frame->sequence = data[4];
     frame->payload_len = data[5];
     memcpy(frame->payload, &data[NANO_VISION_HEADER_SIZE], frame->payload_len);
+    return NANO_VISION_OK;
+}
+
+/** 校验正式会话帧的通用头和期望消息类型、载荷长度。 */
+static nano_vision_status_t nano_vision_validate_message(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_message_type_t expected_type,
+    uint8_t expected_payload_len)
+{
+    nano_vision_status_t status = nano_vision_validate_frame(data, len);
+
+    if (status != NANO_VISION_OK) return status;
+    if (data[3] != (uint8_t)expected_type) return NANO_VISION_ERR_TYPE;
+    return (data[5] == expected_payload_len) ?
+        NANO_VISION_OK : NANO_VISION_ERR_LENGTH;
+}
+
+nano_vision_status_t nano_vision_decode_session_ready(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_session_t *session)
+{
+    nano_vision_status_t status;
+
+    if (session == NULL) return NANO_VISION_ERR_PARAM;
+    status = nano_vision_validate_message(
+        data, len, NANO_VISION_MSG_SESSION_READY,
+        NANO_VISION_SESSION_PAYLOAD_SIZE);
+    if (status != NANO_VISION_OK) return status;
+    session->session_id = nano_vision_read_u16_le(&data[6]);
+    session->scene = (nano_vision_scene_t)data[8];
+    session->target_color = (nano_vision_color_t)data[9];
+    return nano_vision_session_is_valid(session) ?
+        NANO_VISION_OK : NANO_VISION_ERR_VALUE;
+}
+
+nano_vision_status_t nano_vision_decode_session_stopped(
+    const uint8_t *data,
+    size_t len,
+    uint16_t *session_id)
+{
+    nano_vision_status_t status;
+
+    if (session_id == NULL) return NANO_VISION_ERR_PARAM;
+    status = nano_vision_validate_message(
+        data, len, NANO_VISION_MSG_SESSION_STOPPED,
+        NANO_VISION_SESSION_ID_PAYLOAD_SIZE);
+    if (status != NANO_VISION_OK) return status;
+    *session_id = nano_vision_read_u16_le(&data[6]);
+    return (*session_id != 0U) ? NANO_VISION_OK : NANO_VISION_ERR_VALUE;
+}
+
+nano_vision_status_t nano_vision_decode_event(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_event_t *event)
+{
+    nano_vision_observation_t *observation;
+    nano_vision_status_t status;
+
+    if (event == NULL) return NANO_VISION_ERR_PARAM;
+    status = nano_vision_validate_message(
+        data, len, NANO_VISION_MSG_EVENT, NANO_VISION_EVENT_PAYLOAD_SIZE);
+    if (status != NANO_VISION_OK) return status;
+    event->session_id = nano_vision_read_u16_le(&data[6]);
+    observation = &event->observation;
+    observation->scene = (nano_vision_scene_t)data[8];
+    observation->status = (nano_vision_observation_status_t)data[9];
+    observation->color = (nano_vision_color_t)data[10];
+    observation->quality = data[11];
+    observation->offset_x_px = (int16_t)nano_vision_read_u16_le(&data[12]);
+    observation->offset_y_px = (int16_t)nano_vision_read_u16_le(&data[14]);
+    observation->frame_id = nano_vision_read_u16_le(&data[16]);
+    observation->age_ms = nano_vision_read_u16_le(&data[18]);
+    if ((event->session_id == 0U) ||
+        !nano_vision_observation_is_valid_value(observation)) {
+        return NANO_VISION_ERR_VALUE;
+    }
     return NANO_VISION_OK;
 }
 

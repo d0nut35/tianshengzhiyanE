@@ -1,14 +1,10 @@
 /**
- * @file    lsc16_core.h
- * @brief   LSC系列16路舵机控制板的平台无关协议Core。
- *
- * 本层只理解“55 55 Length Cmd Parameters”协议、命令参数和接收状态机。
- * 它不知道STM32、UART8、DMA或FreeRTOS；具体收发由port注入，因此既可绑定
- * F7 HAL adapter，也可在PC上用fake port验证帧字节。
+ * @file    arm_bsp.h
+ * @brief   LSC16机械臂协议与STM32 UART8 HAL BSP。
  */
 
-#ifndef LSC16_CORE_H
-#define LSC16_CORE_H
+#ifndef ARM_BSP_H
+#define ARM_BSP_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,6 +13,8 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "stm32f7xx_hal.h"
 
 #define LSC16_ACTION_GROUP_ALL          0xFFU
 #define LSC16_REPEAT_FOREVER            0U
@@ -28,7 +26,7 @@ extern "C" {
 #define LSC16_DMA_RX_BUFFER_SIZE        64U
 #define LSC16_RX_RING_BUFFER_SIZE       128U
 
-/** LSC16各层统一返回值，平台HAL错误在adapter内收敛为本枚举。 */
+/** LSC16各层统一返回值，HAL错误在BSP内收敛为本枚举。 */
 typedef enum {
     LSC16_OK = 0,
     LSC16_ERR_PARAM,
@@ -71,25 +69,6 @@ typedef struct {
     uint16_t battery_mv;
 } lsc16_report_t;
 
-typedef lsc16_status_t (*lsc16_tx_start_fn_t)(
-    void *ctx,
-    const uint8_t *data,
-    size_t len);
-
-typedef lsc16_status_t (*lsc16_rx_start_fn_t)(
-    void *ctx,
-    uint8_t *data,
-    size_t capacity);
-
-typedef lsc16_status_t (*lsc16_abort_fn_t)(void *ctx);
-
-typedef struct {
-    lsc16_tx_start_fn_t tx_start;
-    lsc16_rx_start_fn_t rx_start;
-    lsc16_abort_fn_t abort;
-    void *ctx;
-} lsc16_port_t;
-
 typedef void (*lsc16_isr_notify_fn_t)(
     void *user_ctx,
     lsc16_isr_event_t event);
@@ -97,7 +76,6 @@ typedef void (*lsc16_isr_notify_fn_t)(
 typedef struct {
     bool initialized;
     volatile bool tx_busy;
-    lsc16_port_t port;
     lsc16_isr_notify_fn_t notify_cb;
     void *notify_ctx;
 
@@ -119,12 +97,11 @@ typedef struct {
 } lsc16_t;
 
 /**
- * @brief 初始化协议对象并立即启动一次异步接收。
- * @param device LSC16协议Core实例。
- * @param port 已绑定具体传输上下文的端口能力。
+ * @brief 初始化协议对象并通过UART8启动首次DMA接收。
+ * @param device LSC16 BSP实例。
  * @return LSC16_OK表示成功，否则返回参数或底层I/O错误。
  */
-lsc16_status_t lsc16_init(lsc16_t *device, const lsc16_port_t *port);
+lsc16_status_t lsc16_init(lsc16_t *device);
 
 /**
  * @brief 终止底层收发并解除协议对象。
@@ -240,27 +217,38 @@ lsc16_status_t lsc16_get_last_report(
 /**
  * @brief UART发送完成ISR入口。
  * @param device LSC16协议Core实例。
- * @warning 仅允许HAL adapter经公共uart_dispatch调用。
+ * @param huart 产生回调的UART句柄。
+ * @return 句柄为UART8且事件已处理时返回true。
+ * @warning 仅允许公共uart_dispatch调用。
  */
-void lsc16_on_tx_complete_isr(lsc16_t *device);
+bool lsc16_handle_tx_complete(
+    lsc16_t *device,
+    UART_HandleTypeDef *huart);
 
 /**
  * @brief ReceiveToIdle事件ISR入口。
  * @param device LSC16协议Core实例。
+ * @param huart 产生回调的UART句柄。
  * @param rx_len 本次DMA缓冲区有效字节数。
+ * @return 句柄为UART8且事件已处理时返回true。
  * @warning 仅搬运字节并通知worker，禁止在ISR内解析协议。
  */
-void lsc16_on_rx_event_isr(lsc16_t *device, uint16_t rx_len);
+bool lsc16_handle_rx_event(
+    lsc16_t *device,
+    UART_HandleTypeDef *huart,
+    uint16_t rx_len);
 
 /**
  * @brief UART错误ISR入口。
  * @param device LSC16协议Core实例。
+ * @param huart 产生回调的UART句柄。
+ * @return 句柄为UART8且事件已处理时返回true。
  * @warning 仅记录错误并通知普通上下文完成恢复。
  */
-void lsc16_on_error_isr(lsc16_t *device);
+bool lsc16_handle_error(lsc16_t *device, UART_HandleTypeDef *huart);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* LSC16_CORE_H */
+#endif /* ARM_BSP_H */

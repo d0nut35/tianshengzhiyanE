@@ -25,8 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "mult_uart_device.h"
-#include "mult_uart_service_os.h"
+#include "mux_service.h"
 #include "test_config.h"
 #include "chassis_mission_link.h"
 #include "../01_App/mission/mission_app.h"
@@ -43,14 +42,14 @@
 #include "turntable_grasp_lite_freertos_test.h"
 #endif
 
-#include "lsc16_device.h"
+#include "arm.h"
 
 #if LSC16_FREERTOS_TEST_ENABLED
 #include "lsc16_freertos_test.h"
 #endif
 
 #if IC_CARD_FREERTOS_TEST_ENABLED
-#include "ic_card_device.h"
+#include "ic_card_service.h"
 #include "ic_card_freertos_test.h"
 #endif
 
@@ -113,27 +112,22 @@ void MX_FREERTOS_Init(void) {
    * worker，不启动任何测试或业务demo。任务真正运行要等osKernelStart()。
    */
 #if !IC_CARD_FREERTOS_TEST_ENABLED && !ZDT_TURNTABLE_FREERTOS_TEST_ENABLED
-  if (mult_uart_service_os_init() != MULT_UART_OK)
-  {
-    Error_Handler();
-  }
-
-  if (mult_uart_device_init(NULL, 0U) != MULT_UART_OK)
+  if (mux_init() != MULT_UART_OK)
   {
     Error_Handler();
   }
 
   /*
-   * UART8舵控板与UART7复用器物理独立。综合测试也需要LSC16 Device，
+   * UART8舵控板与UART7复用器物理独立。机械臂Service在此完成装配，
    * 以验证动作组10(安全姿态)、11(识别姿态)和12(抓取放置)的单球闭环。
    */
-  if (lsc16_device_init() != LSC16_OK)
+  if (arm_init() != LSC16_OK)
   {
     Error_Handler();
   }
 #elif IC_CARD_FREERTOS_TEST_ENABLED
   /* IC卡直连测试独占UART7，因此不能同时初始化复用总线的HAL adapter。 */
-  if (ic_card_device_init() != IC_CARD_OK)
+  if (ic_service_init() != IC_CARD_OK)
   {
     Error_Handler();
   }
@@ -143,7 +137,7 @@ void MX_FREERTOS_Init(void) {
 
 #if MULT_UART_FREERTOS_TEST_ENABLED
   /*
-   * 测试任务只通过Device事务层使用复用总线，不直接操作
+   * 测试任务只通过事务Service使用复用总线，不直接操作
    * HAL、DMA或A/B/EN。这可以同时验证完整FreeRTOS分层链路。
    */
   if (mult_uart_freertos_test_init() != MULT_UART_OK)
@@ -160,7 +154,7 @@ void MX_FREERTOS_Init(void) {
 #endif
 
 #if MULT_UART_MODULES_FREERTOS_TEST_ENABLED
-  /* USART1命令任务通过复用Device层测试通道1 IC卡和通道2 ZDT。 */
+  /* USART1命令任务通过复用Service测试通道1 IC卡和通道2 ZDT。 */
   if (mult_uart_modules_freertos_test_init() != MULT_UART_OK)
   {
     Error_Handler();

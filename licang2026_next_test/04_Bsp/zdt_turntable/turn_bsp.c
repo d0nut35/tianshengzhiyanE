@@ -1,8 +1,13 @@
-/** @file zdt_turntable_core.c @brief ZDT_X42S协议Core实现。 */
+/** @file turn_bsp.c @brief ZDT_X42S协议与固定UART7 HAL BSP实现。 */
 
-#include "zdt_turntable_core.h"
+#include "turn_bsp.h"
 
 #include <string.h>
+
+#if TURN_BSP_HAL_ENABLE
+#include <limits.h>
+#include "usart.h"
+#endif
 
 #define ZDT_CODE_OPTIONS       0x1AU
 #if !LICANG_RELEASE_MINIMAL
@@ -90,31 +95,31 @@ static zdt_turntable_status_t zdt_build_read(
 }
 
 #if !LICANG_RELEASE_MINIMAL
-/** @copydoc zdt_turntable_build_read_version() */
-zdt_turntable_status_t zdt_turntable_build_read_version(
+/** @copydoc turn_version_frame() */
+zdt_turntable_status_t turn_version_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len)
 {
     return zdt_build_read(address, ZDT_CODE_VERSION, frame, capacity, frame_len);
 }
 #endif
 
-/** @copydoc zdt_turntable_build_read_options() */
-zdt_turntable_status_t zdt_turntable_build_read_options(
+/** @copydoc turn_options_frame() */
+zdt_turntable_status_t turn_options_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len)
 {
     return zdt_build_read(address, ZDT_CODE_OPTIONS, frame, capacity, frame_len);
 }
 
-/** @copydoc zdt_turntable_build_read_status() */
-zdt_turntable_status_t zdt_turntable_build_read_status(
+/** @copydoc turn_status_frame() */
+zdt_turntable_status_t turn_status_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len)
 {
     return zdt_build_read(address, ZDT_CODE_STATUS, frame, capacity, frame_len);
 }
 
 #if !LICANG_RELEASE_MINIMAL
-/** @copydoc zdt_turntable_build_read_position() */
-zdt_turntable_status_t zdt_turntable_build_read_position(
+/** @copydoc turn_position_frame() */
+zdt_turntable_status_t turn_position_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len)
 {
     return zdt_build_read(
@@ -137,8 +142,8 @@ static bool zdt_position_command_valid(
 }
 
 #if !LICANG_RELEASE_MINIMAL
-/** @copydoc zdt_turntable_build_x_position() */
-zdt_turntable_status_t zdt_turntable_build_x_position(
+/** @copydoc turn_x_frame() */
+zdt_turntable_status_t turn_x_frame(
     uint8_t address,
     const zdt_turntable_position_command_t *command,
     uint8_t *frame,
@@ -165,8 +170,8 @@ zdt_turntable_status_t zdt_turntable_build_x_position(
 }
 #endif
 
-/** @copydoc zdt_turntable_build_emm_position() */
-zdt_turntable_status_t zdt_turntable_build_emm_position(
+/** @copydoc turn_emm_frame() */
+zdt_turntable_status_t turn_emm_frame(
     uint8_t address,
     const zdt_turntable_position_command_t *command,
     uint32_t pulses,
@@ -192,8 +197,8 @@ zdt_turntable_status_t zdt_turntable_build_emm_position(
     return ZDT_TURNTABLE_OK;
 }
 
-/** @copydoc zdt_turntable_build_stop() */
-zdt_turntable_status_t zdt_turntable_build_stop(
+/** @copydoc turn_stop_frame() */
+zdt_turntable_status_t turn_stop_frame(
     uint8_t address, uint8_t *frame, size_t capacity, size_t *frame_len)
 {
     if ((address == 0U) || (frame == NULL) || (frame_len == NULL) ||
@@ -209,8 +214,8 @@ zdt_turntable_status_t zdt_turntable_build_stop(
     return ZDT_TURNTABLE_OK;
 }
 
-/** @copydoc zdt_turntable_parse_response() */
-zdt_turntable_status_t zdt_turntable_parse_response(
+/** @copydoc turn_parse() */
+zdt_turntable_status_t turn_parse(
     const uint8_t *data,
     size_t len,
     uint8_t expected_address,
@@ -349,3 +354,59 @@ zdt_turntable_status_t zdt_turntable_parse_response(
     }
     return ZDT_TURNTABLE_ERR_PROTOCOL;
 }
+
+#if TURN_BSP_HAL_ENABLE
+static zdt_turntable_status_t zdt_map_hal(HAL_StatusTypeDef status)
+{
+    if (status == HAL_OK) return ZDT_TURNTABLE_OK;
+    if (status == HAL_BUSY) return ZDT_TURNTABLE_ERR_BUSY;
+    if (status == HAL_TIMEOUT) return ZDT_TURNTABLE_ERR_TIMEOUT;
+    return ZDT_TURNTABLE_ERR_IO;
+}
+
+zdt_turntable_status_t turn_bsp_tx(
+    void *ctx, const uint8_t *data, size_t len)
+{
+    (void)ctx;
+    if ((data == NULL) || (len == 0U) || (len > UINT16_MAX)) {
+        return ZDT_TURNTABLE_ERR_PARAM;
+    }
+    return zdt_map_hal(HAL_UART_Transmit_IT(&huart7, data, (uint16_t)len));
+}
+
+zdt_turntable_status_t turn_bsp_rx(
+    void *ctx, uint8_t *data, size_t capacity)
+{
+    HAL_StatusTypeDef status;
+
+    (void)ctx;
+    if ((data == NULL) || (capacity == 0U) || (capacity > UINT16_MAX)) {
+        return ZDT_TURNTABLE_ERR_PARAM;
+    }
+    status = HAL_UARTEx_ReceiveToIdle_DMA(
+        &huart7, data, (uint16_t)capacity);
+    if ((status == HAL_OK) && (huart7.hdmarx != NULL)) {
+        __HAL_DMA_DISABLE_IT(huart7.hdmarx, DMA_IT_HT);
+    }
+    return zdt_map_hal(status);
+}
+
+zdt_turntable_status_t turn_bsp_abort(void *ctx)
+{
+    HAL_StatusTypeDef status;
+
+    (void)ctx;
+    status = HAL_UART_Abort(&huart7);
+    if (status == HAL_OK) {
+        __HAL_UART_CLEAR_PEFLAG(&huart7);
+        HAL_NVIC_ClearPendingIRQ(UART7_IRQn);
+        HAL_NVIC_ClearPendingIRQ(DMA1_Stream3_IRQn);
+    }
+    return zdt_map_hal(status);
+}
+
+bool turn_bsp_owns(const UART_HandleTypeDef *huart)
+{
+    return huart == &huart7;
+}
+#endif

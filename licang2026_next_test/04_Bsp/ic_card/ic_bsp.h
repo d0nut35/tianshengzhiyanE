@@ -1,14 +1,13 @@
 /**
- * @file    ic_card_core.h
- * @brief   M2940B-HA读卡器平台无关协议Core。
+ * @file    ic_bsp.h
+ * @brief   M2940B-HA读卡器协议与STM32 HAL板级接口。
  *
- * 本层只负责厂家串口协议的构帧、异或取反校验、流式拆包和数据块提取。
- * 它不包含STM32、UART7、DMA、FreeRTOS或比赛规则，因此后续更换传输
- * 通道或调整赛事编码时，不需要修改本协议Core。
+ * 正式Mission只使用协议构帧、验帧和数据提取，并通过mux_submit()访问
+ * UART7通道1。直连UART7接口只供独立测试，正式最小构建不会编译。
  */
 
-#ifndef IC_CARD_CORE_H
-#define IC_CARD_CORE_H
+#ifndef IC_BSP_H
+#define IC_BSP_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,6 +16,14 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#ifndef LICANG_RELEASE_MINIMAL
+#define LICANG_RELEASE_MINIMAL 0
+#endif
+
+#if !LICANG_RELEASE_MINIMAL
+#include "stm32f7xx_hal.h"
+#endif
 
 #define IC_CARD_BLOCK_DATA_SIZE              16U
 #define IC_CARD_COMMAND_FRAME_SIZE            8U
@@ -137,7 +144,7 @@ typedef struct {
  * @param len_without_checksum 不含校验字节的数据长度。
  * @return 计算得到的1字节校验值。
  */
-uint8_t ic_card_checksum(const uint8_t *data, size_t len_without_checksum);
+uint8_t ic_checksum(const uint8_t *data, size_t len_without_checksum);
 
 /**
  * @brief 构造使用内部Key A读取数据块的8字节A3命令。
@@ -150,7 +157,7 @@ uint8_t ic_card_checksum(const uint8_t *data, size_t len_without_checksum);
  * @return 构帧结果。
  * @note 本函数不访问UART，适用于直连Core和串口复用事务共同调用。
  */
-ic_card_status_t ic_card_build_read_block_key_a_frame(
+ic_card_status_t ic_read_frame(
     uint8_t address,
     uint8_t block,
     bool led_beep_prompt,
@@ -167,7 +174,7 @@ ic_card_status_t ic_card_build_read_block_key_a_frame(
  * @param frame_len 返回有效帧长。
  * @return 构帧结果。
  */
-ic_card_status_t ic_card_build_query_frame(
+ic_card_status_t ic_query_frame(
     ic_card_command_t command,
     uint8_t address,
     uint8_t *frame,
@@ -182,7 +189,7 @@ ic_card_status_t ic_card_build_query_frame(
  * @return 长度、包类型和校验均合法时返回IC_CARD_OK。
  * @note response不保留frame指针，调用者可在返回后立即复用RX缓冲区。
  */
-ic_card_status_t ic_card_parse_response_frame(
+ic_card_status_t ic_parse_frame(
     const uint8_t *frame,
     size_t frame_len,
     ic_card_response_t *response);
@@ -193,14 +200,14 @@ ic_card_status_t ic_card_parse_response_frame(
  * @param port 已绑定具体传输上下文的端口能力。
  * @return IC_CARD_OK表示成功，否则返回参数或底层I/O错误。
  */
-ic_card_status_t ic_card_init(ic_card_t *device, const ic_card_port_t *port);
+ic_card_status_t ic_bsp_init(ic_card_t *device, const ic_card_port_t *port);
 
 /**
  * @brief 终止底层收发并清空协议对象。
  * @param device 协议Core实例。
  * @return IC_CARD_OK表示成功，否则返回参数、状态或I/O错误。
  */
-ic_card_status_t ic_card_deinit(ic_card_t *device);
+ic_card_status_t ic_bsp_deinit(ic_card_t *device);
 
 /**
  * @brief 绑定ISR轻量通知出口。
@@ -209,7 +216,7 @@ ic_card_status_t ic_card_deinit(ic_card_t *device);
  * @param user_ctx 原样传给notify_cb的上下文。
  * @return IC_CARD_OK表示成功，否则返回参数或未初始化错误。
  */
-ic_card_status_t ic_card_bind_isr_notify(
+ic_card_status_t ic_bsp_bind_notify(
     ic_card_t *device,
     ic_card_isr_notify_fn_t notify_cb,
     void *user_ctx);
@@ -222,7 +229,7 @@ ic_card_status_t ic_card_bind_isr_notify(
  * @param led_beep_prompt 是否请求读卡器使用灯光/蜂鸣提示。
  * @return IC_CARD_OK仅表示异步发送已启动，不表示读卡成功。
  */
-ic_card_status_t ic_card_read_block_key_a(
+ic_card_status_t ic_bsp_read(
     ic_card_t *device,
     uint8_t address,
     uint8_t block,
@@ -235,7 +242,7 @@ ic_card_status_t ic_card_read_block_key_a(
  * @param address 读卡器设备地址。
  * @return IC_CARD_OK仅表示异步发送已启动。
  */
-ic_card_status_t ic_card_query(
+ic_card_status_t ic_bsp_query(
     ic_card_t *device,
     ic_card_command_t command,
     uint8_t address);
@@ -245,28 +252,28 @@ ic_card_status_t ic_card_query(
  * @param device 协议Core实例。
  * @note 必须在任务或裸机主循环中调用，禁止在ISR内解析协议。
  */
-void ic_card_process(ic_card_t *device);
+void ic_bsp_process(ic_card_t *device);
 
 /**
  * @brief 错误或超时后同步中止传输并重新建立接收窗口。
  * @param device 协议Core实例。
  * @return IC_CARD_OK表示恢复成功，否则返回参数、状态或I/O错误。
  */
-ic_card_status_t ic_card_recover(ic_card_t *device);
+ic_card_status_t ic_bsp_recover(ic_card_t *device);
 
 /**
  * @brief 查询是否仍有一帧处于异步发送中。
  * @param device 协议Core实例。
  * @return true表示发送尚未完成；对象无效时返回false。
  */
-bool ic_card_is_tx_busy(const ic_card_t *device);
+bool ic_bsp_tx_busy(const ic_card_t *device);
 
 /**
  * @brief 获取最近响应。
  * @param last_sequence 调用者保存的序号；有新响应时更新它并复制response。
  * @return true表示本次取得新响应，false表示没有更新。
  */
-bool ic_card_take_response(
+bool ic_bsp_take_response(
     const ic_card_t *device,
     uint32_t *last_sequence,
     ic_card_response_t *response);
@@ -278,7 +285,7 @@ bool ic_card_take_response(
  * @param data 输出16字节块数据。
  * @return IC_CARD_OK表示响应类型、状态和长度均正确。
  */
-ic_card_status_t ic_card_extract_block_data(
+ic_card_status_t ic_block_data(
     const ic_card_response_t *response,
     uint8_t expected_address,
     uint8_t data[IC_CARD_BLOCK_DATA_SIZE]);
@@ -288,7 +295,7 @@ ic_card_status_t ic_card_extract_block_data(
  * @param device 协议Core实例。
  * @warning 仅允许HAL adapter经公共uart_dispatch调用。
  */
-void ic_card_on_tx_complete_isr(ic_card_t *device);
+void ic_bsp_tx_isr(ic_card_t *device);
 
 /**
  * @brief ReceiveToIdle事件ISR入口。
@@ -296,17 +303,46 @@ void ic_card_on_tx_complete_isr(ic_card_t *device);
  * @param rx_len 本次DMA缓冲区有效字节数。
  * @warning 仅搬运字节并通知worker，禁止在ISR内解析协议。
  */
-void ic_card_on_rx_event_isr(ic_card_t *device, uint16_t rx_len);
+void ic_bsp_rx_isr(ic_card_t *device, uint16_t rx_len);
 
 /**
  * @brief UART错误ISR入口。
  * @param device 协议Core实例。
  * @warning 仅记录错误并通知普通上下文完成恢复。
  */
-void ic_card_on_error_isr(ic_card_t *device);
+void ic_bsp_error_isr(ic_card_t *device);
+
+#if !LICANG_RELEASE_MINIMAL
+/** 直连UART7仅用于独立测试；正式Mission由mux_service独占UART7。 */
+typedef struct {
+    UART_HandleTypeDef *uart;
+} ic_card_uart7_hal_config_t;
+
+typedef struct {
+    ic_card_t *device;
+    UART_HandleTypeDef *uart;
+} ic_card_uart7_hal_t;
+
+void ic_uart7_config(ic_card_uart7_hal_config_t *config);
+ic_card_status_t ic_uart7_bind(
+    ic_card_uart7_hal_t *adapter,
+    ic_card_t *device,
+    const ic_card_uart7_hal_config_t *config,
+    ic_card_port_t *port);
+bool ic_uart7_tx_isr(
+    ic_card_uart7_hal_t *adapter,
+    UART_HandleTypeDef *huart);
+bool ic_uart7_rx_isr(
+    ic_card_uart7_hal_t *adapter,
+    UART_HandleTypeDef *huart,
+    uint16_t rx_len);
+bool ic_uart7_error_isr(
+    ic_card_uart7_hal_t *adapter,
+    UART_HandleTypeDef *huart);
+#endif
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* IC_CARD_CORE_H */
+#endif /* IC_BSP_H */

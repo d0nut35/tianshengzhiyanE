@@ -19,7 +19,7 @@
 #include "mult_uart_modules_test_config.h"
 #include "mult_uart_service_os.h"
 #include "nano_vision_core.h"
-#include "photo_gate_stm32_hal.h"
+#include "gate.h"
 #include "test_config.h"
 #include "zdt_turntable_device.h"
 #include "zdt_turntable_test_common.h"
@@ -316,7 +316,7 @@ static void modules_ic_transfer_done(
     transport->active = false;
     status = modules_map_ic_status(completion->status);
     if (status == IC_CARD_OK) {
-        status = ic_card_parse_response_frame(
+        status = ic_parse_frame(
             completion->rx_data, completion->rx_len, &response);
         if ((status == IC_CARD_OK) &&
             (response.command != ((request.type == IC_CARD_REQUEST_READ_BLOCK) ?
@@ -352,7 +352,7 @@ static ic_card_status_t modules_ic_submit(
     if ((transport == NULL) || (request == NULL)) return IC_CARD_ERR_PARAM;
     if (transport->active) return IC_CARD_ERR_BUSY;
     if (request->type == IC_CARD_REQUEST_READ_BLOCK) {
-        status = ic_card_build_read_block_key_a_frame(
+        status = ic_read_frame(
             request->address,
             request->data.read_block.block,
             request->data.read_block.led_beep_prompt,
@@ -360,7 +360,7 @@ static ic_card_status_t modules_ic_submit(
             sizeof(transport->tx),
             &tx_len);
     } else if (request->type == IC_CARD_REQUEST_QUERY) {
-        status = ic_card_build_query_frame(
+        status = ic_query_frame(
             request->data.query.command,
             request->address,
             transport->tx,
@@ -403,7 +403,7 @@ static void modules_zdt_transfer_done(
     transport->active = false;
     status = modules_map_zdt_status(completion->status);
     if (status == ZDT_TURNTABLE_OK) {
-        status = zdt_turntable_parse_response(
+        status = turn_parse(
             completion->rx_data,
             completion->rx_len,
             request.expected_address,
@@ -1576,7 +1576,7 @@ static bool modules_gate_is_stably_high(void)
     uint8_t sample;
 
     for (sample = 0U; sample < MULT_UART_MODULES_GATE_CONFIRM_SAMPLES; ++sample) {
-        if (!photo_gate_stm32_hal_read_raw()) return false;
+        if (!gate_read()) return false;
         if ((sample + 1U) < MULT_UART_MODULES_GATE_CONFIRM_SAMPLES) {
             (void)osDelay(modules_ms_to_ticks(
                 MULT_UART_MODULES_GATE_CONFIRM_INTERVAL_MS));
@@ -1606,7 +1606,7 @@ static void modules_slot_finish(
             direction,
             (reason != NULL) ? reason : "UNKNOWN",
             (unsigned)fine_steps,
-            photo_gate_stm32_hal_read_raw() ? 1U : 0U);
+            gate_read() ? 1U : 0U);
     }
     (void)debug_uart1_write_text(&ctx->debug, ctx->text);
     modules_multi_on_slot_finished(ctx, success, reason);
@@ -1974,7 +1974,7 @@ static bool modules_handle_command(const uint8_t *data, size_t len)
     if (modules_command_equals(data, len, "GATE")) {
         (void)snprintf(ctx->text, sizeof(ctx->text),
             "GATE PB0=%u\r\n",
-            photo_gate_stm32_hal_read_raw() ? 1U : 0U);
+            gate_read() ? 1U : 0U);
         (void)debug_uart1_write_text(&ctx->debug, ctx->text);
         return false;
     }

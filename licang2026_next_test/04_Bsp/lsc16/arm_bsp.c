@@ -1,11 +1,13 @@
 /**
- * @file    lsc16_core.c
- * @brief   LSC控制板协议编码、异步发送状态和回传解析实现。
+ * @file    arm_bsp.c
+ * @brief   LSC16协议编解码与STM32 UART8 HAL/DMA实现。
  */
 
-#include "lsc16_core.h"
+#include "arm_bsp.h"
 
 #include <string.h>
+
+#include "usart.h"
 
 #define LSC16_FRAME_HEADER               0x55U
 #define LSC16_CMD_SERVO_MOVE            0x03U
@@ -14,6 +16,28 @@
 #define LSC16_CMD_ACTION_GROUP_COMPLETE  0x08U
 #define LSC16_CMD_ACTION_GROUP_SPEED     0x0BU
 #define LSC16_CMD_GET_BATTERY_VOLTAGE   0x0FU
+
+/** 将HAL状态映射为机械臂模块状态。 */
+static lsc16_status_t lsc16_map_hal(HAL_StatusTypeDef status)
+{
+    if (status == HAL_OK) return LSC16_OK;
+    return (status == HAL_BUSY) ? LSC16_ERR_BUSY : LSC16_ERR_IO;
+}
+
+/** 通过固定UART8启动ReceiveToIdle DMA，并关闭半传输中断。 */
+static lsc16_status_t lsc16_start_rx(lsc16_t *device)
+{
+    HAL_StatusTypeDef status;
+
+    status = HAL_UARTEx_ReceiveToIdle_DMA(
+        &huart8,
+        device->dma_rx_buffer,
+        (uint16_t)sizeof(device->dma_rx_buffer));
+    if ((status == HAL_OK) && (huart8.hdmarx != NULL)) {
+        __HAL_DMA_DISABLE_IT(huart8.hdmarx, DMA_IT_HT);
+    }
+    return lsc16_map_hal(status);
+}
 
 /**
  * @brief 计算RX环形缓冲区的下一个索引。
@@ -46,13 +70,7 @@ static void lsc16_notify_isr(lsc16_t *device, lsc16_isr_event_t event)
  */
 static lsc16_status_t lsc16_restart_rx(lsc16_t *device)
 {
-    if ((device == NULL) || (device->port.rx_start == NULL)) {
-        return LSC16_ERR_PARAM;
-    }
-    return device->port.rx_start(
-        device->port.ctx,
-        device->dma_rx_buffer,
-        sizeof(device->dma_rx_buffer));
+    return (device == NULL) ? LSC16_ERR_PARAM : lsc16_start_rx(device);
 }
 
 /**
@@ -95,10 +113,10 @@ static lsc16_status_t lsc16_send_frame(
 
     /* 先置忙再启动异步发送，防止极短传输完成回调抢在状态发布之前。 */
     device->tx_busy = true;
-    status = device->port.tx_start(
-        device->port.ctx,
+    status = lsc16_map_hal(HAL_UART_Transmit_IT(
+        &huart8,
         device->tx_buffer,
-        frame_size);
+        (uint16_t)frame_size));
     if (status != LSC16_OK) {
         device->tx_busy = false;
     }
@@ -207,18 +225,15 @@ static void lsc16_parse_byte(lsc16_t *device, uint8_t data)
  * @param port 已绑定硬件上下文的异步串口能力。
  * @return 初始化结果；首次RX失败时完整清空对象。
  */
-lsc16_status_t lsc16_init(lsc16_t *device, const lsc16_port_t *port)
+lsc16_status_t lsc16_init(lsc16_t *device)
 {
     lsc16_status_t status;
 
-    if ((device == NULL) || (port == NULL) ||
-        (port->tx_start == NULL) || (port->rx_start == NULL) ||
-        (port->abort == NULL)) {
+    if (device == NULL) {
         return LSC16_ERR_PARAM;
     }
 
     (void)memset(device, 0, sizeof(*device));
-    device->port = *port;
     device->initialized = true;
     status = lsc16_restart_rx(device);
     if (status != LSC16_OK) {
@@ -242,7 +257,7 @@ lsc16_status_t lsc16_deinit(lsc16_t *device)
     if (!device->initialized) {
         return LSC16_ERR_NOT_INIT;
     }
-    status = device->port.abort(device->port.ctx);
+    status = lsc16_map_hal(HAL_UART_Abort(&huart8));
     if (status == LSC16_OK) {
         (void)memset(device, 0, sizeof(*device));
     }
@@ -407,7 +422,7 @@ lsc16_status_t lsc16_recover(lsc16_t *device)
     if ((device == NULL) || !device->initialized) {
         return (device == NULL) ? LSC16_ERR_PARAM : LSC16_ERR_NOT_INIT;
     }
-    status = device->port.abort(device->port.ctx);
+    status = lsc16_map_hal(HAL_UART_Abort(&huart8));
     if (status != LSC16_OK) {
         return status;
     }
@@ -467,13 +482,16 @@ lsc16_status_t lsc16_get_last_report(
  * @param device Core对象。
  * @warning 仅由拥有UART8的HAL适配器在ISR中调用。
  */
-void lsc16_on_tx_complete_isr(lsc16_t *device)
+bool lsc16_handle_tx_complete(
+    lsc16_t *device,
+    UART_HandleTypeDef *huart)
 {
-    if ((device == NULL) || !device->initialized) {
-        return;
+    if ((device == NULL) || !device->initialized || (huart != &huart8)) {
+        return false;
     }
     device->tx_busy = false;
     lsc16_notify_isr(device, LSC16_ISR_EVENT_TX_COMPLETE);
+    return true;
 }
 
 /**
@@ -482,14 +500,17 @@ void lsc16_on_tx_complete_isr(lsc16_t *device)
  * @param rx_len 本次DMA有效字节数。
  * @warning ISR中只搬运字节和发布事件，不解析协议。
  */
-void lsc16_on_rx_event_isr(lsc16_t *device, uint16_t rx_len)
+bool lsc16_handle_rx_event(
+    lsc16_t *device,
+    UART_HandleTypeDef *huart,
+    uint16_t rx_len)
 {
     uint16_t i;
     uint16_t next_head;
     lsc16_status_t status;
 
-    if ((device == NULL) || !device->initialized) {
-        return;
+    if ((device == NULL) || !device->initialized || (huart != &huart8)) {
+        return false;
     }
     if (rx_len > sizeof(device->dma_rx_buffer)) {
         rx_len = (uint16_t)sizeof(device->dma_rx_buffer);
@@ -510,9 +531,10 @@ void lsc16_on_rx_event_isr(lsc16_t *device, uint16_t rx_len)
     if (status != LSC16_OK) {
         ++device->uart_error_count;
         lsc16_notify_isr(device, LSC16_ISR_EVENT_ERROR);
-        return;
+        return true;
     }
     lsc16_notify_isr(device, LSC16_ISR_EVENT_RX_READY);
+    return true;
 }
 
 /**
@@ -520,13 +542,14 @@ void lsc16_on_rx_event_isr(lsc16_t *device, uint16_t rx_len)
  * @param device Core对象。
  * @warning ISR中不执行可能阻塞的abort。
  */
-void lsc16_on_error_isr(lsc16_t *device)
+bool lsc16_handle_error(lsc16_t *device, UART_HandleTypeDef *huart)
 {
-    if ((device == NULL) || !device->initialized) {
-        return;
+    if ((device == NULL) || !device->initialized || (huart != &huart8)) {
+        return false;
     }
     device->tx_busy = false;
     ++device->uart_error_count;
     /* HAL_UART_Abort可能触碰较多HAL状态，只登记错误，交给普通上下文恢复。 */
     lsc16_notify_isr(device, LSC16_ISR_EVENT_ERROR);
+    return true;
 }

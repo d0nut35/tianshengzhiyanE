@@ -93,6 +93,38 @@ static void test_poll_codec(void)
     assert(parsed.target_color == NANO_VISION_COLOR_BLUE);
 }
 
+static void test_layered_stair_scenes(void)
+{
+    static const nano_vision_scene_t scenes[] = {
+        NANO_VISION_SCENE_STAIR_LOW,
+        NANO_VISION_SCENE_STAIR_HIGH,
+        NANO_VISION_SCENE_STAIR_MID,
+    };
+    nano_vision_session_t session = {
+        0x1234U,
+        NANO_VISION_SCENE_STAIR_LOW,
+        NANO_VISION_COLOR_RED,
+    };
+    nano_vision_session_t parsed;
+    nano_vision_frame_t decoded;
+    uint8_t frame[NANO_VISION_FRAME_MAX];
+    size_t frame_len;
+    size_t i;
+
+    for (i = 0U; i < (sizeof(scenes) / sizeof(scenes[0])); ++i) {
+        session.scene = scenes[i];
+        frame_len = 0U;
+        assert(nano_vision_build_session_start_frame(
+            (uint8_t)(i + 1U), &session, frame, sizeof(frame), &frame_len) ==
+            NANO_VISION_OK);
+        assert(nano_vision_decode_frame(frame, frame_len, &decoded) ==
+               NANO_VISION_OK);
+        assert(nano_vision_parse_session_start(&decoded, &parsed) ==
+               NANO_VISION_OK);
+        assert(parsed.scene == scenes[i]);
+    }
+}
+
 static void test_fragmented_frame(void)
 {
     nano_vision_parser_t parser;
@@ -336,6 +368,8 @@ static void test_event_session_codec(void)
     assert(nano_vision_decode_frame(frame, frame_len, &decoded) == NANO_VISION_OK);
     assert(nano_vision_parse_session_ready(
         &decoded, &parsed_session) == NANO_VISION_OK);
+    assert(nano_vision_decode_session_ready(
+        frame, frame_len, &parsed_session) == NANO_VISION_OK);
 
     assert(nano_vision_build_event_frame(
         2U, &event, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
@@ -343,6 +377,8 @@ static void test_event_session_codec(void)
     assert(memcmp(frame, event_golden, sizeof(event_golden)) == 0);
     assert(nano_vision_decode_frame(frame, frame_len, &decoded) == NANO_VISION_OK);
     assert(nano_vision_parse_event(&decoded, &parsed_event) == NANO_VISION_OK);
+    assert(nano_vision_decode_event(
+        frame, frame_len, &parsed_event) == NANO_VISION_OK);
     assert(parsed_event.session_id == event.session_id);
     assert(parsed_event.observation.frame_id == event.observation.frame_id);
     assert(parsed_event.observation.color == event.observation.color);
@@ -368,6 +404,8 @@ static void test_event_session_codec(void)
     assert(nano_vision_decode_frame(frame, frame_len, &decoded) == NANO_VISION_OK);
     assert(nano_vision_parse_session_stopped(
         &decoded, &parsed_session_id) == NANO_VISION_OK);
+    assert(nano_vision_decode_session_stopped(
+        frame, frame_len, &parsed_session_id) == NANO_VISION_OK);
     assert(parsed_session_id == session.session_id);
 
     session.session_id = 0U;
@@ -380,6 +418,7 @@ int main(void)
 {
     test_crc_and_codec();
     test_poll_codec();
+    test_layered_stair_scenes();
     test_fragmented_frame();
     test_sticky_frames_and_crc_recovery();
     test_alignment_requires_consecutive_frames();

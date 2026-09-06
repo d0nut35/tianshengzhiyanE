@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "zdt_turntable_core.h"
+#include "turn_bsp.h"
 
 static int failures;
 /** 记录失败但继续执行同一进程中的其余断言。 */
@@ -26,7 +26,7 @@ static void test_x_position(void)
         ZDT_TURNTABLE_POS_RELATIVE_LAST_TARGET,
         10000U, 511U, 506U, 36000U, 0U
     };
-    CHECK(zdt_turntable_build_x_position(
+    CHECK(turn_x_frame(
         1U, &cmd, frame, sizeof(frame), &len) == ZDT_TURNTABLE_OK);
     CHECK(len == sizeof(expected));
     CHECK(memcmp(frame, expected, sizeof(expected)) == 0);
@@ -46,7 +46,7 @@ static void test_emm_position(void)
         ZDT_TURNTABLE_POS_RELATIVE_LAST_TARGET,
         1500U, 0U, 0U, 36000U, 0U
     };
-    CHECK(zdt_turntable_build_emm_position(
+    CHECK(turn_emm_frame(
         1U, &cmd, 32000U, frame, sizeof(frame), &len) == ZDT_TURNTABLE_OK);
     CHECK(len == sizeof(expected));
     CHECK(memcmp(frame, expected, sizeof(expected)) == 0);
@@ -63,14 +63,14 @@ static void test_zero_position(void)
         60U, 0U, 0U, 0U, 50U
     };
 
-    CHECK(zdt_turntable_build_emm_position(
+    CHECK(turn_emm_frame(
         1U, &cmd, 0U, frame, sizeof(frame), &len) == ZDT_TURNTABLE_OK);
     CHECK(len == 13U);
     CHECK(frame[6] == 0U && frame[7] == 0U &&
           frame[8] == 0U && frame[9] == 0U);
     CHECK(frame[10] == ZDT_TURNTABLE_POS_ABSOLUTE_ZERO);
 
-    CHECK(zdt_turntable_build_x_position(
+    CHECK(turn_x_frame(
         1U, &cmd, frame, sizeof(frame), &len) == ZDT_TURNTABLE_OK);
     CHECK(len == 16U);
     CHECK(frame[9] == 0U && frame[10] == 0U &&
@@ -93,7 +93,7 @@ static void test_responses(void)
     const uint8_t invalid_version_ack[] = {0x01, 0x1F, 0x02, 0x6B};
     const uint8_t ack[] = {0x01, 0xFD, 0x02, 0x6B};
 
-    CHECK(zdt_turntable_parse_response(
+    CHECK(turn_parse(
         options_all_fields, sizeof(options_all_fields), 1U, 0x1AU,
         &response) == ZDT_TURNTABLE_OK);
     CHECK(response.kind == ZDT_TURNTABLE_REPLY_OPTIONS);
@@ -107,7 +107,7 @@ static void test_responses(void)
     CHECK(response.data.options.parameter_lock_level == 3U);
 
     /* 覆盖2.01实机已观测到的原始帧01 1A 00 06 6B。 */
-    CHECK(zdt_turntable_parse_response(
+    CHECK(turn_parse(
         options_real_emm, sizeof(options_real_emm), 1U, 0x1AU,
         &response) == ZDT_TURNTABLE_OK);
     CHECK(response.data.options.raw_flags == 0x0006U);
@@ -116,15 +116,15 @@ static void test_responses(void)
     CHECK(response.data.options.closed_loop);
     CHECK(!response.data.options.scaled_input);
 
-    CHECK(zdt_turntable_parse_response(
+    CHECK(turn_parse(
         options_legacy, sizeof(options_legacy), 1U, 0x1AU,
         &response) == ZDT_TURNTABLE_ERR_PROTOCOL);
-    CHECK(zdt_turntable_parse_response(
+    CHECK(turn_parse(
         options_error, sizeof(options_error), 1U, 0x1AU,
         &response) == ZDT_TURNTABLE_ERR_DEVICE);
     CHECK(response.kind == ZDT_TURNTABLE_REPLY_PARAM_ERROR);
 
-    CHECK(zdt_turntable_parse_response(status, sizeof(status), 1U, 0x3AU,
+    CHECK(turn_parse(status, sizeof(status), 1U, 0x3AU,
         &response) == ZDT_TURNTABLE_OK);
     CHECK(response.data.motor_status.enabled);
     CHECK(response.data.motor_status.reached);
@@ -132,28 +132,28 @@ static void test_responses(void)
     CHECK(response.data.motor_status.left_limit_high);
     CHECK(response.data.motor_status.right_limit_high);
     CHECK(response.data.motor_status.power_loss_latched);
-    CHECK(zdt_turntable_parse_response(
+    CHECK(turn_parse(
         status_error, sizeof(status_error), 1U, 0x3AU,
         &response) == ZDT_TURNTABLE_ERR_DEVICE);
     CHECK(response.kind == ZDT_TURNTABLE_REPLY_FORMAT_ERROR);
-    CHECK(zdt_turntable_parse_response(
+    CHECK(turn_parse(
         status_reserved, sizeof(status_reserved), 1U, 0x3AU,
         &response) == ZDT_TURNTABLE_ERR_PROTOCOL);
 
-    CHECK(zdt_turntable_parse_response(position, sizeof(position), 1U, 0x36U,
+    CHECK(turn_parse(position, sizeof(position), 1U, 0x36U,
         &response) == ZDT_TURNTABLE_OK);
     CHECK(response.data.position.negative);
     CHECK(response.data.position.magnitude == 16U);
 
-    CHECK(zdt_turntable_parse_response(version, sizeof(version), 1U, 0x1FU,
+    CHECK(turn_parse(version, sizeof(version), 1U, 0x1FU,
         &response) == ZDT_TURNTABLE_OK);
     CHECK(response.data.version.firmware_version == 200U);
     CHECK(response.data.version.hardware_type == 3U);
-    CHECK(zdt_turntable_parse_response(
+    CHECK(turn_parse(
         invalid_version_ack, sizeof(invalid_version_ack), 1U, 0x1FU,
         &response) == ZDT_TURNTABLE_ERR_PROTOCOL);
 
-    CHECK(zdt_turntable_parse_response(ack, sizeof(ack), 1U, 0xFDU,
+    CHECK(turn_parse(ack, sizeof(ack), 1U, 0xFDU,
         &response) == ZDT_TURNTABLE_OK);
     CHECK(response.kind == ZDT_TURNTABLE_REPLY_ACK);
 }

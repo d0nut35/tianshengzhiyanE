@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "zdt_turntable_core.h"
+#include "turn_bsp.h"
 
 /** USART1调试口支持的人工测试命令。 */
 typedef enum {

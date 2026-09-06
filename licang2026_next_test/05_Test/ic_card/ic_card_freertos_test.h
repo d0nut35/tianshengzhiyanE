@@ -6,7 +6,7 @@
 #ifndef IC_CARD_FREERTOS_TEST_H
 #define IC_CARD_FREERTOS_TEST_H
 
-#include "ic_card_core.h"
+#include "ic_bsp.h"
 
 /**
  * @brief 创建IC卡独立FreeRTOS测试所需资源和任务。

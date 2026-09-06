@@ -96,7 +96,7 @@ typedef struct {
 mission_app_status_t mission_app_init(void);
 
 /**
- * @brief 创建最小联调任务，依次执行动作组11、单次读卡和转盘完整前进一格。
+ * @brief 创建圆盘单球联调任务，完成视觉夹球、单次读卡和转盘前进一格。
  * @note 与mission_app_init()互斥，只能选择一个入口初始化同一组Service。
  */
 mission_app_status_t ap_test_init(void);

@@ -251,7 +251,7 @@ void StartDefaultTask(void *argument)
 
 #if LICANG_ACTIVE_TEST == LICANG_TEST_NONE
   /* app_init()阻塞到四轮握手完成，失败不影响其他子系统，因此不进Error_Handler。 */
-  (void)chassis_bridge_boot();
+  //(void)chassis_bridge_boot();
 #endif
 
   /* Infinite loop */

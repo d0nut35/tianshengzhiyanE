@@ -1309,14 +1309,20 @@ static void mission_task_entry(void *argument)
 }
 
 /**
- * @brief 最小联调任务：动作组11完成后读卡一次，再让转盘完整前进一格。
+ * @brief 圆盘单球联调：视觉夹球完成后读卡一次，再让转盘完整前进一格。
  * @param argument 指向本文件唯一Mission上下文。
- * @note 读卡只提交一次；无论读卡是否成功都继续测试转盘，结果保存在storage中。
+ * @note 只运行一次；不重试读卡、不写球档案，也不创建故障恢复流程。
  */
 static void ap_test_task(void *argument)
 {
     mission_context_t *ctx = (mission_context_t *)argument;
     uint32_t flags;
+
+    /* 留出Nano、舵控板和机械结构的上电稳定时间。 */
+    (void)osDelay(3000U);
+
+    /* 本轮固定抓红球；测试蓝球时改为MISSION_COLOR_BLUE。 */
+    ctx->color = MISSION_COLOR_RED;
 
     /* 动作组完成必须以舵控板主动回报为准，UART发送完成不代表机械动作完成。 */
     ctx->active_arm_group = MISSION_PLATFORM_VISION_GROUP;
@@ -1330,13 +1336,50 @@ static void ap_test_task(void *argument)
     flags = osThreadFlagsWait(
         MISSION_FLAG_ARM_OK | MISSION_FLAG_ARM_FAIL,
         osFlagsWaitAny,
-        mission_ms_to_ticks(MISSION_OPERATION_TIMEOUT_MS));
+        osWaitForever);
     if (((flags & osFlagsError) != 0U) ||
         ((flags & MISSION_FLAG_ARM_OK) == 0U)) {
         goto failed;
     }
 
-    /* 读卡回调按值保存球号、行列和状态；本测试不重试，也不写入球档案。 */
+    /* 启动圆盘视觉会话；START、READY、EVENT和ACK沿用正式Mission处理。 */
+    if (!mission_start_vision(
+            ctx,
+            MISSION_VISION_SCENE_PLATFORM,
+            MISSION_STAIR_NONE,
+            MISSION_STATE_PLATFORM_WAIT_VISION)) {
+        goto failed;
+    }
+
+    /* EVENT_ACK发送完成后自动启动动作组12，在这里等待实际夹球完成回报。 */
+    for (;;) {
+        flags = osThreadFlagsWait(
+            MISSION_FLAG_VISION_DONE |
+            MISSION_FLAG_ARM_OK |
+            MISSION_FLAG_ARM_FAIL,
+            osFlagsWaitAny,
+            mission_ms_to_ticks(50U));
+
+        /* CMSIS等待超时返回错误码，不能把错误码低位误判为设备事件。 */
+        if ((flags & osFlagsError) != 0U) {
+            flags = 0U;
+        }
+        if ((flags & MISSION_FLAG_VISION_DONE) != 0U) {
+            mission_handle_vision(ctx);
+        }
+        mission_vision_process(ctx);
+
+        if ((ctx->state == MISSION_STATE_FAULT) ||
+            ((flags & MISSION_FLAG_ARM_FAIL) != 0U)) {
+            goto failed;
+        }
+        if (((flags & MISSION_FLAG_ARM_OK) != 0U) &&
+            (ctx->active_arm_group == MISSION_PLATFORM_GRASP_GROUP)) {
+            break;
+        }
+    }
+
+    /* 动作组12已把球放入车载转盘；读卡一次，失败仍继续转盘测试。 */
     (void)osThreadFlagsClear(MISSION_FLAG_IC_DONE);
     ctx->storage.ic_status = IC_CARD_ERR_BUSY;
     if (ic_read(
@@ -1348,7 +1391,7 @@ static void ap_test_task(void *argument)
             IC_READ_TIMEOUT_MS + 100U);
     }
 
-    /* Emm运动前先查询并缓存固件、闭环和Scale配置。 */
+    /* Emm运动前查询并缓存固件、闭环和Scale配置。 */
     if (!mission_prepare_zdt(ctx)) {
         goto failed;
     }
@@ -1358,6 +1401,7 @@ static void ap_test_task(void *argument)
         goto failed;
     }
 
+    ctx->platform_balls = 1U;
     ctx->storage_slot = 1U;
     ctx->state = MISSION_STATE_COMPLETE;
     for (;;) {
@@ -1365,10 +1409,7 @@ static void ap_test_task(void *argument)
     }
 
 failed:
-    ctx->fault_code = (uint8_t)MISSION_FAULT_STORAGE;
     ctx->state = MISSION_STATE_FAULT;
-    /* 联调失败后只请求一次转盘停止，不创建恢复或重试流程。 */
-    (void)turn_stop(NULL, NULL);
     for (;;) {
         (void)osDelay(1000U);
     }

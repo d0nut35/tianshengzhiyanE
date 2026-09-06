@@ -29,7 +29,6 @@
 #include "test_config.h"
 #include "chassis_mission_link.h"
 #include "../01_App/mission/mission_app.h"
-#include "../01_App/mission/mission_config.h"
 
 #if MULT_UART_FREERTOS_TEST_ENABLED
 #include "mult_uart_freertos_test.h"
@@ -184,13 +183,6 @@ void MX_FREERTOS_Init(void) {
 #endif
 
 #if LICANG_ACTIVE_TEST == LICANG_TEST_NONE
-#if MISSION_AP_TEST_ENABLE
-  /* 上层独立联调不装配底盘，避免lhy应用上电后执行原自动路线。 */
-  if (ap_test_init() != MISSION_APP_OK)
-  {
-    Error_Handler();
-  }
-#else
   /*
    * lhy底盘：内核启动前只登记huart2/3/4/5/6的UART路由；电机握手等阻塞装配
    * 在defaultTask中由chassis_bridge_boot()完成。测试场景下不编译，避免与
@@ -206,11 +198,11 @@ void MX_FREERTOS_Init(void) {
     Error_Handler();
   }
 
-  if (mission_app_init() != MISSION_APP_OK)
+  /* 当前上层联调入口：动作组11、单次读卡、转盘完整前进一格。 */
+  if (ap_test_init() != MISSION_APP_OK)
   {
     Error_Handler();
   }
-#endif
 #endif
 
   /* USER CODE END Init */
@@ -257,7 +249,7 @@ void StartDefaultTask(void *argument)
   /* USER CODE BEGIN StartDefaultTask */
   (void)argument;
 
-#if (LICANG_ACTIVE_TEST == LICANG_TEST_NONE) && !MISSION_AP_TEST_ENABLE
+#if LICANG_ACTIVE_TEST == LICANG_TEST_NONE
   /* app_init()阻塞到四轮握手完成，失败不影响其他子系统，因此不进Error_Handler。 */
   (void)chassis_bridge_boot();
 #endif

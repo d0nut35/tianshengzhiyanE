@@ -3,9 +3,6 @@
 #ifndef MISSION_CONFIG_H
 #define MISSION_CONFIG_H
 
-/* 1：只运行上层单格联调；0：恢复底盘桥和正式Mission。 */
-#define MISSION_AP_TEST_ENABLE             1U
-
 #define MISSION_TASK_STACK_SIZE        3072U
 #define MISSION_COMMAND_QUEUE_DEPTH       4U
 #define MISSION_OPERATION_TIMEOUT_MS  30000U

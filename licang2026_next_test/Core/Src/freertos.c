@@ -198,11 +198,16 @@ void MX_FREERTOS_Init(void) {
     Error_Handler();
   }
 
-  /* 当前上层联调入口：动作组11、单次读卡、转盘完整前进一格。 */
-  if (ap_test_init() != MISSION_APP_OK)
+  if (mission_app_init() != MISSION_APP_OK)
   {
     Error_Handler();
   }
+
+  /* 临时圆盘联调入口；使用时与mission_app_init()二选一。 */
+  // if (ap_test_init() != MISSION_APP_OK)
+  // {
+  //   Error_Handler();
+  // }
 #endif
 
   /* USER CODE END Init */
@@ -251,7 +256,7 @@ void StartDefaultTask(void *argument)
 
 #if LICANG_ACTIVE_TEST == LICANG_TEST_NONE
   /* app_init()阻塞到四轮握手完成，失败不影响其他子系统，因此不进Error_Handler。 */
-  //(void)chassis_bridge_boot();
+  (void)chassis_bridge_boot();
 #endif
 
   /* Infinite loop */

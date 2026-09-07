@@ -1112,7 +1112,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
     if ((ctx->state != MISSION_STATE_WAIT_HOME) &&
         (ctx->state != MISSION_STATE_PLATFORM_WAIT_POSE) &&
         (ctx->state != MISSION_STATE_PLATFORM_WAIT_GRASP) &&
-        (ctx->state != MISSION_STATE_PLATFORM_WAIT_RELEASE) &&
+        (ctx->state != MISSION_STATE_PLATFORM_WAIT_AVOID) &&
         (ctx->state != MISSION_STATE_PLATFORM_WAIT_RETURN) &&
         (ctx->state != MISSION_STATE_PLATFORM_WAIT_DEPARTURE_POSE) &&
         (ctx->state != MISSION_STATE_STAIR_WAIT_POSE) &&
@@ -1149,22 +1149,23 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
             MISSION_PLATFORM_BALL_COUNT) {
             if (!mission_start_arm(
                     ctx,
-                    MISSION_PLATFORM_RELEASE_GROUP,
-                    MISSION_STATE_PLATFORM_WAIT_RELEASE)) {
+                    MISSION_PLATFORM_AVOID_GROUP,
+                    MISSION_STATE_PLATFORM_WAIT_AVOID)) {
                 mission_fail(ctx, MISSION_FAULT_ARM);
             }
             return;
         }
-        mission_enter_state(ctx, MISSION_STATE_PLATFORM_WAIT_STORAGE,
-                            MISSION_OPERATION_TIMEOUT_MS);
-        if (!mission_store_ball(ctx, MISSION_STORAGE_REGION_PLATFORM)) {
-            mission_fail(ctx, MISSION_FAULT_STORAGE);
-        } else {
-            mission_handle_storage(ctx);
+        /* 前四球先回动作组11，避免机械臂妨碍转盘转动。 */
+        if (!mission_start_arm(
+                ctx,
+                MISSION_PLATFORM_VISION_GROUP,
+                MISSION_STATE_PLATFORM_WAIT_RETURN)) {
+            mission_fail(ctx, MISSION_FAULT_ARM);
         }
         return;
     }
-    if (ctx->state == MISSION_STATE_PLATFORM_WAIT_RELEASE) {
+    if (ctx->state == MISSION_STATE_PLATFORM_WAIT_AVOID) {
+        /* 第五球等动作组17完成避让后再读卡并转动转盘。 */
         mission_enter_state(ctx, MISSION_STATE_PLATFORM_WAIT_STORAGE,
                             MISSION_OPERATION_TIMEOUT_MS);
         if (!mission_store_ball(ctx, MISSION_STORAGE_REGION_PLATFORM)) {
@@ -1175,12 +1176,13 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         return;
     }
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_RETURN) {
-        if (!mission_start_vision(
-                ctx,
-                MISSION_VISION_SCENE_PLATFORM,
-                MISSION_STAIR_NONE,
-                MISSION_STATE_PLATFORM_WAIT_VISION)) {
-            mission_fail(ctx, MISSION_FAULT_VISION);
+        /* 前四球等动作组11回到识别姿态后再读卡并转动转盘。 */
+        mission_enter_state(ctx, MISSION_STATE_PLATFORM_WAIT_STORAGE,
+                            MISSION_OPERATION_TIMEOUT_MS);
+        if (!mission_store_ball(ctx, MISSION_STORAGE_REGION_PLATFORM)) {
+            mission_fail(ctx, MISSION_FAULT_STORAGE);
+        } else {
+            mission_handle_storage(ctx);
         }
         return;
     }
@@ -1237,11 +1239,12 @@ static void mission_handle_storage(mission_context_t *ctx)
                     MISSION_STATE_PLATFORM_WAIT_DEPARTURE_POSE)) {
                 mission_fail(ctx, MISSION_FAULT_ARM);
             }
-        } else if (!mission_start_arm(
+        } else if (!mission_start_vision(
                        ctx,
-                       MISSION_PLATFORM_VISION_GROUP,
-                       MISSION_STATE_PLATFORM_WAIT_RETURN)) {
-            mission_fail(ctx, MISSION_FAULT_ARM);
+                       MISSION_VISION_SCENE_PLATFORM,
+                       MISSION_STAIR_NONE,
+                       MISSION_STATE_PLATFORM_WAIT_VISION)) {
+            mission_fail(ctx, MISSION_FAULT_VISION);
         }
         return;
     }

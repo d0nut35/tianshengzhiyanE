@@ -17,7 +17,7 @@
 #define MISSION_STAIR_LOW_GROUP          14U
 #define MISSION_STAIR_HIGH_GROUP         15U
 #define MISSION_STAIR_MID_GROUP          16U
-#define MISSION_PLATFORM_RELEASE_GROUP   17U /* 圆盘第五球安全送入下一格 */
+#define MISSION_PLATFORM_AVOID_GROUP     17U /* 第五球完成后避开转盘旋转区域 */
 
 #define MISSION_PLATFORM_BALL_COUNT       5U
 #define MISSION_STAIR_BALL_COUNT          2U

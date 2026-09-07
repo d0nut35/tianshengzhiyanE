@@ -4,7 +4,7 @@
  * @author  haoyu
  * @note    - huart3/4/5/6 = 电机 1/2/3/4 回传，路由到 zdt_adp_rx_isr(idx, size)
  *          - huart2 = 陀螺仪(hwt101)
- *          - idx 顺序须与 zdt_motor_adaption.c 的 g_cfg 一致
+ *          - idx 顺序须与 zdt.c 的固定四轮配置一致
  *          - RX 正常路径高频，此处不打日志；仅异常分支记一笔
  */
 
@@ -13,7 +13,7 @@
 #include "main.h"
 #include "usart.h"
 
-#include "zdt_motor_adaption.h"
+#include "zdt.h"
 #include "hwt101_adaption.h"
 
 /* ===== 调试日志：0=不编译进固件，1=经 RTT 输出 ===== */

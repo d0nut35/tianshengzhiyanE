@@ -15,7 +15,7 @@
 #include "hwt101_adaption.h"
 #include "uart_dispatch.h"
 #include "usart.h"
-#include "zdt_motor_adaption.h"
+#include "zdt.h"
 
 typedef struct {
     bool initialized;
@@ -26,7 +26,7 @@ typedef struct {
 
 static chassis_bridge_context_t g_chassis_bridge;
 
-/* 电机槽位→回传UART；顺序须与lhy zdt_motor_adaption.c的g_cfg一致。 */
+/* 电机槽位→回传UART；顺序须与lhy zdt.c的固定四轮配置一致。 */
 static UART_HandleTypeDef *const g_motor_uarts[ZDT_ADP_MOTOR_NUM] = {
     &huart3,
     &huart4,

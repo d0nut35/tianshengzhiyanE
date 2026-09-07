@@ -9,8 +9,8 @@
  * 转交zdt_adp_rx_isr()，huart2陀螺仪转交hwt101_adp_rx_isr()。
  *
  * 本模块不解析任何协议，也不持有底盘对象；BLE(USART1)暂不接线。
- * huart与电机槽位的对应关系必须与lhy/04_Bsp/zdt_motor/zdt_motor_adaption.c
- * 中g_cfg的顺序保持一致。
+ * huart与电机槽位的对应关系必须与lhy/04_Bsp/zdt_motor/zdt.c
+ * 中固定四轮配置的顺序保持一致。
  */
 
 #ifndef CHASSIS_BRIDGE_H

@@ -15,7 +15,7 @@ extern "C" {
 #endif
 
 #include "cmsis_os2.h"           /* osEventFlagsId_t */
-#include "zdt_motor_handler.h"   /* motor_handler_t / zdt_status_t */
+#include "zdt.h"                 /* motor_handler_t / zdt_status_t */
 
 /**
  * @brief  组装并启动电机子系统（适配→handler→RX→使能→广播读握手）

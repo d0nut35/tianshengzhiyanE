@@ -2,7 +2,7 @@
  * @file    system_assembly.c
  * @brief   系统组装根：电机、陀螺仪与灰度传感器装配
  * @author  haoyu
- * @note    - 电机 Handler 的 OS 能力在本层注入
+ * @note    - 电机 Handler 固定使用 CMSIS-OS2，BSP 内部自建队列和线程
  *          - 灰度 Handler 按固定硬件直接使用 CMSIS-OS2 与 GPIO IDR
  *          - 装配顺序：lsensor → motor → hwt101 → 广播读握手放行
  *          - 上电握手：集齐四轮广播读回复才放行，杜绝裸跑，与顺序无关
@@ -12,10 +12,8 @@
 #include "system_assembly.h"
 
 #include "cmsis_os2.h"
-#include "FreeRTOS.h"
-#include "task.h"
 
-#include "zdt_motor_adaption.h"
+#include "zdt.h"
 #include "hwt101_adaption.h"
 #include "lsensor/lsensor_handler.h"
 
@@ -34,7 +32,6 @@
 #define SYS_LOGE(fmt, ...)  do {} while (0)
 #endif
 
-#define SYS_MH_STACK_BYTES    2048U  /* 收发线程栈，含日志 */
 #define SYS_HANDSHAKE_POLL_MS 150U   /* 上电握手等齐超时 ms */
 #define SYS_POS_FLAGS_ALL     ((1U << ZDT_ADP_MOTOR_NUM) - 1U) /* 四轮到位掩码 */
 #define SYS_POS_FLAG(idx)     (1U << (idx))                    /* 单轮到位位 */
@@ -46,142 +43,6 @@ static uint8_t         g_assembled = 0U;  /* 组装完成标志 */
 /* ---- 上电握手 / 里程计同步：四轮到位事件标志（RX 钩子置位） ---- */
 static osEventFlagsId_t g_pos_flags = NULL;            /* 每轮一位，广播读回复置位 */
 static volatile uint8_t g_enabled[ZDT_ADP_MOTOR_NUM]; /* 收使能应答（诊断 + 重发收敛） */
-
-/* ---- CMSIS-OS2：线程 ---- */
-
-/* 收发线程共用属性（TX/RX 同优先级，解析负载轻） */
-static const osThreadAttr_t g_mh_thread_attr = {
-    .name       = "mh_worker",
-    .stack_size = SYS_MH_STACK_BYTES,
-    .priority   = osPriorityNormal,
-};
-
-/**
- * @brief  新建线程（注入给 handler）
- * @param  entry  线程体，签名 void(*)(void*)
- * @param  arg    传给线程体的参数
- * @param  handle 输出线程句柄
- * @retval ZDT_OK / ZDT_ERR_PARAM / ZDT_ERR_RES
- */
-static zdt_status_t os_thread_new(void (*entry)(void *), void *arg,
-                                  void **handle)
-{
-    osThreadId_t id = NULL; /* 新线程句柄 */
-
-    if ((entry == NULL) || (handle == NULL)) {
-        return ZDT_ERR_PARAM;
-    }
-    id = osThreadNew((osThreadFunc_t)entry, arg, &g_mh_thread_attr);
-    if (id == NULL) {
-        return ZDT_ERR_RES;
-    }
-    *handle = (void *)id;
-    return ZDT_OK;
-}
-
-/* ---- CMSIS-OS2：消息队列 ---- */
-
-/**
- * @brief  新建消息队列（注入给 handler）
- * @param  depth   队列深度
- * @param  item_sz 单条消息字节数
- * @param  handle  输出队列句柄
- * @retval ZDT_OK / ZDT_ERR_PARAM / ZDT_ERR_RES
- */
-static zdt_status_t os_queue_new(uint32_t depth, uint32_t item_sz,
-                                 void **handle)
-{
-    osMessageQueueId_t id = NULL; /* 新队列句柄 */
-
-    if ((handle == NULL) || (depth == 0U) || (item_sz == 0U)) {
-        return ZDT_ERR_PARAM;
-    }
-    id = osMessageQueueNew(depth, item_sz, NULL);
-    if (id == NULL) {
-        return ZDT_ERR_RES;
-    }
-    *handle = (void *)id;
-    return ZDT_OK;
-}
-
-/**
- * @brief  入队一条消息（上层在 ISR / 任务均以 timeout=0 非阻塞投递）
- * @param  q          队列句柄
- * @param  item       消息源
- * @param  timeout_ms 超时 ms
- * @retval ZDT_OK / ZDT_ERR_PARAM / ZDT_ERR_RES
- */
-static zdt_status_t os_queue_put(void *q, const void *item,
-                                 uint32_t timeout_ms)
-{
-    if ((q == NULL) || (item == NULL)) {
-        return ZDT_ERR_PARAM;
-    }
-    if (osMessageQueuePut((osMessageQueueId_t)q, item,
-                          0U, timeout_ms) != osOK) {
-        return ZDT_ERR_RES;
-    }
-    return ZDT_OK;
-}
-
-/**
- * @brief  出队一条消息
- * @param  q          队列句柄
- * @param  item       输出缓冲
- * @param  timeout_ms 超时 ms（MH_WAIT_FOREVER 即 osWaitForever）
- * @retval ZDT_OK / ZDT_ERR_PARAM / ZDT_ERR_RES（超时即重试）
- */
-static zdt_status_t os_queue_get(void *q, void *item,
-                                 uint32_t timeout_ms)
-{
-    if ((q == NULL) || (item == NULL)) {
-        return ZDT_ERR_PARAM;
-    }
-    if (osMessageQueueGet((osMessageQueueId_t)q, item,
-                          NULL, timeout_ms) != osOK) {
-        return ZDT_ERR_RES;
-    }
-    return ZDT_OK;
-}
-
-/* ---- CMSIS-OS2：时间 ---- */
-
-/** @brief 阻塞延时 ms（tick=1kHz，ms 即 tick 数） */
-static zdt_status_t os_delay_ms(uint32_t ms)
-{
-    (void)osDelay(ms);
-    return ZDT_OK;
-}
-
-/** @brief 取系统 tick（帧间隔门控用） */
-static uint32_t os_get_tick(void)
-{
-    return osKernelGetTickCount();
-}
-
-/* ---- 临界区：保护 pos_pulse 的 int64 跨线程读写 ---- */
-
-/** @brief 进入临界区（关中断，护极短的位置读写） */
-static void os_lock_enter(void)
-{
-    taskENTER_CRITICAL();
-}
-
-/** @brief 退出临界区 */
-static void os_lock_exit(void)
-{
-    taskEXIT_CRITICAL();
-}
-
-/* ---- 注入接口实例 ---- */
-static const mh_os_thread_t g_os_thread = { os_thread_new };
-static const mh_os_queue_t  g_os_queue  = { os_queue_new,
-                                            os_queue_put,
-                                            os_queue_get };
-static const mh_os_time_t   g_os_time   = { os_delay_ms,
-                                            os_get_tick };
-static const mh_os_lock_t   g_os_lock   = { os_lock_enter,
-                                            os_lock_exit };
 
 /**
  * @brief  RX 蹦床：适配层 ISR 回调签名 → handler 入队接口
@@ -256,10 +117,9 @@ zdt_status_t system_assembly_init(void)
         SYS_LOGE("adp_init fail=%d", (int)ret);
         return ret;
     }
-    /* 3) 实例化 handler：绑定总线 + 注入 OS 接口 */
+    /* 3) 实例化 handler：绑定固定四轮总线 */
     ret = mh_inst(&g_motor_handler, zdt_adp_group(),
-                  &g_os_thread, &g_os_queue, &g_os_time,
-                  &g_os_lock, MH_GAP_MS_MIN);
+                  NULL, NULL, NULL, NULL, MH_GAP_MS_MIN);
     if (ret != ZDT_OK) {
         SYS_LOGE("mh_inst fail=%d", (int)ret);
         return ret;

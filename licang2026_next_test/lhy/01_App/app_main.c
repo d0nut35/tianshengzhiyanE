@@ -585,14 +585,15 @@ static void app_task(void *arg)
     }
 
     osDelay(1000U); /* 等底盘服务稳定 */
-    app_link_handshake();
+    // app_link_handshake();
 
-    /* 阶段失败以 is_ready=0 回执，由 Mission 决定停机；底盘不自行中止流程 */
-    if (app_link_wait(MISSION_CMD_GO_PLATFORM, &req_id,
-                      osWaitForever) == APP_OK) {
-        ok = (app_go_platform() == APP_OK) ? 1U : 0U;
-        (void)app_link_post(CHASSIS_CMD_PLATFORM_READY, req_id, ok);
-    }
+    // /* 阶段失败以 is_ready=0 回执，由 Mission 决定停机；底盘不自行中止流程 */
+    // if (app_link_wait(MISSION_CMD_GO_PLATFORM, &req_id,
+    //                   osWaitForever) == APP_OK) {
+    //     ok = (app_go_platform() == APP_OK) ? 1U : 0U;
+    //     (void)app_link_post(CHASSIS_CMD_PLATFORM_READY, req_id, ok);
+    // }
+    app_go_platform();
     if (app_link_wait(MISSION_CMD_GO_STAIRS, &req_id,
                       osWaitForever) == APP_OK) {
         ok = (app_go_stairs() == APP_OK) ? 1U : 0U;

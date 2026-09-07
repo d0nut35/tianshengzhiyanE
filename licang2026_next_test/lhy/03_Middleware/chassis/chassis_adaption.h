@@ -19,7 +19,7 @@ extern "C" {
 #include <stdbool.h>
 
 #include "mecanum_chassis.h"     /* chassis_status_t / chassis_odom_t / map_point_t */
-#include "zdt_motor_handler.h"   /* motor_handler_t：下发/读位置的总线句柄 */
+#include "zdt.h"                 /* motor_handler_t：下发/读位置的总线句柄 */
 
 /**
  * @brief  初始化底盘：载入本机几何，持 handler 句柄并实例化纯逻辑

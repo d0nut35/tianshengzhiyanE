@@ -2095,44 +2095,14 @@
           <GroupName>lhy/04_Bsp/zdt_motor</GroupName>
           <Files>
             <File>
-              <FileName>zdt_motor.c</FileName>
+              <FileName>zdt.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../lhy/04_Bsp/zdt_motor/zdt_motor.c</FilePath>
+              <FilePath>../lhy/04_Bsp/zdt_motor/zdt.c</FilePath>
             </File>
             <File>
-              <FileName>zdt_motor.h</FileName>
+              <FileName>zdt.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../lhy/04_Bsp/zdt_motor/zdt_motor.h</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_motor_handler.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../lhy/04_Bsp/zdt_motor/zdt_motor_handler.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_motor_handler.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../lhy/04_Bsp/zdt_motor/zdt_motor_handler.h</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_cmd.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../lhy/04_Bsp/zdt_motor/zdt_cmd.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_cmd.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../lhy/04_Bsp/zdt_motor/zdt_cmd.h</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_motor_adaption.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../lhy/04_Bsp/zdt_motor/zdt_motor_adaption.c</FilePath>
-            </File>
-            <File>
-              <FileName>zdt_motor_adaption.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>../lhy/04_Bsp/zdt_motor/zdt_motor_adaption.h</FilePath>
+              <FilePath>../lhy/04_Bsp/zdt_motor/zdt.h</FilePath>
             </File>
           </Files>
         </Group>

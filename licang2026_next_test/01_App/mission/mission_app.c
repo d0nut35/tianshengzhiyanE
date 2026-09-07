@@ -704,6 +704,11 @@ static bool mission_prepare_zdt(mission_context_t *ctx)
     return true;
 }
 
+/**
+ * @brief 解析Nano事务结果并推进当前视觉会话。
+ * @param ctx Mission上下文。
+ * @note 仅在Mission任务中调用；设备回调只负责保存数据并唤醒任务。
+ */
 static void mission_handle_vision(mission_context_t *ctx)
 {
     nano_vision_status_t status;
@@ -826,6 +831,10 @@ static void mission_handle_vision(mission_context_t *ctx)
     }
 }
 
+/**
+ * @brief 在视觉事务空闲后继续接收事件或执行已确认的抓取动作。
+ * @param ctx Mission上下文。
+ */
 static void mission_vision_process(mission_context_t *ctx)
 {
     uint8_t grasp_group;
@@ -859,7 +868,11 @@ static void mission_vision_process(mission_context_t *ctx)
     }
 }
 
-/** 动作组10和底盘初始化均完成后，回复握手并等待自动按红方启动。 */
+/**
+ * @brief 在机械臂和底盘均就绪后完成握手并进入READY。
+ * @param ctx Mission上下文。
+ * @note READY保持约4秒后自动按红方启动；底盘此时阻塞等待GO_PLATFORM。
+ */
 static void mission_try_ready(mission_context_t *ctx)
 {
     if ((ctx->state != MISSION_STATE_WAIT_CHASSIS_READY) ||
@@ -874,7 +887,12 @@ static void mission_try_ready(mission_context_t *ctx)
                         MISSION_AUTO_START_DELAY_MS);
 }
 
-/** 清空本轮计数并请求底盘执行起点到圆盘路线。 */
+/**
+ * @brief 启动一轮正式任务并请求底盘前往圆盘工作位。
+ * @param ctx Mission上下文。
+ * @param color 本轮目标球颜色。
+ * @note 本函数原本即为红蓝方命令共用的启动入口，本次未新增该函数。
+ */
 static void mission_start_run(mission_context_t *ctx, mission_color_t color)
 {
     uint16_t request_id = mission_next_request_id(ctx);
@@ -1249,7 +1267,11 @@ static void mission_handle_storage(mission_context_t *ctx)
     }
 }
 
-/** 对所有有期限的等待状态实施统一超时停机。 */
+/**
+ * @brief 处理当前状态的期限到达事件。
+ * @param ctx Mission上下文。
+ * @note READY到期时自动启动红方；其他有期限状态到期时进入超时故障。
+ */
 static void mission_check_timeout(mission_context_t *ctx)
 {
     if ((ctx->deadline_tick != 0U) &&
@@ -1263,8 +1285,9 @@ static void mission_check_timeout(mission_context_t *ctx)
 }
 
 /**
- * Mission唯一任务：阻塞等待线程标志，醒来后依次处理命令、底盘和设备结果。
- * 底盘先入队再置位；本任务被唤醒后一次性排空底盘事件队列。
+ * @brief Mission唯一任务，串行处理用户命令、底盘事件和设备结果。
+ * @param argument 指向全局Mission上下文。
+ * @note 底盘先入队再置位；任务醒来后一次性排空底盘事件队列。
  */
 static void mission_task_entry(void *argument)
 {
@@ -1313,6 +1336,7 @@ static void mission_task_entry(void *argument)
     }
 }
 
+/** @copydoc mission_app_init() */
 mission_app_status_t mission_app_init(void)
 {
     mission_context_t *ctx = &g_mission;
@@ -1364,6 +1388,7 @@ mission_app_status_t mission_app_init(void)
     return MISSION_APP_OK;
 }
 
+/** @copydoc mission_app_submit_command() */
 mission_app_status_t mission_app_submit_command(mission_user_command_t command)
 {
     mission_context_t *ctx = &g_mission;
@@ -1385,6 +1410,7 @@ mission_app_status_t mission_app_submit_command(mission_user_command_t command)
         : MISSION_APP_ERR_IO;
 }
 
+/** @copydoc mission_app_get_snapshot() */
 mission_app_status_t mission_app_get_snapshot(mission_app_snapshot_t *snapshot)
 {
     mission_context_t *ctx = &g_mission;

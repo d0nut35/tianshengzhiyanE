@@ -354,7 +354,9 @@ static void mission_enter_state(
     mission_state_t state,
     uint32_t timeout_ms)
 {
+    /* 0) 记录唯一顶层状态，后续事件只由该状态对应的分支处理。 */
     ctx->state = state;
+    /* 1) 0表示永久等待；非0转换成绝对截止tick供主任务统一检查。 */
     ctx->deadline_tick = (timeout_ms == 0U)
         ? 0U
         : osKernelGetTickCount() + mission_ms_to_ticks(timeout_ms);
@@ -745,6 +747,7 @@ static void mission_handle_vision(mission_context_t *ctx)
     nano_vision_event_ack_t ack;
     size_t tx_len = 0U;
 
+    /* 0) 先处理等待当前串口事务结束后才能执行的停止请求。 */
     status = mission_map_vision_status(ctx->vision.mail_status);
     if (ctx->vision.stop_requested &&
         (ctx->vision.phase != MISSION_VISION_STOPPING)) {
@@ -754,6 +757,7 @@ static void mission_handle_vision(mission_context_t *ctx)
         }
         return;
     }
+    /* 1) 监听超时表示本轮没有新帧，保持会话并继续接收。 */
     if ((ctx->vision.phase == MISSION_VISION_LISTENING) &&
         (status == NANO_VISION_ERR_TIMEOUT)) {
         return;
@@ -765,6 +769,7 @@ static void mission_handle_vision(mission_context_t *ctx)
     if (ctx->vision.phase == MISSION_VISION_ACKING) {
         return;
     }
+    /* 2) 停止回包必须属于当前会话，确认后才允许切换阶梯层。 */
     if (ctx->vision.phase == MISSION_VISION_STOPPING) {
         uint16_t stopped_session = 0U;
 
@@ -781,6 +786,7 @@ static void mission_handle_vision(mission_context_t *ctx)
         }
         return;
     }
+    /* 3) READY必须同时匹配会话、场景和目标颜色。 */
     if (ctx->vision.phase == MISSION_VISION_STARTING) {
         status = nano_vision_decode_session_ready(
             ctx->vision.mail_data, ctx->vision.mail_len, &session);
@@ -793,6 +799,7 @@ static void mission_handle_vision(mission_context_t *ctx)
             return;
         }
         ctx->vision.phase = MISSION_VISION_LISTENING;
+        /* 4) 圆盘开始监听；阶梯恢复等回报，首次进入本层则发CAM_READY。 */
         if (ctx->state == MISSION_STATE_PLATFORM_WAIT_VISION) {
             mission_enter_state(ctx, MISSION_STATE_PLATFORM_WAIT_TARGET,
                                 MISSION_OPERATION_TIMEOUT_MS);
@@ -814,6 +821,7 @@ static void mission_handle_vision(mission_context_t *ctx)
         }
         return;
     }
+    /* 5) 只接收当前会话、当前场景、当前颜色且未过期的小球事件。 */
     if (ctx->vision.phase != MISSION_VISION_LISTENING) return;
     status = nano_vision_decode_event(
         ctx->vision.mail_data, ctx->vision.mail_len, &event);
@@ -826,6 +834,7 @@ static void mission_handle_vision(mission_context_t *ctx)
         (event.observation.age_ms > MISSION_VISION_EVENT_MAX_AGE_MS)) {
         return;
     }
+    /* 6) 先确认该视觉帧，阶梯场景还要先通知底盘停车。 */
     ack.session_id = ctx->vision.session_id;
     ack.frame_id = event.observation.frame_id;
     status = nano_vision_build_event_ack_frame(
@@ -923,17 +932,21 @@ static void mission_try_ready(mission_context_t *ctx)
  */
 static void mission_start_run(mission_context_t *ctx, mission_color_t color)
 {
+    /* 0) 新一轮任务使用新的request_id，隔离上一轮底盘回包。 */
     uint16_t request_id = mission_next_request_id(ctx);
 
+    /* 1) 保存红蓝方并清空本轮小球、槽位和故障计数。 */
     ctx->color = color;
     ctx->platform_balls = 0U;
     ctx->stair_balls = 0U;
     ctx->storage_slot = 0U;
     ctx->fault_code = MISSION_FAULT_NONE;
+    /* 2) 请求底盘去圆盘工作位。 */
     if (!mission_send_chassis(MISSION_CMD_GO_PLATFORM, request_id)) {
         mission_fail(ctx, MISSION_FAULT_QUEUE);
         return;
     }
+    /* 3) 等待底盘带相同request_id上报PLATFORM_READY。 */
     mission_enter_state(
         ctx,
         MISSION_STATE_WAIT_PLATFORM,
@@ -943,11 +956,13 @@ static void mission_start_run(mission_context_t *ctx, mission_color_t color)
 /** 当前层起点就绪后开启对应视觉；抓满2球则只放行底盘走完整段。 */
 static void mission_start_stair_layer(mission_context_t *ctx)
 {
+    /* 0) 动作组13可能先于层事件完成，此时只等待底盘上报层号。 */
     if (ctx->stair_layer == MISSION_STAIR_NONE) {
         mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_LAYER,
                             MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
+    /* 1) 已抓满2球后不再启动视觉，只允许底盘走完剩余层。 */
     if (ctx->stair_balls >= MISSION_STAIR_BALL_COUNT) {
         if (!mission_send_chassis(MISSION_CMD_CAM_READY, ctx->request_id)) {
             mission_fail(ctx, MISSION_FAULT_QUEUE);
@@ -957,6 +972,7 @@ static void mission_start_stair_layer(mission_context_t *ctx)
                             MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
+    /* 2) 未抓满时启动当前层视觉，收到匹配READY后再放行底盘。 */
     if (!mission_start_vision(
             ctx,
             MISSION_VISION_SCENE_STAIR,
@@ -1022,6 +1038,7 @@ static void mission_handle_chassis(
     mission_stair_layer_t layer;
     uint8_t grasp_group;
 
+    /* 0) 握手事件允许底盘先于机械臂完成初始化。 */
     if (event->type == CHASSIS_CMD_MISSION_READY) {
         if ((ctx->state != MISSION_STATE_WAIT_HOME) &&
             (ctx->state != MISSION_STATE_WAIT_CHASSIS_READY)) {
@@ -1036,6 +1053,7 @@ static void mission_handle_chassis(
         mission_try_ready(ctx);
         return;
     }
+    /* 1) 正式流程只接收当前request_id且is_ready=1的回报。 */
     if ((event->request_id != ctx->request_id) ||
         (event->is_ready == 0U)) {
         if ((event->request_id == ctx->request_id) &&
@@ -1044,11 +1062,13 @@ static void mission_handle_chassis(
         }
         return;
     }
+    /* 2) 全局停车完成后保持STOPPED，不再推进任务。 */
     if ((ctx->state == MISSION_STATE_STOPPING) &&
         (event->type == CHASSIS_CMD_STOPPED)) {
         mission_enter_state(ctx, MISSION_STATE_STOPPED, 0U);
         return;
     }
+    /* 3) 圆盘到位后先执行动作组11，再开启圆盘视觉。 */
     if ((ctx->state == MISSION_STATE_WAIT_PLATFORM) &&
         (event->type == CHASSIS_CMD_PLATFORM_READY)) {
         if (!mission_start_arm(
@@ -1059,6 +1079,7 @@ static void mission_handle_chassis(
         }
         return;
     }
+    /* 4) 阶梯到位后先执行动作组13，层事件可以提前保存。 */
     if ((ctx->state == MISSION_STATE_WAIT_STAIRS) &&
         (event->type == CHASSIS_CMD_STAIRS_READY)) {
         ctx->stair_layer = MISSION_STAIR_NONE;
@@ -1070,6 +1091,7 @@ static void mission_handle_chassis(
         }
         return;
     }
+    /* 5) LOW/HIGH/MID切层时先停旧视觉，再启动对应层会话。 */
     if ((event->type == CHASSIS_CMD_STAIR_LOW) ||
         (event->type == CHASSIS_CMD_STAIR_HIGH) ||
         (event->type == CHASSIS_CMD_STAIR_MID)) {
@@ -1098,6 +1120,7 @@ static void mission_handle_chassis(
         }
         return;
     }
+    /* 6) 只有底盘确认实际停车后才执行当前层抓取动作组。 */
     if ((event->type == CHASSIS_CMD_STAIR_PAUSE) &&
         (ctx->state == MISSION_STATE_STAIR_WAIT_PAUSE)) {
         if (ctx->vision.phase == MISSION_VISION_ACKING) {
@@ -1118,12 +1141,14 @@ static void mission_handle_chassis(
         }
         return;
     }
+    /* 7) 底盘确认恢复后重新进入当前层扫描状态。 */
     if ((event->type == CHASSIS_CMD_STAIR_RESUME) &&
         (ctx->state == MISSION_STATE_STAIR_WAIT_RESUME)) {
         mission_enter_state(ctx, MISSION_STATE_STAIR_SCANNING,
                             MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
+    /* 8) 中层走完后停止视觉，当前实现直接结束Mission。 */
     if (event->type == CHASSIS_CMD_STAIRS_FINISHED) {
         if ((ctx->vision.phase != MISSION_VISION_IDLE) &&
             !mission_stop_vision(ctx)) {
@@ -1137,6 +1162,7 @@ static void mission_handle_chassis(
 /** 处理唯一在途动作组结果，并按圆盘或阶梯子流程继续。 */
 static void mission_handle_arm(mission_context_t *ctx, bool success)
 {
+    /* 0) 只处理当前状态正在等待的动作组回报。 */
     if ((ctx->state != MISSION_STATE_WAIT_HOME) &&
         (ctx->state != MISSION_STATE_PLATFORM_WAIT_POSE) &&
         (ctx->state != MISSION_STATE_PLATFORM_WAIT_GRASP) &&
@@ -1148,10 +1174,12 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         (ctx->state != MISSION_STATE_STAIR_WAIT_RETURN)) {
         return;
     }
+    /* 1) 任一动作组失败都进入统一故障停车流程。 */
     if (!success) {
         mission_fail(ctx, MISSION_FAULT_ARM);
         return;
     }
+    /* 2) 上电动作组10完成后检查转盘，再等待底盘握手。 */
     if (ctx->state == MISSION_STATE_WAIT_HOME) {
         if (!mission_prepare_zdt(ctx)) {
             mission_fail(ctx, MISSION_FAULT_STORAGE);
@@ -1162,6 +1190,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         mission_try_ready(ctx);
         return;
     }
+    /* 3) 动作组11到位后启动圆盘视觉。 */
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_POSE) {
         if (!mission_start_vision(
                 ctx,
@@ -1172,6 +1201,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         }
         return;
     }
+    /* 4) 动作组12完成后，前四球回11，第五球执行17避让。 */
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_GRASP) {
         if ((uint8_t)(ctx->platform_balls + 1U) >=
             MISSION_PLATFORM_BALL_COUNT) {
@@ -1214,6 +1244,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         }
         return;
     }
+    /* 5) 圆盘存满并执行动作组10后，请求底盘去阶梯。 */
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_DEPARTURE_POSE) {
         (void)mission_next_request_id(ctx);
         if (!mission_send_chassis(MISSION_CMD_GO_STAIRS, ctx->request_id)) {
@@ -1224,10 +1255,12 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
                             MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
+    /* 6) 阶梯入口动作组13完成后启动当前层。 */
     if (ctx->state == MISSION_STATE_STAIR_WAIT_POSE) {
         mission_start_stair_layer(ctx);
         return;
     }
+    /* 7) 动作组14/15/16抓取完成后统一回动作组13。 */
     if (ctx->state == MISSION_STATE_STAIR_WAIT_GRASP) {
         if (!mission_start_arm(
                 ctx,
@@ -1237,6 +1270,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         }
         return;
     }
+    /* 8) 动作组13回位后读IC并将转盘推进一格。 */
     if (ctx->state == MISSION_STATE_STAIR_WAIT_RETURN) {
         mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_STORAGE,
                             MISSION_OPERATION_TIMEOUT_MS);
@@ -1253,12 +1287,15 @@ static void mission_handle_storage(mission_context_t *ctx)
 {
     mission_state_t completed_state = ctx->state;
 
+    /* 0) 只接受圆盘或阶梯存球流程的完成结果。 */
     if ((completed_state != MISSION_STATE_PLATFORM_WAIT_STORAGE) &&
         (completed_state != MISSION_STATE_STAIR_WAIT_STORAGE)) {
         return;
     }
+    /* 1) 每次读卡和转盘推进成功后占用一个新槽位。 */
     ++ctx->storage_slot;
     if (completed_state == MISSION_STATE_PLATFORM_WAIT_STORAGE) {
+        /* 2) 圆盘满5球后执行动作组10，否则继续下一球视觉。 */
         ++ctx->platform_balls;
         if (ctx->platform_balls >= MISSION_PLATFORM_BALL_COUNT) {
             if (!mission_start_arm(
@@ -1277,6 +1314,7 @@ static void mission_handle_storage(mission_context_t *ctx)
         return;
     }
     if (completed_state == MISSION_STATE_STAIR_WAIT_STORAGE) {
+        /* 3) 阶梯满2球后直接恢复；未满时先重启本层视觉。 */
         ++ctx->stair_balls;
         if (ctx->stair_balls >= MISSION_STAIR_BALL_COUNT) {
             if (!mission_send_chassis(
@@ -1327,14 +1365,17 @@ static void mission_task_entry(void *argument)
     mission_user_command_t command;
     uint32_t flags;
 
+    /* 0) 上电先等待动作组10完成，不设置超时。 */
     mission_enter_state(ctx, MISSION_STATE_WAIT_HOME, 0U);
     for (;;) {
+        /* 1) 等待任一事件；等待时长由当前状态的截止时间决定。 */
         flags = osThreadFlagsWait(
             MISSION_ALL_FLAGS,
             osFlagsWaitAny,
             mission_wait_ticks(ctx));
 
         if ((flags & osFlagsError) == 0U) {
+            /* 2) 排空用户命令队列。 */
             if ((flags & MISSION_FLAG_COMMAND) != 0U) {
                 while (osMessageQueueGet(
                            ctx->command_queue,
@@ -1344,6 +1385,7 @@ static void mission_task_entry(void *argument)
                     mission_handle_command(ctx, command);
                 }
             }
+            /* 3) 排空底盘事件队列，保持底盘上报顺序。 */
             if ((flags & CHASSIS_MISSION_FLAG_EVENT) != 0U) {
                 while (osMessageQueueGet(
                            mission_event_queue,
@@ -1353,15 +1395,18 @@ static void mission_task_entry(void *argument)
                     mission_handle_chassis(ctx, &chassis_event);
                 }
             }
+            /* 4) 当前只允许一个动作组在途，失败优先于成功处理。 */
             if ((flags & MISSION_FLAG_ARM_FAIL) != 0U) {
                 mission_handle_arm(ctx, false);
             } else if ((flags & MISSION_FLAG_ARM_OK) != 0U) {
                 mission_handle_arm(ctx, true);
             }
+            /* 5) 解析本轮Nano串口事务结果。 */
             if ((flags & MISSION_FLAG_VISION_DONE) != 0U) {
                 mission_handle_vision(ctx);
             }
         }
+        /* 6) 提交下一次视觉事务，并统一检查当前状态是否超时。 */
         mission_vision_process(ctx);
         mission_check_timeout(ctx);
     }
@@ -1372,14 +1417,18 @@ mission_app_status_t mission_app_init(void)
 {
     mission_context_t *ctx = &g_mission;
 
+    /* 0) 初始化只允许执行一次。 */
     if (ctx->initialized) {
         return MISSION_APP_ERR_STATE;
     }
+    /* 1) 清空运行上下文并初始化小球档案。 */
     (void)memset(ctx, 0, sizeof(*ctx));
     ball_manifest_init(&ctx->manifest);
+    /* 2) 初始化IC读卡器。 */
     if (ic_init() != IC_CARD_OK) {
         return MISSION_APP_ERR_IO;
     }
+    /* 3) 用正式参数初始化车载转盘。 */
     {
         turn_config_t config = {
             MISSION_ZDT_ADDRESS,
@@ -1390,6 +1439,7 @@ mission_app_status_t mission_app_init(void)
             return MISSION_APP_ERR_IO;
         }
     }
+    /* 4) 创建用户命令队列和唯一Mission任务。 */
     ctx->command_queue = osMessageQueueNew(
         MISSION_COMMAND_QUEUE_DEPTH,
         sizeof(mission_user_command_t),
@@ -1401,12 +1451,14 @@ mission_app_status_t mission_app_init(void)
     if (ctx->task == NULL) {
         return MISSION_APP_ERR_RESOURCE;
     }
+    /* 5) 将底盘和机械臂异步回报绑定到Mission任务。 */
     if (!chassis_mission_link_bind_mission_task(ctx->task)) {
         return MISSION_APP_ERR_RESOURCE;
     }
     if (arm_on_report(mission_arm_report, ctx) != LSC16_OK) {
         return MISSION_APP_ERR_IO;
     }
+    /* 6) 启动动作组10；其完成回报会继续初始化握手。 */
     ctx->initialized = true;
     ctx->active_arm_group = MISSION_HOME_ACTION_GROUP;
     if (arm_run(

@@ -859,7 +859,7 @@ static void mission_vision_process(mission_context_t *ctx)
     }
 }
 
-/** 动作组10和底盘初始化均完成后，回复握手并进入READY。 */
+/** 动作组10和底盘初始化均完成后，回复握手并等待自动按红方启动。 */
 static void mission_try_ready(mission_context_t *ctx)
 {
     if ((ctx->state != MISSION_STATE_WAIT_CHASSIS_READY) ||
@@ -870,7 +870,8 @@ static void mission_try_ready(mission_context_t *ctx)
         mission_fail(ctx, MISSION_FAULT_QUEUE);
         return;
     }
-    mission_enter_state(ctx, MISSION_STATE_READY, 0U);
+    mission_enter_state(ctx, MISSION_STATE_READY,
+                        MISSION_AUTO_START_DELAY_MS);
 }
 
 /** 清空本轮计数并请求底盘执行起点到圆盘路线。 */
@@ -1253,6 +1254,10 @@ static void mission_check_timeout(mission_context_t *ctx)
 {
     if ((ctx->deadline_tick != 0U) &&
         ((int32_t)(osKernelGetTickCount() - ctx->deadline_tick) >= 0)) {
+        if (ctx->state == MISSION_STATE_READY) {
+            mission_start_run(ctx, MISSION_COLOR_RED);
+            return;
+        }
         mission_fail(ctx, MISSION_FAULT_TIMEOUT);
     }
 }

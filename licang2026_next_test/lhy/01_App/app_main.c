@@ -56,9 +56,9 @@
 /* 阶梯横移参数：沿地图 +y 慢速横移，按里程计 y 越过边界分层（边界待实机标定） */
 #define APP_STAIR_VY_MMS     100.0f /* 横移速度，车体系 vy，mm/s */
 #define APP_STAIR_POLL_MS    10U    /* 横移中命令/位姿轮询周期，ms */
-#define APP_STAIR_HIGH_Y_MM  3150   /* 低层结束、高层起点 y，mm（暂定） */
-#define APP_STAIR_MID_Y_MM   3450   /* 高层结束、中层起点 y，mm（暂定） */
-#define APP_STAIR_END_Y_MM   3750   /* 中层结束 y，mm（暂定） */
+#define APP_STAIR_HIGH_Y_MM  2700   /* 低层结束、高层起点 y，mm（暂定） */
+#define APP_STAIR_MID_Y_MM   2420   /* 高层结束、中层起点 y，mm（暂定） */
+#define APP_STAIR_END_Y_MM   2200   /* 中层结束 y，mm（暂定） */
 
 /* 上电初始位姿（世界系，按场地标定） */
 #define APP_START_X_MM    1200

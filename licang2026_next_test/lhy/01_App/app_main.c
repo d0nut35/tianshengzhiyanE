@@ -53,6 +53,13 @@
 #define APP_LINK_RETRY_MS    1000U  /* 未收到 Mission 就绪时重发间隔，ms */
 #define APP_LINK_POST_MS     100U   /* 事件入队等待上限，ms */
 
+/* 阶梯横移参数：沿地图 +y 慢速横移，按里程计 y 越过边界分层（边界待实机标定） */
+#define APP_STAIR_VY_MMS     100.0f /* 横移速度，车体系 vy，mm/s */
+#define APP_STAIR_POLL_MS    10U    /* 横移中命令/位姿轮询周期，ms */
+#define APP_STAIR_HIGH_Y_MM  3150   /* 低层结束、高层起点 y，mm（暂定） */
+#define APP_STAIR_MID_Y_MM   3450   /* 高层结束、中层起点 y，mm（暂定） */
+#define APP_STAIR_END_Y_MM   3750   /* 中层结束 y，mm（暂定） */
+
 /* 上电初始位姿（世界系，按场地标定） */
 #define APP_START_X_MM    1200
 #define APP_START_Y_MM    350
@@ -61,6 +68,27 @@
 static osThreadId_t       g_task = NULL;  /* 底盘任务 */
 static uint8_t            g_nav_fin = 1U; /* 导航完成标志，1=空闲 */
 static uint8_t            g_app_up = 0;  /* 应用启动标志 */
+
+/* 阶梯横移运行上下文：暴露给命令分发，使暂停与层事件互不阻塞 */
+typedef struct {
+    uint16_t               req_id;    /* 阶梯阶段请求编号 */
+    chassis_command_type_t layer_evt; /* 当前层事件 CHASSIS_CMD_STAIR_xxx */
+    uint8_t                moving;    /* 1=本层已放行，应处于横移 */
+    uint8_t                paused;    /* 1=收到 STAIR_STOP 尚未恢复 */
+    uint8_t                cam_ready; /* 1=本层已收到 CAM_READY */
+} app_stair_ctx_t;
+
+/* 阶梯三层：层事件 + 本层结束 y 边界 */
+typedef struct {
+    chassis_command_type_t evt;      /* 层起点事件 */
+    int16_t                end_y_mm; /* 本层结束 y，mm */
+} app_stair_layer_t;
+
+static const app_stair_layer_t g_stair_layers[] = {
+    { CHASSIS_CMD_STAIR_LOW,  APP_STAIR_HIGH_Y_MM },
+    { CHASSIS_CMD_STAIR_HIGH, APP_STAIR_MID_Y_MM  },
+    { CHASSIS_CMD_STAIR_MID,  APP_STAIR_END_Y_MM  },
+};
 
 static const osThreadAttr_t g_task_attr = {
     .name       = "chassis",
@@ -91,6 +119,10 @@ static app_status_t app_link_post(chassis_command_type_t type,
 static app_status_t app_link_wait(mission_command_type_t type,
                                   uint16_t *req_id, uint32_t timeout_ticks);
 static void app_link_handshake(void);
+static void app_stair_handle(app_stair_ctx_t *ctx,
+                             const chassis_mission_command_t *cmd);
+static uint8_t app_stair_poll(app_stair_ctx_t *ctx, uint32_t timeout_ticks);
+static app_status_t app_stairs_sweep(uint16_t req_id);
 
 /**
  * @brief  将毫秒转换成当前 CMSIS-OS tick 数
@@ -568,10 +600,130 @@ static void app_link_handshake(void)
 }
 
 /**
+ * @brief  阶梯段命令分发：暂停/恢复/放行与层事件解耦，全部非阻塞处理
+ * @param  ctx 阶梯运行上下文
+ * @param  cmd 出队的 Mission 命令
+ * @note   层边界等 CAM_READY 时收到 STOP 直接回 PAUSE（车已停）；
+ *         RESUME 后重发本层事件，因 Mission 在 WAIT_PAUSE 丢弃层事件
+ */
+static void app_stair_handle(app_stair_ctx_t *ctx,
+                             const chassis_mission_command_t *cmd)
+{
+    switch (cmd->type) {
+        case MISSION_CMD_CAM_READY:
+            ctx->cam_ready = 1U;
+            break;
+        case MISSION_CMD_STAIR_STOP:
+            if ((ctx->moving != 0U) && (ctx->paused == 0U)) {
+                (void)app_stop_motion();
+            }
+            ctx->paused = 1U;
+            (void)app_link_post(CHASSIS_CMD_STAIR_PAUSE, ctx->req_id, 1U);
+            break;
+        case MISSION_CMD_STAIR_RESUME:
+            if (ctx->paused == 0U) {
+                break;
+            }
+            ctx->paused = 0U;
+            if (ctx->moving != 0U) {
+                (void)csvc_free(0.0f, APP_STAIR_VY_MMS, 0.0f);
+            }
+            (void)app_link_post(CHASSIS_CMD_STAIR_RESUME, ctx->req_id, 1U);
+            if ((ctx->moving == 0U) && (ctx->cam_ready == 0U)) {
+                (void)app_link_post(ctx->layer_evt, ctx->req_id, 1U);
+            }
+            break;
+        case MISSION_CMD_STOP:
+            (void)app_stop_motion();
+            (void)app_link_post(CHASSIS_CMD_STOPPED, cmd->request_id, 1U);
+            break;
+        default:
+            APP_LOGE("drop cmd %d", (int)cmd->type);
+            break;
+    }
+}
+
+/**
+ * @brief  限时取一条 Mission 命令并分发
+ * @param  ctx           阶梯运行上下文
+ * @param  timeout_ticks 出队等待 tick 数，可为 osWaitForever
+ * @retval 1=已处理一条命令 / 0=超时或队列未建立
+ */
+static uint8_t app_stair_poll(app_stair_ctx_t *ctx, uint32_t timeout_ticks)
+{
+    chassis_mission_command_t cmd; /* 出队的 Mission 命令 */
+
+    if (chassis_command_queue == NULL) {
+        return 0U;
+    }
+    if (osMessageQueueGet(chassis_command_queue, &cmd, NULL,
+                          timeout_ticks) != osOK) {
+        return 0U;
+    }
+    app_stair_handle(ctx, &cmd);
+    return 1U;
+}
+
+/**
+ * @brief  阶梯三层横移：每层上报起点→等 CAM_READY→横移至 y 边界，末了报 STAIRS_FINISHED
+ * @param  req_id 阶梯阶段请求编号
+ * @retval APP_OK / APP_ERR=位姿读取或下发失败（已停车）
+ * @note   横移中每周期先分发命令再查位姿；暂停期间不判边界
+ */
+static app_status_t app_stairs_sweep(uint16_t req_id)
+{
+    app_stair_ctx_t ctx;                          /* 运行上下文 */
+    map_point_t     pos = { 0, 0 };               /* 里程计坐标 */
+    float           yaw = 0.0f;                   /* 里程计航向，附带量 */
+    uint32_t        poll = app_ms_ticks(APP_STAIR_POLL_MS); /* 轮询 tick */
+    uint8_t         i;                            /* 层索引 */
+
+    ctx.req_id = req_id;
+    ctx.paused = 0U;
+    for (i = 0U; i < (sizeof(g_stair_layers) / sizeof(g_stair_layers[0]));
+         i++) {
+        ctx.layer_evt = g_stair_layers[i].evt;
+        ctx.moving = 0U;
+        ctx.cam_ready = 0U;
+        (void)app_link_post(ctx.layer_evt, req_id, 1U);
+        while (ctx.cam_ready == 0U) {
+            (void)app_stair_poll(&ctx, osWaitForever);
+        }
+        ctx.moving = 1U;
+        if (ctx.paused == 0U) {
+            if (csvc_free(0.0f, APP_STAIR_VY_MMS, 0.0f) != CSVC_OK) {
+                APP_LOGE("stair move fail");
+                return APP_ERR;
+            }
+        }
+        for (;;) {
+            (void)app_stair_poll(&ctx, poll);
+            if (ctx.paused != 0U) {
+                continue;
+            }
+            if (csvc_get_pose(&pos, &yaw) != CSVC_OK) {
+                (void)app_stop_motion();
+                APP_LOGE("stair pose fail");
+                return APP_ERR;
+            }
+            if (pos.y_mm >= g_stair_layers[i].end_y_mm) {
+                break;
+            }
+        }
+        if (app_stop_motion() != APP_OK) {
+            return APP_ERR;
+        }
+        APP_LOGI("stair layer %u done y=%d", (unsigned)i, (int)pos.y_mm);
+    }
+    (void)app_link_post(CHASSIS_CMD_STAIRS_FINISHED, req_id, 1U);
+    return APP_OK;
+}
+
+/**
  * @brief  应用主任务：按 Mission 命令串行执行底盘任务点
  * @param  arg 未用
- * @note   握手、去圆盘、去阶梯、低层放行已接 chassis_mission_link 队列；
- *         阶梯横移及之后仍为固定延时流程，见各 TODO(link)
+ * @note   握手、去圆盘、去阶梯、三层横移暂停/恢复已接 chassis_mission_link 队列；
+ *         仓库/回原点仍为固定延时流程，见 TODO(link)
  */
 static void app_task(void *arg)
 {
@@ -598,41 +750,10 @@ static void app_task(void *arg)
                       osWaitForever) == APP_OK) {
         ok = (app_go_stairs() == APP_OK) ? 1U : 0U;
         (void)app_link_post(CHASSIS_CMD_STAIRS_READY, req_id, ok);
-        /* 阶梯起始位即低层扫描起点：Mission 收到层就绪后才会回 CAM_READY */
-        (void)app_link_post(CHASSIS_CMD_STAIR_LOW, req_id, ok);
+        /* 阶梯起始位即低层起点：层事件与 CAM_READY 放行由 sweep 统一处理 */
+        (void)app_stairs_sweep(req_id);
     }
-    (void)app_link_wait(MISSION_CMD_CAM_READY, &req_id, osWaitForever);
 
-    /* TODO(link): 阶梯横移段——到高/中层起点时上报 CHASSIS_CMD_STAIR_HIGH/MID
-     *             并等 MISSION_CMD_CAM_READY，两个上报点坐标待定；
-     *             中层走完上报 CHASSIS_CMD_STAIRS_FINISHED */
-    /* TODO(link): 横移中收 MISSION_CMD_STAIR_STOP 停车并回 CHASSIS_CMD_STAIR_PAUSE，
-     *             收 MISSION_CMD_STAIR_RESUME 续行并回 CHASSIS_CMD_STAIR_RESUME；
-     *             g_nav_fin 忙等需改成可被命令队列打断 */
-    
-    /* 直线导航（不走 A*）到 (1700,2500) → (1550,2500)，航向 180°，到点后画圆 */
-    g_nav_fin = 0U;
-    if (csvc_nav(CSVC_NAV_LINE, (map_point_t){.x_mm = 1700, .y_mm = 2520},
-                 180.0f, 500.0f, 60.0f, &g_nav_fin) != CSVC_OK) {
-        g_nav_fin = 1U;
-        APP_LOGE("line nav 1 fail");
-    } else {
-        while (g_nav_fin == 0U) {
-            osDelay(10U);
-        }
-        g_nav_fin = 0U;
-        if (csvc_nav(CSVC_NAV_LINE, (map_point_t){.x_mm = 1550, .y_mm = 2520},
-                     180.0f, 500.0f, 60.0f, &g_nav_fin) != CSVC_OK) {
-            g_nav_fin = 1U;
-            APP_LOGE("line nav 2 fail");
-        } else {
-            while (g_nav_fin == 0U) {
-                osDelay(10U);
-            }
-            osDelay(1000U); /* 等底盘稳定 */
-            (void)csvc_arc(200.0f, -350.0f, false);
-        }
-    }
     osDelay(10000U); /* TODO(link): 改为等机械臂夹球全部完成的命令，协议暂无需补 */
     /* TODO(link): 仓库/回原点协议暂无，需补 MISSION_CMD_GO_DEPOT/GO_HOME 及对应 READY 事件 */
     (void)app_go_depot();

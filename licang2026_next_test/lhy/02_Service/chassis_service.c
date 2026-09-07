@@ -23,7 +23,7 @@
 
 /* ===== 调试日志：0=不编译进固件，1=经 RTT 输出 ===== */
 #ifndef CSVC_LOG_EN
-#define CSVC_LOG_EN   1
+#define CSVC_LOG_EN   0
 #endif
 #if CSVC_LOG_EN
 #include "cat_log.h"
@@ -356,6 +356,29 @@ csvc_status_t csvc_set_pose(map_point_t pos, float yaw_deg)
     ret = chassis_set_pose(pos, yaw_deg);
     (void)osMutexRelease(g_pose_lock);
     return (ret == CHASSIS_OK) ? CSVC_OK : CSVC_ERR;
+}
+
+csvc_status_t csvc_get_pose(map_point_t *pos, float *yaw_deg)
+{
+    chassis_odom_t   odom;              /* 里程计快照 */
+    chassis_status_t ret = CHASSIS_ERR; /* 取位姿结果 */
+
+    if ((pos == NULL) || (yaw_deg == NULL)) {
+        return CSVC_ERR_PARAM;
+    }
+    if (g_inited == 0U) {
+        return CSVC_ERR_INIT;
+    }
+    (void)osMutexAcquire(g_pose_lock, osWaitForever);
+    ret = chassis_get_odom(&odom);
+    (void)osMutexRelease(g_pose_lock);
+    if (ret != CHASSIS_OK) {
+        return CSVC_ERR;
+    }
+    pos->x_mm = (int16_t)odom.x_mm;
+    pos->y_mm = (int16_t)odom.y_mm;
+    *yaw_deg = odom.yaw_rad * (180.0f / 3.14159265f);
+    return CSVC_OK;
 }
 
 csvc_status_t csvc_free(float vx, float vy, float wz)

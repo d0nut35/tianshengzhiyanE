@@ -49,6 +49,14 @@ csvc_status_t csvc_init(void);
 csvc_status_t csvc_set_pose(map_point_t pos, float yaw_deg);
 
 /**
+ * @brief  读取里程计当前位姿（持位姿锁）
+ * @param  pos     输出世界系坐标，mm
+ * @param  yaw_deg 输出航向，deg
+ * @retval CSVC_OK / CSVC_ERR_PARAM / CSVC_ERR_INIT / CSVC_ERR
+ */
+csvc_status_t csvc_get_pose(map_point_t *pos, float *yaw_deg);
+
+/**
  * @brief  投递自由速度命令（车体系）
  * @param  vx 车体系 x 速度，mm/s
  * @param  vy 车体系 y 速度，mm/s

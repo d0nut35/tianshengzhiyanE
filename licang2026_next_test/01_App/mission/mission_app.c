@@ -125,67 +125,95 @@ static const osThreadAttr_t g_mission_task_attr = {
     .priority = osPriorityNormal,
 };
 
+/** 将毫秒换算为CMSIS-RTOS tick。 */
 static uint32_t mission_ms_to_ticks(uint32_t ms);
+/** 计算Mission任务等待当前状态超时所需的tick。 */
 static uint32_t mission_wait_ticks(const mission_context_t *ctx);
+/** Mission主任务入口，串行处理命令、底盘和设备事件。 */
 static void mission_task_entry(void *argument);
+/** 机械臂命令发送完成回调；发送失败时唤醒Mission。 */
 static void mission_arm_tx_done(
     void *user_ctx,
     uint32_t request_id,
     lsc16_status_t status);
+/** 机械臂动作组完成回调；把成功或失败结果通知Mission。 */
 static void mission_arm_report(
     void *user_ctx,
     uint32_t report_events,
     const lsc16_report_t *report);
+/** Nano视觉复用串口事务完成回调。 */
 static void mission_vision_done(
     void *user_ctx,
     const mux_completion_t *completion);
+/** IC卡读取完成回调。 */
 static void mission_ic_done(
     void *user_ctx,
     uint32_t request_id,
     ic_card_status_t status,
     const ic_result_t *result);
+/** 转盘电机事务完成回调。 */
 static void mission_zdt_done(
     void *user_ctx,
     uint32_t request_id,
     zdt_turntable_status_t status,
     const zdt_turntable_response_t *response);
+/** 切换Mission状态并设置该状态的超时时间。 */
 static void mission_enter_state(
     mission_context_t *ctx,
     mission_state_t state,
     uint32_t timeout_ms);
+/** 记录故障、停止视觉和底盘，并进入故障状态。 */
 static void mission_fail(mission_context_t *ctx, mission_fault_t fault);
+/** 生成下一条非零底盘请求编号。 */
 static uint16_t mission_next_request_id(mission_context_t *ctx);
+/** 将一条带request_id的命令发到底盘队列。 */
 static bool mission_send_chassis(
     mission_command_type_t type,
     uint16_t request_id);
+/** 启动机械臂动作组并进入指定等待状态。 */
 static bool mission_start_arm(
     mission_context_t *ctx,
     uint8_t action_group,
     mission_state_t wait_state);
+/** 启动指定场景的Nano视觉会话并进入指定等待状态。 */
 static bool mission_start_vision(
     mission_context_t *ctx,
     mission_vision_scene_t scene,
     mission_stair_layer_t layer,
     mission_state_t wait_state);
+/** 请求Nano停止当前视觉会话。 */
 static bool mission_stop_vision(mission_context_t *ctx);
+/** 清空当前视觉会话的本地运行状态。 */
 static void mission_reset_vision(mission_context_t *ctx);
+/** 读取小球IC信息并将车载转盘推进一格。 */
 static bool mission_store_ball(
     mission_context_t *ctx,
     mission_storage_region_t region);
+/** 解析一次Nano事务结果并推进视觉状态。 */
 static void mission_handle_vision(mission_context_t *ctx);
+/** 视觉事务空闲后继续接收数据或启动抓取动作。 */
 static void mission_vision_process(mission_context_t *ctx);
+/** 双方就绪后完成握手并进入READY状态。 */
 static void mission_try_ready(mission_context_t *ctx);
+/** 按指定红蓝方启动一轮正式任务。 */
 static void mission_start_run(mission_context_t *ctx, mission_color_t color);
+/** 启动当前阶梯层视觉；抓满后只放行底盘。 */
 static void mission_start_stair_layer(mission_context_t *ctx);
+/** 将低、高、中层映射到动作组14、15、16。 */
 static uint8_t mission_stair_grasp_group(mission_stair_layer_t layer);
+/** 处理用户START和STOP命令。 */
 static void mission_handle_command(
     mission_context_t *ctx,
     mission_user_command_t command);
+/** 处理底盘上报事件并推进Mission状态。 */
 static void mission_handle_chassis(
     mission_context_t *ctx,
     const chassis_mission_event_t *event);
+/** 处理当前机械臂动作组的完成结果。 */
 static void mission_handle_arm(mission_context_t *ctx, bool success);
+/** 完成一次存球后的计数和后续流程。 */
 static void mission_handle_storage(mission_context_t *ctx);
+/** 检查当前状态是否到期并触发自动启动或故障。 */
 static void mission_check_timeout(mission_context_t *ctx);
 
 /** 把毫秒转换为CMSIS-RTOS tick，非零毫秒至少返回1 tick。 */

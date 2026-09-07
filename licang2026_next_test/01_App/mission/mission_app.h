@@ -92,13 +92,24 @@ typedef struct {
     uint8_t fault_code;
 } mission_app_snapshot_t;
 
-/** 注册现有Device回调，并创建Mission命令队列和唯一Mission任务。 */
+/**
+ * @brief 注册设备回调，并创建Mission命令队列和唯一Mission任务。
+ * @return 初始化结果。
+ */
 mission_app_status_t mission_app_init(void);
 
-/** 从任务上下文提交红方、蓝方或停止命令。 */
+/**
+ * @brief 向Mission任务提交红方、蓝方或停止命令。
+ * @param command 用户命令。
+ * @return 命令入队结果。
+ */
 mission_app_status_t mission_app_submit_command(mission_user_command_t command);
 
-/** 复制当前状态，供调试命令读取。 */
+/**
+ * @brief 复制当前Mission状态供外部查看。
+ * @param snapshot 状态输出缓冲区。
+ * @return 读取结果。
+ */
 mission_app_status_t mission_app_get_snapshot(mission_app_snapshot_t *snapshot);
 
 #ifdef __cplusplus

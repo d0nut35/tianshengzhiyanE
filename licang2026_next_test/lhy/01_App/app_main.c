@@ -54,7 +54,7 @@
 #define APP_LINK_POST_MS     100U   /* 事件入队等待上限，ms */
 
 /* 阶梯横移参数：沿地图 +y 慢速横移，按里程计 y 越过边界分层（边界待实机标定） */
-#define APP_STAIR_VY_MMS     (-100.0f) /* 横移速度，车体系 vy，mm/s */
+#define APP_STAIR_VY_MMS     (-70.0f) /* 横移速度，车体系 vy，mm/s */
 #define APP_STAIR_POLL_MS    10U    /* 横移中命令/位姿轮询周期，ms */
 #define APP_STAIR_HIGH_Y_MM  2700   /* 低层结束、高层起点 y，mm（暂定） */
 #define APP_STAIR_MID_Y_MM   2420   /* 高层结束、中层起点 y，mm（暂定） */
@@ -73,9 +73,9 @@ static uint8_t            g_app_up = 0;  /* 应用启动标志 */
 typedef struct {
     uint16_t               req_id;    /* 阶梯阶段请求编号 */
     chassis_command_type_t layer_evt; /* 当前层事件 CHASSIS_CMD_STAIR_xxx */
-    uint8_t                moving;    /* 1=本层已放行，应处于横移 */
+    uint8_t                moving;    /* 1=低层已放行，全程横移不再清零 */
     uint8_t                paused;    /* 1=收到 STAIR_STOP 尚未恢复 */
-    uint8_t                cam_ready; /* 1=本层已收到 CAM_READY */
+    uint8_t                cam_ready; /* 1=本层事件已被 CAM_READY 确认 */
 } app_stair_ctx_t;
 
 /* 阶梯三层：层事件 + 本层结束 y 边界 */
@@ -466,7 +466,7 @@ static app_status_t app_go_platform(void)
  */
 static app_status_t app_go_stairs(void)
 {
-    if (app_nav_wait((map_point_t){.x_mm = 2030, .y_mm = 2850},
+    if (app_nav_wait((map_point_t){.x_mm = 2050, .y_mm = 2950},
                      0.0f, 500.0f, 60.0f) != APP_OK) {
         APP_LOGE("point 2 nav fail");
         return APP_ERR;
@@ -474,7 +474,7 @@ static app_status_t app_go_stairs(void)
     if (app_seek_line() != APP_OK) {
         return APP_ERR;
     }
-    if (app_align_line((map_point_t){.x_mm = 2130, .y_mm = 2850},
+    if (app_align_line((map_point_t){.x_mm = 2130, .y_mm = 2950},
                        0.0f) != APP_OK) {
         APP_LOGE("point 2 align fail");
         return APP_ERR;
@@ -603,8 +603,9 @@ static void app_link_handshake(void)
  * @brief  阶梯段命令分发：暂停/恢复/放行与层事件解耦，全部非阻塞处理
  * @param  ctx 阶梯运行上下文
  * @param  cmd 出队的 Mission 命令
- * @note   层边界等 CAM_READY 时收到 STOP 直接回 PAUSE（车已停）；
- *         RESUME 后重发本层事件，因 Mission 在 WAIT_PAUSE 丢弃层事件
+ * @note   低层等 CAM_READY 时收到 STOP 直接回 PAUSE（车已停）；
+ *         RESUME 时本层事件尚未被 CAM_READY 确认则重发，因 Mission 在
+ *         WAIT_PAUSE 丢弃层事件（边界与 STAIR_STOP 同时到达时会发生）
  */
 static void app_stair_handle(app_stair_ctx_t *ctx,
                              const chassis_mission_command_t *cmd)
@@ -629,7 +630,7 @@ static void app_stair_handle(app_stair_ctx_t *ctx,
                 (void)csvc_free(0.0f, APP_STAIR_VY_MMS, 0.0f);
             }
             (void)app_link_post(CHASSIS_CMD_STAIR_RESUME, ctx->req_id, 1U);
-            if ((ctx->moving == 0U) && (ctx->cam_ready == 0U)) {
+            if (ctx->cam_ready == 0U) {
                 (void)app_link_post(ctx->layer_evt, ctx->req_id, 1U);
             }
             break;
@@ -665,10 +666,12 @@ static uint8_t app_stair_poll(app_stair_ctx_t *ctx, uint32_t timeout_ticks)
 }
 
 /**
- * @brief  阶梯三层横移：每层上报起点→等 CAM_READY→横移至 y 边界，末了报 STAIRS_FINISHED
+ * @brief  阶梯三层连续横移：低层等 CAM_READY 起步，越过层边界只上报层事件不停车，
+ *         中层走完停车并报 STAIRS_FINISHED
  * @param  req_id 阶梯阶段请求编号
  * @retval APP_OK / APP_ERR=位姿读取或下发失败（已停车）
- * @note   横移中每周期先分发命令再查位姿；暂停期间不判边界
+ * @note   横移中每周期先分发命令再查位姿；暂停期间不判边界；
+ *         切层后 Mission 异步切换视觉，切换期间车仍在走，属识别盲区
  */
 static app_status_t app_stairs_sweep(uint16_t req_id)
 {
@@ -680,18 +683,20 @@ static app_status_t app_stairs_sweep(uint16_t req_id)
 
     ctx.req_id = req_id;
     ctx.paused = 0U;
+    ctx.moving = 0U;
     for (i = 0U; i < (sizeof(g_stair_layers) / sizeof(g_stair_layers[0]));
          i++) {
         ctx.layer_evt = g_stair_layers[i].evt;
-        ctx.moving = 0U;
         ctx.cam_ready = 0U;
         (void)app_link_post(ctx.layer_evt, req_id, 1U);
-        while (ctx.cam_ready == 0U) {
-            (void)app_stair_poll(&ctx, osWaitForever);
-        }
-        ctx.moving = 1U;
-        if (ctx.paused == 0U) {
-            if (csvc_free(0.0f, APP_STAIR_VY_MMS, 0.0f) != CSVC_OK) {
+        if (ctx.moving == 0U) {
+            /* 仅低层起点等放行：机械臂需先到识别姿态 */
+            while (ctx.cam_ready == 0U) {
+                (void)app_stair_poll(&ctx, osWaitForever);
+            }
+            ctx.moving = 1U;
+            if ((ctx.paused == 0U) &&
+                (csvc_free(0.0f, APP_STAIR_VY_MMS, 0.0f) != CSVC_OK)) {
                 APP_LOGE("stair move fail");
                 return APP_ERR;
             }
@@ -710,10 +715,10 @@ static app_status_t app_stairs_sweep(uint16_t req_id)
                 break;
             }
         }
-        if (app_stop_motion() != APP_OK) {
-            return APP_ERR;
-        }
         APP_LOGI("stair layer %u done y=%d", (unsigned)i, (int)pos.y_mm);
+    }
+    if (app_stop_motion() != APP_OK) {
+        return APP_ERR;
     }
     (void)app_link_post(CHASSIS_CMD_STAIRS_FINISHED, req_id, 1U);
     return APP_OK;

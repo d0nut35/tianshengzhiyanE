@@ -28,9 +28,9 @@ typedef uint8_t mission_command_type_t;
 enum {
     MISSION_CMD_NONE = 0U,
     MISSION_CMD_MISSION_READY, /* Mission初始化完成。 */
-    MISSION_CMD_GO_PLATFORM,   /* 执行起点到圆盘工作位。 */
-    MISSION_CMD_GO_STAIRS,     /* 执行圆盘到阶梯工作位。 */
-    MISSION_CMD_CAM_READY,     /* 当前阶梯层视觉已经准备好。 */
+    MISSION_CMD_GO_PLATFORM,   /* 执行起点到圆盘。 */
+    MISSION_CMD_GO_STAIRS,     /* 执行圆盘到阶梯。 */
+    MISSION_CMD_CAM_READY,     /* 阶梯层视觉已准备。 */
     MISSION_CMD_STAIR_STOP,    /* 识别到球，请求暂停横移。 */
     MISSION_CMD_STAIR_RESUME,  /* 抓取完成，请求恢复横移。 */
     MISSION_CMD_STOP,          /* 安全停止当前底盘动作。 */

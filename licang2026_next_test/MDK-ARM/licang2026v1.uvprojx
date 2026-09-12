@@ -1984,6 +1984,36 @@
               <FileType>5</FileType>
               <FilePath>../lhy/01_App/app_main.h</FilePath>
             </File>
+            <File>
+              <FileName>app_link.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../lhy/01_App/app_link.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_link.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../lhy/01_App/app_link.h</FilePath>
+            </File>
+            <File>
+              <FileName>app_route.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../lhy/01_App/app_route.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_route.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../lhy/01_App/app_route.h</FilePath>
+            </File>
+            <File>
+              <FileName>app_stairs.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../lhy/01_App/app_stairs.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_stairs.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../lhy/01_App/app_stairs.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -2008,6 +2038,16 @@
               <FileName>chassis_service.h</FileName>
               <FileType>5</FileType>
               <FilePath>../lhy/02_Service/chassis_service.h</FilePath>
+            </File>
+            <File>
+              <FileName>chassis_align.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../lhy/02_Service/chassis_align.c</FilePath>
+            </File>
+            <File>
+              <FileName>chassis_align.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../lhy/02_Service/chassis_align.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -2143,6 +2183,16 @@
               <FileName>lsensor_config.h</FileName>
               <FileType>5</FileType>
               <FilePath>../lhy/04_Bsp/lsensor/lsensor_config.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>lhy/99_Utils</GroupName>
+          <Files>
+            <File>
+              <FileName>app_util.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../lhy/99_Utils/app_util.h</FilePath>
             </File>
           </Files>
         </Group>

@@ -10,10 +10,13 @@
 
 #include <math.h>
 #include <stddef.h>
+#include "cmsis_os2.h"
 #include "usart.h"
 
 #define HWT101_RX_LEN      64U          /* 单块 DMA 缓冲长度 */
 #define HWT101_TX_TMO      100U         /* 寄存器发送超时，ms */
+#define HWT101_UNLOCK_MS   210U         /* 解锁后到置零帧的间隔，ms */
+#define HWT101_ZERO_MS     510U         /* 置零后到保存帧的间隔，ms */
 #define HWT101_HAS_YAW     1U           /* 本批存在有效 yaw */
 #define HWT101_HAS_GYRO    2U           /* 本批存在有效 Wz */
 #define HWT101_YAW_SCALE   0.0054931640625f /* 180 / 32768 */
@@ -275,6 +278,25 @@ hwt101_status_t hwt101_adp_write_reg(uint8_t reg, uint8_t lo, uint8_t hi)
         return HWT101_ERR_TMO;
     }
     return (ret == HAL_OK) ? HWT101_OK : HWT101_ERR;
+}
+
+/** @copydoc hwt101_adp_boot_cfg */
+hwt101_status_t hwt101_adp_boot_cfg(void)
+{
+    hwt101_status_t ret; /* 首个失败帧的结果 */
+
+    /* 帧间等待由手册规定，失败后仍需等完再发下一帧以保证器件状态确定。 */
+    ret = hwt101_adp_write_reg(HWT101_REG_UNLOCK, HWT101_UNLOCK_DL,
+                               HWT101_UNLOCK_DH);
+    osDelay(HWT101_UNLOCK_MS);
+    if (ret == HWT101_OK) {
+        ret = hwt101_adp_write_reg(HWT101_REG_CALIYAW, 0x00U, 0x00U);
+    }
+    osDelay(HWT101_ZERO_MS);
+    if (ret == HWT101_OK) {
+        ret = hwt101_adp_write_reg(HWT101_REG_SAVE, 0x00U, 0x00U);
+    }
+    return ret;
 }
 
 /** @copydoc hwt101_adp_rx_isr */

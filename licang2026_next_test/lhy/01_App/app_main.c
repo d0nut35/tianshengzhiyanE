@@ -1,23 +1,21 @@
 /**
  * @file    app_main.c
- * @brief   应用入口：上电时序 + 底盘任务调度
- * @author  haoyu
- * @note    - 时序：system_assembly_init → csvc_init → csvc_set_pose
- *          - Mission：app_task 阻塞读 chassis_command_queue 取阶段命令，
- *            到位后经 mission_event_queue 回执（request_id 原样带回）
+ * @brief   应用入口：上电时序 + 底盘任务主流程
+ * @note    - 时序：hwt101 上电配置 → system_assembly_init → csvc_init → 位姿
+ *          - 主流程经 app_link 收 Mission 阶段命令，到位后原样带回 request_id
+ *          - 动作原语在 chassis_align，点表在 app_route，横移在 app_stairs
  */
 
 #include "app_main.h"
 
 #include "cmsis_os2.h"
 
-#include "system_assembly.h"
+#include "app_link.h"
+#include "app_route.h"
+#include "app_stairs.h"
 #include "chassis_service.h"
 #include "hwt101_adaption.h"
-#include "lsensor/lsensor_handler.h"
-
-
-#include "chassis_mission_link.h"
+#include "system_assembly.h"
 
 /* ===== 调试日志：0=不编译进固件，1=经 RTT 输出 ===== */
 #ifndef APP_LOG_EN
@@ -32,63 +30,24 @@
 #define APP_LOGE(fmt, ...)  do {} while (0)
 #endif
 
-#define APP_TASK_STACK    2048U     /* 底盘任务栈字节 */
+#define APP_TASK_STACK    2048U   /* 底盘任务栈字节 */
+#define APP_BOOT_POLL_MS  10U     /* 等应用启动标志的轮询周期，ms */
+#define APP_CSVC_WAIT_MS  1000U   /* 等底盘服务稳定，ms */
 
-/* 第二点白线对齐参数 */
-#define APP_CW_W_DEG      (-5.0f)  /* 顺时针扫描角速度，deg/s */
-#define APP_CCW_W_DEG     5.0f     /* 逆时针扫描角速度，deg/s */
-#define APP_TURN_W_DEG    8.0f      /* 回到中值的角速度，deg/s */
-#define APP_YAW_TOL_DEG   0.8f      /* 回中角度容差，deg */
-#define APP_MID_YAW_OFS   -3.0f      /* 中值补偿，沿 IMU yaw 正向，deg */
-#define APP_SCAN_MS       5U        /* 灰度与 IMU 轮询周期，ms */
-#define APP_STOP_MS       80U       /* 停车后机械稳定时间，ms */
-#define APP_IMU_TMO_MS    200U      /* 等待有效 IMU 角度超时，ms */
-#define APP_IMU_UNLOCK_MS 210U      /* 解锁后到置零帧的间隔，ms */
-#define APP_IMU_ZERO_MS   510U      /* 置零后到保存帧的间隔，ms */
-#define APP_SWEEP_TMO_MS  6000U     /* 单向找线边缘超时，ms */
-#define APP_TURN_TMO_MS   6000U     /* 回到中值角度超时，ms */
-
-/* Mission 链路参数 */
-#define APP_LINK_BOOT_REQ_ID 1U     /* 握手事件的非零请求编号 */
-#define APP_LINK_RETRY_MS    1000U  /* 未收到 Mission 就绪时重发间隔，ms */
-#define APP_LINK_POST_MS     100U   /* 事件入队等待上限，ms */
-
-/* 阶梯横移参数：沿地图 +y 慢速横移，按里程计 y 越过边界分层（边界待实机标定） */
-#define APP_STAIR_VY_MMS     (-70.0f) /* 横移速度，车体系 vy，mm/s */
-#define APP_STAIR_POLL_MS    10U    /* 横移中命令/位姿轮询周期，ms */
-#define APP_STAIR_HIGH_Y_MM  2700   /* 低层结束、高层起点 y，mm（暂定） */
-#define APP_STAIR_MID_Y_MM   2420   /* 高层结束、中层起点 y，mm（暂定） */
-#define APP_STAIR_END_Y_MM   2200   /* 中层结束 y，mm（暂定） */
+/* 暂定配置：协议缺 MISSION_CMD_GO_DEPOT/GO_HOME 及对应 READY 事件，
+ * 仓库与回原点段暂以固定延时替代命令等待，协议补齐后换成 link_wait。 */
+#define APP_ARM_WAIT_MS   10000U  /* 等机械臂夹球完成，ms（暂定） */
+#define APP_DEPOT_WAIT_MS 3000U   /* 仓库段动作占位，ms（暂定） */
+#define APP_HOME_WAIT_MS  3000U   /* 回原点后停留，ms（暂定） */
+#define APP_IDLE_MS       1000U   /* 流程结束后的空转周期，ms */
 
 /* 上电初始位姿（世界系，按场地标定） */
 #define APP_START_X_MM    1200
 #define APP_START_Y_MM    350
 #define APP_START_YAW_DEG 0.0f
 
-static osThreadId_t       g_task = NULL;  /* 底盘任务 */
-static uint8_t            g_nav_fin = 1U; /* 导航完成标志，1=空闲 */
-static uint8_t            g_app_up = 0;  /* 应用启动标志 */
-
-/* 阶梯横移运行上下文：暴露给命令分发，使暂停与层事件互不阻塞 */
-typedef struct {
-    uint16_t               req_id;    /* 阶梯阶段请求编号 */
-    chassis_command_type_t layer_evt; /* 当前层事件 CHASSIS_CMD_STAIR_xxx */
-    uint8_t                moving;    /* 1=低层已放行，全程横移不再清零 */
-    uint8_t                paused;    /* 1=收到 STAIR_STOP 尚未恢复 */
-    uint8_t                cam_ready; /* 1=本层事件已被 CAM_READY 确认 */
-} app_stair_ctx_t;
-
-/* 阶梯三层：层事件 + 本层结束 y 边界 */
-typedef struct {
-    chassis_command_type_t evt;      /* 层起点事件 */
-    int16_t                end_y_mm; /* 本层结束 y，mm */
-} app_stair_layer_t;
-
-static const app_stair_layer_t g_stair_layers[] = {
-    { CHASSIS_CMD_STAIR_LOW,  APP_STAIR_HIGH_Y_MM },
-    { CHASSIS_CMD_STAIR_HIGH, APP_STAIR_MID_Y_MM  },
-    { CHASSIS_CMD_STAIR_MID,  APP_STAIR_END_Y_MM  },
-};
+static osThreadId_t g_task = NULL;  /* 底盘任务 */
+static uint8_t      g_app_up = 0U;  /* 应用启动标志，1=资源就绪 */
 
 static const osThreadAttr_t g_task_attr = {
     .name       = "chassis",
@@ -97,678 +56,45 @@ static const osThreadAttr_t g_task_attr = {
 };
 
 static void app_task(void *arg);
-static uint32_t app_ms_ticks(uint32_t ms);
-static float app_ang_norm(float angle);
-static app_status_t app_get_yaw(float *yaw_deg);
-static app_status_t app_stop_motion(void);
-static app_status_t app_seek_edge(lsensor_id_t id, float wz,
-                                  float *yaw_deg);
-static app_status_t app_turn_mid(float target);
-static app_status_t app_imu_calib(float yaw_deg);
-static app_status_t app_imu_cfg(void);
-static app_status_t app_align_line(map_point_t pos, float yaw_deg);
-static app_status_t app_nav_wait(map_point_t pt, float yaw_deg,
-                                 float v, float w);
-static app_status_t app_seek_line(void);
-static app_status_t app_go_platform(void);
-static app_status_t app_go_stairs(void);
-static app_status_t app_go_depot(void);
-static app_status_t app_go_home(void);
-static app_status_t app_link_post(chassis_command_type_t type,
-                                  uint16_t req_id, uint8_t is_ready);
-static app_status_t app_link_wait(mission_command_type_t type,
-                                  uint16_t *req_id, uint32_t timeout_ticks);
-static void app_link_handshake(void);
-static void app_stair_handle(app_stair_ctx_t *ctx,
-                             const chassis_mission_command_t *cmd);
-static uint8_t app_stair_poll(app_stair_ctx_t *ctx, uint32_t timeout_ticks);
-static app_status_t app_stairs_sweep(uint16_t req_id);
-
-/**
- * @brief  将毫秒转换成当前 CMSIS-OS tick 数
- * @param  ms 毫秒数
- * @retval tick 数，最小为 1
- */
-static uint32_t app_ms_ticks(uint32_t ms)
-{
-    uint32_t tick_hz = osKernelGetTickFreq(); /* OS 每秒 tick 数 */
-    uint32_t ticks;                           /* 换算后的 tick 数 */
-
-    if (tick_hz == 0U) {
-        return 1U;
-    }
-    ticks = ((tick_hz * ms) + 999U) / 1000U;
-    return (ticks == 0U) ? 1U : ticks;
-}
-
-/**
- * @brief  将角度归一化到 [-180, 180)
- * @param  angle 待归一化角度，deg
- * @retval 归一化角度，deg
- */
-static float app_ang_norm(float angle)
-{
-    while (angle >= 180.0f) {
-        angle -= 360.0f;
-    }
-    while (angle < -180.0f) {
-        angle += 360.0f;
-    }
-    return angle;
-}
-
-/**
- * @brief  在限定时间内读取一帧有效 IMU 航向
- * @param  yaw_deg 输出原始航向，deg
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_get_yaw(float *yaw_deg)
-{
-    float gyro = 0.0f;                      /* 附带的 Z 轴角速度 */
-    uint32_t start = osKernelGetTickCount(); /* 超时起点 */
-    uint32_t tmo = app_ms_ticks(APP_IMU_TMO_MS); /* 超时 tick 数 */
-
-    if (yaw_deg == NULL) {
-        return APP_ERR;
-    }
-    while ((osKernelGetTickCount() - start) < tmo) {
-        if (hwt101_adp_read(&gyro, yaw_deg) == HWT101_OK) {
-            return APP_OK;
-        }
-        osDelay(APP_SCAN_MS);
-    }
-    return APP_ERR;
-}
-
-/**
- * @brief  投递停车命令并等待底盘稳定
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_stop_motion(void)
-{
-    if (csvc_free(0.0f, 0.0f, 0.0f) != CSVC_OK) {
-        return APP_ERR;
-    }
-    osDelay(APP_STOP_MS);
-    return APP_OK;
-}
-
-/**
- * @brief  原地旋转至指定灰度传感器由压线变为高电平
- * @param  id      灰度传感器编号
- * @param  wz      旋转角速度，deg/s
- * @param  yaw_deg 高电平触发瞬间的 IMU 原始航向
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_seek_edge(lsensor_id_t id, float wz, float *yaw_deg)
-{
-    lsensor_level_t level;                   /* 当前传感器电平 */
-    float gyro = 0.0f;                       /* 附带的 Z 轴角速度 */
-    float edge_yaw = 0.0f;                   /* 高电平触发瞬间的航向 */
-    uint32_t start = osKernelGetTickCount(); /* 扫描超时起点 */
-    uint32_t tmo = app_ms_ticks(APP_SWEEP_TMO_MS); /* 超时 tick 数 */
-    uint8_t yaw_valid = 0U;                  /* 触发角度有效标志 */
-
-    if (yaw_deg == NULL) {
-        return APP_ERR;
-    }
-    level = lsh_get_level(id);
-    if (level != LSENSOR_LEVEL_LOW) {
-        return APP_ERR;
-    }
-    if (csvc_free(0.0f, 0.0f, wz) != CSVC_OK) {
-        return APP_ERR;
-    }
-    while ((osKernelGetTickCount() - start) < tmo) {
-        level = lsh_get_level(id);
-        if (level == LSENSOR_LEVEL_HIGH) {
-            if (hwt101_adp_read(&gyro, &edge_yaw) == HWT101_OK) {
-                *yaw_deg = edge_yaw;
-                yaw_valid = 1U;
-            }
-            if (app_stop_motion() != APP_OK) {
-                return APP_ERR;
-            }
-            if (yaw_valid != 0U) {
-                return APP_OK;
-            }
-            return app_get_yaw(yaw_deg);
-        }
-        if (level == LSENSOR_LEVEL_INVALID) {
-            break;
-        }
-        osDelay(APP_SCAN_MS);
-    }
-    (void)app_stop_motion();
-    return APP_ERR;
-}
-
-/**
- * @brief  以定速原地旋转到两个白线边缘角度的中值
- * @param  target IMU 原始目标航向，deg
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_turn_mid(float target)
-{
-    float yaw = 0.0f;                         /* 当前 IMU 原始航向 */
-    float err;                                /* 最短航向误差 */
-    float prev_err;                           /* 上次航向误差 */
-    float wz;                                 /* 底盘旋转指令 */
-    uint32_t start = osKernelGetTickCount();  /* 回中超时起点 */
-    uint32_t tmo = app_ms_ticks(APP_TURN_TMO_MS); /* 超时 tick 数 */
-
-    if (app_get_yaw(&yaw) != APP_OK) {
-        return APP_ERR;
-    }
-    err = app_ang_norm(target - yaw);
-    if ((err >= -APP_YAW_TOL_DEG) && (err <= APP_YAW_TOL_DEG)) {
-        return app_stop_motion();
-    }
-
-    /* 底盘命令与 IMU 原始 yaw 同向，按最短误差选择旋转方向。 */
-    wz = (err > 0.0f) ? APP_TURN_W_DEG : -APP_TURN_W_DEG;
-    prev_err = err;
-    if (csvc_free(0.0f, 0.0f, wz) != CSVC_OK) {
-        return APP_ERR;
-    }
-    while ((osKernelGetTickCount() - start) < tmo) {
-        if (app_get_yaw(&yaw) != APP_OK) {
-            break;
-        }
-        err = app_ang_norm(target - yaw);
-        if (((err >= -APP_YAW_TOL_DEG) && (err <= APP_YAW_TOL_DEG)) ||
-            ((err * prev_err) <= 0.0f)) {
-            return app_stop_motion();
-        }
-        prev_err = err;
-        osDelay(APP_SCAN_MS);
-    }
-    (void)app_stop_motion();
-    return APP_ERR;
-}
-
-/**
- * @brief  软件标定：把当前 IMU 航向标定为指定角度（带重试）
- * @param  yaw_deg IMU 帧目标航向，deg
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_imu_calib(float yaw_deg)
-{
-    uint32_t start = osKernelGetTickCount(); /* 超时起点 */
-    uint32_t tmo = app_ms_ticks(APP_IMU_TMO_MS); /* 超时 tick 数 */
-
-    while ((osKernelGetTickCount() - start) < tmo) {
-        if (hwt101_adp_set_yaw(yaw_deg) == HWT101_OK) {
-            return APP_OK;
-        }
-        osDelay(APP_SCAN_MS);
-    }
-    return APP_ERR;
-}
-
-/**
- * @brief  陀螺仪上电配置：解锁 → Z 轴角度置零 → 保存（原 freertos.c Main_task 时序）
- * @retval APP_OK / APP_ERR
- * @note   需在陀螺仪 DMA 接收启动前调用；失败仅影响上电零位，不阻止后续装配
- */
-static app_status_t app_imu_cfg(void)
-{
-    hwt101_status_t ret; /* 寄存器写结果 */
-
-    ret = hwt101_adp_write_reg(HWT101_REG_UNLOCK, HWT101_UNLOCK_DL,
-                               HWT101_UNLOCK_DH);
-    osDelay(APP_IMU_UNLOCK_MS);
-    if (ret == HWT101_OK) {
-        ret = hwt101_adp_write_reg(HWT101_REG_CALIYAW, 0x00U, 0x00U);
-    }
-    osDelay(APP_IMU_ZERO_MS);
-    if (ret == HWT101_OK) {
-        ret = hwt101_adp_write_reg(HWT101_REG_SAVE, 0x00U, 0x00U);
-    }
-    return (ret == HWT101_OK) ? APP_OK : APP_ERR;
-}
-
-/**
- * @brief  扫取白线两侧边缘、回中并按指定位姿软件标定航向
- * @param  pos     对齐完成后的世界系标定坐标
- * @param  yaw_deg 对齐完成后的世界系航向，deg
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_align_line(map_point_t pos, float yaw_deg)
-{
-    float cw_yaw = 0.0f;   /* 5 号离线时的顺时针边缘角度 */
-    float ccw_yaw = 0.0f;  /* 2 号离线时的逆时针边缘角度 */
-    float mid_yaw;         /* 两个边缘的环形角度中值 */
-
-    if (app_seek_edge(LSENSOR_ID_5, APP_CW_W_DEG, &cw_yaw) != APP_OK) {
-        APP_LOGE("sensor 5 edge fail");
-        return APP_ERR;
-    }
-    if (app_seek_edge(LSENSOR_ID_2, APP_CCW_W_DEG, &ccw_yaw) != APP_OK) {
-        APP_LOGE("sensor 2 edge fail");
-        return APP_ERR;
-    }
-    mid_yaw = app_ang_norm(cw_yaw +
-                           (0.5f * app_ang_norm(ccw_yaw - cw_yaw)) +
-                           APP_MID_YAW_OFS);
-    APP_LOGI("line yaw cw=%d ccw=%d mid=%d",
-             (int)cw_yaw, (int)ccw_yaw, (int)mid_yaw);
-    if (app_turn_mid(mid_yaw) != APP_OK) {
-        APP_LOGE("turn mid fail");
-        return APP_ERR;
-    }
-    /* IMU 帧与世界帧反号（chassis 侧取负对齐地图系） */
-    if (app_imu_calib(-yaw_deg) != APP_OK) {
-        APP_LOGE("imu calib fail");
-        return APP_ERR;
-    }
-    if (csvc_set_pose(pos, yaw_deg) != CSVC_OK) {
-        APP_LOGE("set pose fail");
-        return APP_ERR;
-    }
-    return APP_OK;
-}
-
-/**
- * @brief  发起路径导航并阻塞等待到点
- * @param  pt      目标点，世界系 mm
- * @param  yaw_deg 到点航向，deg
- * @param  v       线速度，mm/s
- * @param  w       角速度上限，deg/s
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_nav_wait(map_point_t pt, float yaw_deg,
-                                 float v, float w)
-{
-    g_nav_fin = 0U;
-    if (csvc_nav(CSVC_NAV_PATH, pt, yaw_deg, v, w,
-                 &g_nav_fin) != CSVC_OK) {
-        g_nav_fin = 1U; /* 失败恢复空闲态 */
-        return APP_ERR;
-    }
-    while (g_nav_fin == 0U) {
-        osDelay(10U);
-    }
-    return APP_OK;
-}
-
-/**
- * @brief  右移找线：2、5 号同时压线后停车
- * @retval APP_OK=找到线且已停稳 / APP_ERR
- * @note   无论是否找到线均投递停车命令
- */
-static app_status_t app_seek_line(void)
-{
-    lsensor_level_t sen_2;  /* 2 号循迹传感器电平 */
-    lsensor_level_t sen_5;  /* 5 号循迹传感器电平 */
-    uint8_t found = 0U;     /* 双传感器同时压线标志 */
-
-    if (csvc_free(20.0f, 0.0f, 0.0f) != CSVC_OK) {
-        APP_LOGE("right move fail");
-    } else {
-        for (;;) {
-            sen_2 = lsh_get_level(LSENSOR_ID_2);
-            sen_5 = lsh_get_level(LSENSOR_ID_5);
-            if ((sen_2 == LSENSOR_LEVEL_LOW) &&
-                (sen_5 == LSENSOR_LEVEL_LOW)) {
-                found = 1U;
-                break;
-            }
-            if ((sen_2 == LSENSOR_LEVEL_INVALID) ||
-                (sen_5 == LSENSOR_LEVEL_INVALID)) {
-                APP_LOGE("lsensor invalid");
-                break;
-            }
-            osDelay(APP_SCAN_MS);
-        }
-    }
-    if (csvc_free(0.0f, 0.0f, 0.0f) != CSVC_OK) {
-        APP_LOGE("stop fail");
-        return APP_ERR;
-    }
-    osDelay(20U); /* 等待控制任务执行停车命令 */
-    return (found != 0U) ? APP_OK : APP_ERR;
-}
-
-/**
- * @brief  去圆台并对齐：导航、找线、按 IMU 航向标定位姿
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_go_platform(void)
-{
-    float imu_wz = 0.0f;  /* IMU Z 轴角速度，读取附带量 */
-    float imu_yaw = 0.0f; /* IMU 原始偏航角，deg */
-
-    if (app_nav_wait((map_point_t){.x_mm = 500, .y_mm = 4300},
-                     180.0f, 500.0f, 30.0f) != APP_OK) {
-        APP_LOGE("point 1 nav fail");
-        return APP_ERR;
-    }
-    if (app_seek_line() != APP_OK) {
-        return APP_ERR;
-    }
-    if (hwt101_adp_read(&imu_wz, &imu_yaw) != HWT101_OK) {
-        APP_LOGE("imu read fail");
-        return APP_ERR;
-    }
-    /* IMU 帧与世界帧反号（chassis 侧取负对齐地图系） */
-    if (csvc_set_pose((map_point_t){.x_mm = 450, .y_mm = 4300},
-                      -imu_yaw) != CSVC_OK) {
-        APP_LOGE("set pose fail");
-        return APP_ERR;
-    }
-    return APP_OK;
-}
-
-/**
- * @brief  去阶梯并对齐：导航、找线、白线对齐标定
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_go_stairs(void)
-{
-    if (app_nav_wait((map_point_t){.x_mm = 2050, .y_mm = 2950},
-                     0.0f, 500.0f, 60.0f) != APP_OK) {
-        APP_LOGE("point 2 nav fail");
-        return APP_ERR;
-    }
-    if (app_seek_line() != APP_OK) {
-        return APP_ERR;
-    }
-    if (app_align_line((map_point_t){.x_mm = 2130, .y_mm = 2950},
-                       0.0f) != APP_OK) {
-        APP_LOGE("point 2 align fail");
-        return APP_ERR;
-    }
-    return APP_OK;
-}
-
-/**
- * @brief  去立体仓库并对齐：导航、找线、白线对齐标定
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_go_depot(void)
-{
-    if (app_nav_wait((map_point_t){.x_mm = 480, .y_mm = 2500},
-                     180.0f, 500.0f, 60.0f) != APP_OK) {
-        APP_LOGE("point 3 nav fail");
-        return APP_ERR;
-    }
-    if (app_seek_line() != APP_OK) {
-        return APP_ERR;
-    }
-    if (app_align_line((map_point_t){.x_mm = 380, .y_mm = 2500},
-                       180.0f) != APP_OK) {
-        APP_LOGE("point 3 align fail");
-        return APP_ERR;
-    }
-    return APP_OK;
-}
-
-/**
- * @brief  回原点：直线导航到点（不走 A*），不做找线对齐
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_go_home(void)
-{
-    g_nav_fin = 0U;
-    if (csvc_nav(CSVC_NAV_LINE, (map_point_t){.x_mm = 1200, .y_mm = 350},
-                 180.0f, 500.0f, 30.0f, &g_nav_fin) != CSVC_OK) {
-        g_nav_fin = 1U; /* 失败恢复空闲态 */
-        APP_LOGE("home nav fail");
-        return APP_ERR;
-    }
-    while (g_nav_fin == 0U) {
-        osDelay(10U);
-    }
-    return APP_OK;
-}
-
-/**
- * @brief  向 Mission 事件队列上报一条底盘事件并唤醒 Mission 任务
- * @param  type     事件类型 CHASSIS_CMD_xxx
- * @param  req_id   原样带回的命令请求编号
- * @param  is_ready 1=成功/就绪，0=失败
- * @retval APP_OK / APP_ERR
- */
-static app_status_t app_link_post(chassis_command_type_t type,
-                                  uint16_t req_id, uint8_t is_ready)
-{
-    chassis_mission_event_t evt; /* 待上报事件 */
-
-    evt.request_id = req_id;
-    evt.type = type;
-    evt.is_ready = is_ready;
-    if (!chassis_mission_link_post_event(&evt,
-                                         app_ms_ticks(APP_LINK_POST_MS))) {
-        APP_LOGE("post evt %d fail", (int)type);
-        return APP_ERR;
-    }
-    return APP_OK;
-}
-
-/**
- * @brief  阻塞等待指定 Mission 命令，其余命令丢弃
- * @param  type          期望的命令类型 MISSION_CMD_xxx
- * @param  req_id        输出该命令的请求编号，回执时原样带回
- * @param  timeout_ticks 单次出队等待 tick 数，可为 osWaitForever
- * @retval APP_OK=已收到 / APP_ERR=超时或队列未建立
- * @note   等待期间底盘静止，收到 MISSION_CMD_STOP 直接回 CHASSIS_CMD_STOPPED
- */
-static app_status_t app_link_wait(mission_command_type_t type,
-                                  uint16_t *req_id, uint32_t timeout_ticks)
-{
-    chassis_mission_command_t cmd; /* 出队的 Mission 命令 */
-
-    if ((req_id == NULL) || (chassis_command_queue == NULL)) {
-        return APP_ERR;
-    }
-    for (;;) {
-        if (osMessageQueueGet(chassis_command_queue, &cmd, NULL,
-                              timeout_ticks) != osOK) {
-            return APP_ERR;
-        }
-        if (cmd.type == type) {
-            *req_id = cmd.request_id;
-            return APP_OK;
-        }
-        if (cmd.type == MISSION_CMD_STOP) {
-            (void)app_stop_motion();
-            (void)app_link_post(CHASSIS_CMD_STOPPED, cmd.request_id, 1U);
-        } else {
-            APP_LOGE("drop cmd %d", (int)cmd.type);
-        }
-    }
-}
-
-/**
- * @brief  与 Mission 握手：上报底盘就绪，直到收到 MISSION_CMD_MISSION_READY
- * @note   Mission 只在收到底盘就绪后才回 READY，因此底盘先发、超时重发
- */
-static void app_link_handshake(void)
-{
-    uint16_t req_id; /* Mission 回执编号，握手阶段不使用 */
-
-    for (;;) {
-        (void)app_link_post(CHASSIS_CMD_MISSION_READY,
-                            APP_LINK_BOOT_REQ_ID, 1U);
-        if (app_link_wait(MISSION_CMD_MISSION_READY, &req_id,
-                          app_ms_ticks(APP_LINK_RETRY_MS)) == APP_OK) {
-            APP_LOGI("mission link up");
-            return;
-        }
-    }
-}
-
-/**
- * @brief  阶梯段命令分发：暂停/恢复/放行与层事件解耦，全部非阻塞处理
- * @param  ctx 阶梯运行上下文
- * @param  cmd 出队的 Mission 命令
- * @note   低层等 CAM_READY 时收到 STOP 直接回 PAUSE（车已停）；
- *         RESUME 时本层事件尚未被 CAM_READY 确认则重发，因 Mission 在
- *         WAIT_PAUSE 丢弃层事件（边界与 STAIR_STOP 同时到达时会发生）
- */
-static void app_stair_handle(app_stair_ctx_t *ctx,
-                             const chassis_mission_command_t *cmd)
-{
-    switch (cmd->type) {
-        case MISSION_CMD_CAM_READY:
-            ctx->cam_ready = 1U;
-            break;
-        case MISSION_CMD_STAIR_STOP:
-            if ((ctx->moving != 0U) && (ctx->paused == 0U)) {
-                (void)app_stop_motion();
-            }
-            ctx->paused = 1U;
-            (void)app_link_post(CHASSIS_CMD_STAIR_PAUSE, ctx->req_id, 1U);
-            break;
-        case MISSION_CMD_STAIR_RESUME:
-            if (ctx->paused == 0U) {
-                break;
-            }
-            ctx->paused = 0U;
-            if (ctx->moving != 0U) {
-                (void)csvc_free(0.0f, APP_STAIR_VY_MMS, 0.0f);
-            }
-            (void)app_link_post(CHASSIS_CMD_STAIR_RESUME, ctx->req_id, 1U);
-            if (ctx->cam_ready == 0U) {
-                (void)app_link_post(ctx->layer_evt, ctx->req_id, 1U);
-            }
-            break;
-        case MISSION_CMD_STOP:
-            (void)app_stop_motion();
-            (void)app_link_post(CHASSIS_CMD_STOPPED, cmd->request_id, 1U);
-            break;
-        default:
-            APP_LOGE("drop cmd %d", (int)cmd->type);
-            break;
-    }
-}
-
-/**
- * @brief  限时取一条 Mission 命令并分发
- * @param  ctx           阶梯运行上下文
- * @param  timeout_ticks 出队等待 tick 数，可为 osWaitForever
- * @retval 1=已处理一条命令 / 0=超时或队列未建立
- */
-static uint8_t app_stair_poll(app_stair_ctx_t *ctx, uint32_t timeout_ticks)
-{
-    chassis_mission_command_t cmd; /* 出队的 Mission 命令 */
-
-    if (chassis_command_queue == NULL) {
-        return 0U;
-    }
-    if (osMessageQueueGet(chassis_command_queue, &cmd, NULL,
-                          timeout_ticks) != osOK) {
-        return 0U;
-    }
-    app_stair_handle(ctx, &cmd);
-    return 1U;
-}
-
-/**
- * @brief  阶梯三层连续横移：低层等 CAM_READY 起步，越过层边界只上报层事件不停车，
- *         中层走完停车并报 STAIRS_FINISHED
- * @param  req_id 阶梯阶段请求编号
- * @retval APP_OK / APP_ERR=位姿读取或下发失败（已停车）
- * @note   横移中每周期先分发命令再查位姿；暂停期间不判边界；
- *         切层后 Mission 异步切换视觉，切换期间车仍在走，属识别盲区
- */
-static app_status_t app_stairs_sweep(uint16_t req_id)
-{
-    app_stair_ctx_t ctx;                          /* 运行上下文 */
-    map_point_t     pos = { 0, 0 };               /* 里程计坐标 */
-    float           yaw = 0.0f;                   /* 里程计航向，附带量 */
-    uint32_t        poll = app_ms_ticks(APP_STAIR_POLL_MS); /* 轮询 tick */
-    uint8_t         i;                            /* 层索引 */
-
-    ctx.req_id = req_id;
-    ctx.paused = 0U;
-    ctx.moving = 0U;
-    for (i = 0U; i < (sizeof(g_stair_layers) / sizeof(g_stair_layers[0]));
-         i++) {
-        ctx.layer_evt = g_stair_layers[i].evt;
-        ctx.cam_ready = 0U;
-        (void)app_link_post(ctx.layer_evt, req_id, 1U);
-        if (ctx.moving == 0U) {
-            /* 仅低层起点等放行：机械臂需先到识别姿态 */
-            while (ctx.cam_ready == 0U) {
-                (void)app_stair_poll(&ctx, osWaitForever);
-            }
-            ctx.moving = 1U;
-            if ((ctx.paused == 0U) &&
-                (csvc_free(0.0f, APP_STAIR_VY_MMS, 0.0f) != CSVC_OK)) {
-                APP_LOGE("stair move fail");
-                return APP_ERR;
-            }
-        }
-        for (;;) {
-            (void)app_stair_poll(&ctx, poll);
-            if (ctx.paused != 0U) {
-                continue;
-            }
-            if (csvc_get_pose(&pos, &yaw) != CSVC_OK) {
-                (void)app_stop_motion();
-                APP_LOGE("stair pose fail");
-                return APP_ERR;
-            }
-            if (pos.y_mm <= g_stair_layers[i].end_y_mm) {
-                break;
-            }
-        }
-        APP_LOGI("stair layer %u done y=%d", (unsigned)i, (int)pos.y_mm);
-    }
-    if (app_stop_motion() != APP_OK) {
-        return APP_ERR;
-    }
-    (void)app_link_post(CHASSIS_CMD_STAIRS_FINISHED, req_id, 1U);
-    return APP_OK;
-}
 
 /**
  * @brief  应用主任务：按 Mission 命令串行执行底盘任务点
  * @param  arg 未用
- * @note   握手、去圆盘、去阶梯、三层横移暂停/恢复已接 chassis_mission_link 队列；
- *         仓库/回原点仍为固定延时流程，见 TODO(link)
+ * @note   阶段失败以 is_ready=0 回执，由 Mission 决定停机，底盘不自行中止
  */
 static void app_task(void *arg)
 {
-    uint16_t req_id = CHASSIS_MISSION_REQUEST_ID_INVALID; /* 阶段请求编号 */
-    uint8_t ok;                                           /* 阶段结果，1=成功 */
+    uint16_t id = CHASSIS_MISSION_REQUEST_ID_INVALID; /* 阶段请求编号 */
+    uint8_t  ok;                                      /* 阶段结果，1=成功 */
 
     (void)arg;
-    /* 等待应用启动 */
     while (g_app_up == 0U) {
-        osDelay(10U);
+        osDelay(APP_BOOT_POLL_MS);
     }
+    osDelay(APP_CSVC_WAIT_MS);
+    link_handshake();
 
-    osDelay(1000U); /* 等底盘服务稳定 */
-    app_link_handshake();
-
-    /* 阶段失败以 is_ready=0 回执，由 Mission 决定停机；底盘不自行中止流程 */
-    if (app_link_wait(MISSION_CMD_GO_PLATFORM, &req_id,
-                      osWaitForever) == APP_OK) {
-        ok = (app_go_platform() == APP_OK) ? 1U : 0U;
-        (void)app_link_post(CHASSIS_CMD_PLATFORM_READY, req_id, ok);
+    if (link_wait(MISSION_CMD_GO_PLATFORM, &id, osWaitForever) == APP_OK) {
+        ok = (route_go(ROUTE_PLATFORM) == APP_OK) ? 1U : 0U;
+        (void)link_post(CHASSIS_CMD_PLATFORM_READY, id, ok);
     }
-    // app_go_platform();
-    if (app_link_wait(MISSION_CMD_GO_STAIRS, &req_id,
-                      osWaitForever) == APP_OK) {
-        ok = (app_go_stairs() == APP_OK) ? 1U : 0U;
-        (void)app_link_post(CHASSIS_CMD_STAIRS_READY, req_id, ok);
+    if (link_wait(MISSION_CMD_GO_STAIRS, &id, osWaitForever) == APP_OK) {
+        ok = (route_go(ROUTE_STAIRS) == APP_OK) ? 1U : 0U;
+        (void)link_post(CHASSIS_CMD_STAIRS_READY, id, ok);
         /* 阶梯起始位即低层起点：层事件与 CAM_READY 放行由 sweep 统一处理 */
-        (void)app_stairs_sweep(req_id);
+        (void)stairs_sweep(id);
     }
 
-    osDelay(10000U); /* TODO(link): 改为等机械臂夹球全部完成的命令，协议暂无需补 */
-    /* TODO(link): 仓库/回原点协议暂无，需补 MISSION_CMD_GO_DEPOT/GO_HOME 及对应 READY 事件 */
-    (void)app_go_depot();
-    osDelay(3000U);
-    (void)app_go_home();
-    osDelay(3000U);
+    /* 以下两段为暂定时序，见 APP_ARM_WAIT_MS 处说明 */
+    osDelay(APP_ARM_WAIT_MS);
+    (void)route_go(ROUTE_DEPOT);
+    osDelay(APP_DEPOT_WAIT_MS);
+    (void)route_go(ROUTE_HOME);
+    osDelay(APP_HOME_WAIT_MS);
 
     /* 当前 Mission 流程到此结束，任务保持低功耗等待。 */
     for (;;) {
-        osDelay(1000U);
+        osDelay(APP_IDLE_MS);
     }
 }
 
@@ -777,7 +103,7 @@ app_status_t app_init(void)
     map_point_t start; /* 上电初始位姿坐标 */
 
     /* 0) 陀螺仪上电配置（失败只记日志，后续仍可软件标定航向） */
-    if (app_imu_cfg() != APP_OK) {
+    if (hwt101_adp_boot_cfg() != HWT101_OK) {
         APP_LOGE("imu cfg fail");
     }
     /* 1) 装配电机 + 陀螺仪子系统 */
@@ -802,7 +128,7 @@ app_status_t app_init(void)
         APP_LOGE("app task fail");
         return APP_ERR;
     }
-    g_app_up = 1;
+    g_app_up = 1U;
     APP_LOGI("app up");
     return APP_OK;
 }

@@ -2,7 +2,8 @@
  * @file    app_stairs.c
  * @brief   阶梯三层横移状态机：按里程计 y 分层，暂停/恢复与层事件解耦
  * @note    - 沿地图 +y 反向慢速横移，层边界待实机标定
- *          - 横移中每周期先分发命令再查位姿；暂停期间不判边界
+ *          - 末层不看 y，以 1 号灰度离线（高电平）作为线尾停车条件
+ *          - 横移中每周期先分发命令再查边界；暂停期间不判边界
  *          - 切层后 Mission 异步切换视觉，切换期间车仍在走，属识别盲区
  */
 
@@ -34,7 +35,7 @@
 #define ST_POLL_MS     10U      /* 横移中命令/位姿轮询周期，ms */
 #define ST_HIGH_Y_MM   2700     /* 低层结束、高层起点 y，mm（暂定） */
 #define ST_MID_Y_MM    2420     /* 高层结束、中层起点 y，mm（暂定） */
-#define ST_END_Y_MM    2200     /* 中层结束 y，mm（暂定） */
+#define ST_END_ID      1U       /* 线尾检测灰度板上序号，离线即中层结束 */
 
 /* 运行上下文：暴露给命令钩子，使暂停与层事件互不阻塞 */
 typedef struct {
@@ -45,21 +46,29 @@ typedef struct {
     uint8_t                cam_ready; /* 1=本层事件已被 CAM_READY 确认 */
 } stair_ctx_t;
 
-/* 阶梯三层：层起点事件 + 本层结束 y 边界 */
+/* 层结束判定方式 */
+typedef enum {
+    END_BY_Y = 0,  /* 里程计 y 到达 end_y_mm */
+    END_BY_LINE,   /* ST_END_ID 号灰度离线（高电平） */
+} stair_end_t;
+
+/* 阶梯三层：层起点事件 + 本层结束判定 */
 typedef struct {
     chassis_command_type_t evt;      /* 层起点事件 */
-    int16_t                end_y_mm; /* 本层结束 y，mm */
+    stair_end_t            end;      /* 结束判定方式 */
+    int16_t                end_y_mm; /* END_BY_Y 的结束 y，mm */
 } stair_layer_t;
 
 static const stair_layer_t g_layers[] = {
-    { CHASSIS_CMD_STAIR_LOW,  ST_HIGH_Y_MM },
-    { CHASSIS_CMD_STAIR_HIGH, ST_MID_Y_MM  },
-    { CHASSIS_CMD_STAIR_MID,  ST_END_Y_MM  },
+    { CHASSIS_CMD_STAIR_LOW,  END_BY_Y,    ST_HIGH_Y_MM },
+    { CHASSIS_CMD_STAIR_HIGH, END_BY_Y,    ST_MID_Y_MM  },
+    { CHASSIS_CMD_STAIR_MID,  END_BY_LINE, 0            },
 };
 
 #define ST_LAYER_NUM  (sizeof(g_layers) / sizeof(g_layers[0]))
 
 static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx);
+static app_status_t layer_done(const stair_layer_t *lay, uint8_t *done);
 
 /**
  * @brief  阶梯段命令钩子：暂停/恢复/放行非阻塞处理，其余交默认分发
@@ -104,13 +113,39 @@ static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx)
     return 1U;
 }
 
+/**
+ * @brief  判断当前层是否走到边界
+ * @param  lay  当前层表项
+ * @param  done 输出 1=已到边界
+ * @retval APP_OK / APP_ERR=位姿或灰度读取失败
+ * @note   末层以线尾灰度离线为准，不受横移段里程计累计误差影响
+ */
+static app_status_t layer_done(const stair_layer_t *lay, uint8_t *done)
+{
+    map_point_t pos = { 0, 0 }; /* 里程计坐标 */
+    float       yaw = 0.0f;     /* 里程计航向，附带量 */
+    uint8_t     on_line = 0U;   /* 线尾灰度压线标志 */
+
+    if (lay->end == END_BY_LINE) {
+        if (align_on_line(ST_END_ID, &on_line) != ALIGN_OK) {
+            return APP_ERR;
+        }
+        *done = (on_line == 0U) ? 1U : 0U;
+        return APP_OK;
+    }
+    if (csvc_get_pose(&pos, &yaw) != CSVC_OK) {
+        return APP_ERR;
+    }
+    *done = (pos.y_mm <= lay->end_y_mm) ? 1U : 0U;
+    return APP_OK;
+}
+
 /** @copydoc stairs_sweep */
 app_status_t stairs_sweep(uint16_t req_id)
 {
     stair_ctx_t  ctx;                        /* 运行上下文 */
-    map_point_t  pos = { 0, 0 };             /* 里程计坐标 */
-    float        yaw = 0.0f;                 /* 里程计航向，附带量 */
     uint32_t     poll = util_ms_ticks(ST_POLL_MS); /* 轮询 tick 数 */
+    uint8_t      done = 0U;                  /* 本层到边界标志 */
     uint8_t      i;                          /* 层索引 */
 
     ctx.req_id = req_id;
@@ -137,16 +172,16 @@ app_status_t stairs_sweep(uint16_t req_id)
             if (ctx.paused != 0U) {
                 continue;
             }
-            if (csvc_get_pose(&pos, &yaw) != CSVC_OK) {
+            if (layer_done(&g_layers[i], &done) != APP_OK) {
                 (void)align_stop();
-                ST_LOGE("stair pose fail");
+                ST_LOGE("stair layer %u check fail", (unsigned)i);
                 return APP_ERR;
             }
-            if (pos.y_mm <= g_layers[i].end_y_mm) {
+            if (done != 0U) {
                 break;
             }
         }
-        ST_LOGI("stair layer %u done y=%d", (unsigned)i, (int)pos.y_mm);
+        ST_LOGI("stair layer %u done", (unsigned)i);
     }
     if (align_stop() != ALIGN_OK) {
         return APP_ERR;

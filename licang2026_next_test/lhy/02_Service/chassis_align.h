@@ -13,6 +13,8 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
 #include "map.h"   /* map_point_t：标定坐标（mm） */
 
 /* 状态码：OK==0 */
@@ -33,6 +35,14 @@ align_status_t align_stop(void);
  * @retval ALIGN_OK / ALIGN_ERR
  */
 align_status_t align_yaw_read(float *yaw_deg);
+
+/**
+ * @brief  读取指定灰度当前是否压线
+ * @param  id      板上丝印序号 1~6
+ * @param  on_line 输出 1=压线（低电平）/ 0=离线（高电平）
+ * @retval ALIGN_OK / ALIGN_ERR=入参空、序号非法或灰度未启动
+ */
+align_status_t align_on_line(uint8_t id, uint8_t *on_line);
 
 /**
  * @brief  右移找线：2、5 号同时压线后停车

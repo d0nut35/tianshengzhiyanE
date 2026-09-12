@@ -77,6 +77,22 @@ align_status_t align_yaw_read(float *yaw_deg)
     return ALIGN_ERR;
 }
 
+/** @copydoc align_on_line */
+align_status_t align_on_line(uint8_t id, uint8_t *on_line)
+{
+    lsensor_level_t level; /* 当前传感器电平 */
+
+    if (on_line == NULL) {
+        return ALIGN_ERR;
+    }
+    level = lsh_get_level((lsensor_id_t)id);
+    if (level == LSENSOR_LEVEL_INVALID) {
+        return ALIGN_ERR;
+    }
+    *on_line = (level == LSENSOR_LEVEL_LOW) ? 1U : 0U;
+    return ALIGN_OK;
+}
+
 /**
  * @brief  原地旋转至指定灰度传感器由压线变为高电平
  * @param  id      灰度传感器编号

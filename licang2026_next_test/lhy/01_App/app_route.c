@@ -50,16 +50,22 @@ typedef struct {
 /* 场地坐标待实机标定；表序与 route_id_t 严格一致 */
 static const route_pt_t g_route[ROUTE_NUM] = {
     /* PLATFORM：圆盘工作位，找线后按 IMU 航向标定 */
-    { CSVC_NAV_PATH, { 500, 4300}, 180.0f, 500.0f, 30.0f,
-      { 450, 4300}, FIX_IMU  },
+    { CSVC_NAV_PATH, { 440, 4300}, 180.0f, 500.0f, 30.0f,
+      { 473, 4300}, FIX_IMU  },
     /* STAIRS：阶梯起始工作位，即低层起点 */
-    { CSVC_NAV_PATH, {2050, 2950},   0.0f, 500.0f, 60.0f,
-      {2130, 2950}, FIX_LINE },
-    /* DEPOT：立体仓库工作位 */
-    { CSVC_NAV_PATH, { 480, 2500}, 180.0f, 500.0f, 60.0f,
-      { 380, 2500}, FIX_LINE },
+    { CSVC_NAV_PATH, {2100, 2920},   0.0f, 500.0f, 60.0f,
+      {2107, 2950}, FIX_LINE },
+    /* CYL_PRE：圆柱前置点，先直线到此再平推入位，避免斜穿 */
+    { CSVC_NAV_LINE, {1700, 2520}, 180.0f, 500.0f, 60.0f,
+      {   0,    0}, FIX_NONE },
+    /* CYL：圆柱绕圈起点，到点后由 app_main 定半径绕一圈 */
+    { CSVC_NAV_LINE, {1550, 2560}, 180.0f, 500.0f, 60.0f,
+      {   0,    0}, FIX_NONE },
+    /* DEPOT：立体仓库 1 号工作位，找线标定后作为 2~4 号位横移基准 */
+    { CSVC_NAV_PATH, { 440, 2208}, 180.0f, 500.0f, 60.0f,
+      { 403, 2208}, FIX_LINE },
     /* HOME：起点，直线返回不做找线对齐 */
-    { CSVC_NAV_LINE, {1200,  350}, 180.0f, 500.0f, 30.0f,
+    { CSVC_NAV_LINE, {1270,  350}, 180.0f, 500.0f, 30.0f,
       {   0,    0}, FIX_NONE },
 };
 

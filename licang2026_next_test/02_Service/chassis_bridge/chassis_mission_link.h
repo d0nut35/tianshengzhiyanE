@@ -34,6 +34,10 @@ enum {
     MISSION_CMD_STAIR_STOP,    /* 识别到球，请求暂停横移。 */
     MISSION_CMD_STAIR_RESUME,  /* 抓取完成，请求恢复横移。 */
     MISSION_CMD_STOP,          /* 安全停止当前底盘动作。 */
+    MISSION_CMD_GO_DEPOT_1,    /* 执行回立体仓库工作位1,y坐标2208 */
+    MISSION_CMD_GO_DEPOT_2,    /* 执行回立体仓库工作位2,y坐标2403 */
+    MISSION_CMD_GO_DEPOT_3,    /* 执行回立体仓库工作位3,y坐标2598 */
+    MISSION_CMD_GO_DEPOT_4,    /* 执行回立体仓库工作位4,y坐标2793 */
 };
 
 /** 底盘 -> Mission。 */

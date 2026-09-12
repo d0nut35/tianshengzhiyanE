@@ -18,7 +18,9 @@ extern "C" {
 typedef enum {
     ROUTE_PLATFORM = 0,  /* 圆盘工作位 */
     ROUTE_STAIRS,        /* 阶梯起始工作位，即低层起点 */
-    ROUTE_DEPOT,         /* 立体仓库工作位 */
+    ROUTE_CYL_PRE,       /* 圆柱前置点，直线切入用 */
+    ROUTE_CYL,           /* 圆柱绕圈起点 */
+    ROUTE_DEPOT,         /* 立体仓库 1 号工作位，2~4 号由 app_main 横移到达 */
     ROUTE_HOME,          /* 起点 */
     ROUTE_NUM            /* 任务点总数 */
 } route_id_t;

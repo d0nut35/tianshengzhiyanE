@@ -74,6 +74,14 @@ hwt101_status_t hwt101_adp_set_yaw(float yaw_deg);
 hwt101_status_t hwt101_adp_write_reg(uint8_t reg, uint8_t lo, uint8_t hi);
 
 /**
+ * @brief  上电配置：解锁 → Z 轴硬件置零 → 保存，内部按手册排帧间等待
+ * @note   须在 hwt101_adp_start() 之前于任务上下文调用，阻塞约 720 ms；
+ *         失败只影响上电零位，上层仍可用 set_yaw 软件标定。
+ * @return HWT101_OK / HWT101_ERR_TMO / HWT101_ERR
+ */
+hwt101_status_t hwt101_adp_boot_cfg(void);
+
+/**
  * @brief  接收 ISR 入口：记录长度、使旧缓存失效并切换 DMA 缓冲
  * @param  size 完成块长度，超过 64 字节按容量截断
  * @note   由统一 UART 路由过滤 huart2 后调用；不解析、不阻塞。

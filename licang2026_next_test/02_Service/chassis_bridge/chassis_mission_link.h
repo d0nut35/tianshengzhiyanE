@@ -38,6 +38,7 @@ enum {
     MISSION_CMD_GO_DEPOT_2,    /* 执行回立体仓库工作位2,y坐标2403 */
     MISSION_CMD_GO_DEPOT_3,    /* 执行回立体仓库工作位3,y坐标2598 */
     MISSION_CMD_GO_DEPOT_4,    /* 执行回立体仓库工作位4,y坐标2793 */
+    MISSION_CMD_DEPOT_OK,      /* 立体仓库任务结束,下一步回家 */
 };
 
 /** 底盘 -> Mission。 */

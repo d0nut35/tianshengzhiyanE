@@ -67,6 +67,8 @@ typedef enum {
     NANO_VISION_SCENE_STAIR_HIGH = 3U,
     NANO_VISION_SCENE_STAIR_MID  = 4U,
     NANO_VISION_SCENE_WAREHOUSE_DIGIT = 5U,
+    /* 小圆盘使用独立视觉参数，球事件格式继续复用VISION_EVENT。 */
+    NANO_VISION_SCENE_SMALL_DISC = 6U,
     /* 兼容旧代码；新流程应按具体阶梯层选择场景。 */
     NANO_VISION_SCENE_STAIR      = NANO_VISION_SCENE_STAIR_LOW,
 } nano_vision_scene_t;

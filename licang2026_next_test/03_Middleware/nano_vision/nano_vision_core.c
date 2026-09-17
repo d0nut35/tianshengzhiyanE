@@ -10,7 +10,8 @@ static bool nano_vision_scene_is_valid(nano_vision_scene_t scene)
            (scene == NANO_VISION_SCENE_STAIR_LOW) ||
            (scene == NANO_VISION_SCENE_STAIR_HIGH) ||
            (scene == NANO_VISION_SCENE_STAIR_MID) ||
-           (scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT);
+           (scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT) ||
+           (scene == NANO_VISION_SCENE_SMALL_DISC);
 }
 
 static bool nano_vision_color_is_valid(nano_vision_color_t color)

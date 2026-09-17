@@ -136,6 +136,68 @@ static void test_layered_stair_scenes(void)
     }
 }
 
+static void test_small_disc_scene_codec(void)
+{
+    static const uint8_t start_golden[] = {
+        0xA5U, 0x5AU, 0x01U, 0x02U, 0x01U, 0x04U,
+        0x34U, 0x12U, 0x06U, 0x01U, 0x34U, 0xABU,
+    };
+    static const uint8_t event_golden[] = {
+        0xA5U, 0x5AU, 0x01U, 0x83U, 0x02U, 0x0EU,
+        0x34U, 0x12U, 0x06U, 0x01U, 0x01U, 0x5AU,
+        0x00U, 0x00U, 0x00U, 0x00U, 0x01U, 0x02U,
+        0x18U, 0x00U, 0x9FU, 0x32U,
+    };
+    nano_vision_session_t session = {
+        0x1234U,
+        NANO_VISION_SCENE_SMALL_DISC,
+        NANO_VISION_COLOR_RED,
+    };
+    nano_vision_session_t parsed_session;
+    nano_vision_event_t event;
+    nano_vision_event_t parsed_event;
+    nano_vision_frame_t decoded;
+    uint8_t frame[NANO_VISION_FRAME_MAX];
+    size_t frame_len = 0U;
+
+    /* 场景值和黄金帧必须与Nano端BALL_SMALL_DISC=6完全一致。 */
+    assert(NANO_VISION_SCENE_SMALL_DISC == 6U);
+    assert(nano_vision_build_session_start_frame(
+        1U, &session, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
+    assert(frame_len == sizeof(start_golden));
+    assert(memcmp(frame, start_golden, sizeof(start_golden)) == 0);
+    assert(nano_vision_decode_frame(frame, frame_len, &decoded) == NANO_VISION_OK);
+    assert(nano_vision_parse_session_start(
+        &decoded, &parsed_session) == NANO_VISION_OK);
+    assert(parsed_session.scene == NANO_VISION_SCENE_SMALL_DISC);
+    assert(parsed_session.target_color == NANO_VISION_COLOR_RED);
+
+    event.session_id = session.session_id;
+    event.observation.scene = NANO_VISION_SCENE_SMALL_DISC;
+    event.observation.status = NANO_VISION_OBS_VALID;
+    event.observation.color = NANO_VISION_COLOR_RED;
+    event.observation.quality = 90U;
+    event.observation.offset_x_px = 0;
+    event.observation.offset_y_px = 0;
+    event.observation.frame_id = 513U;
+    event.observation.age_ms = 24U;
+    assert(nano_vision_build_event_frame(
+        2U, &event, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
+    assert(frame_len == sizeof(event_golden));
+    assert(memcmp(frame, event_golden, sizeof(event_golden)) == 0);
+    assert(nano_vision_decode_event(
+        frame, frame_len, &parsed_event) == NANO_VISION_OK);
+    assert(parsed_event.session_id == event.session_id);
+    assert(parsed_event.observation.scene == NANO_VISION_SCENE_SMALL_DISC);
+    assert(parsed_event.observation.color == NANO_VISION_COLOR_RED);
+
+    /* 小圆盘仍是球场景，不能使用仓库数字专用的ANY目标。 */
+    session.target_color = NANO_VISION_COLOR_ANY;
+    assert(nano_vision_build_session_start_frame(
+        3U, &session, frame, sizeof(frame), &frame_len) ==
+        NANO_VISION_ERR_VALUE);
+}
+
 static void test_fragmented_frame(void)
 {
     nano_vision_parser_t parser;
@@ -574,6 +636,7 @@ int main(void)
     test_crc_and_codec();
     test_poll_codec();
     test_layered_stair_scenes();
+    test_small_disc_scene_codec();
     test_fragmented_frame();
     test_sticky_frames_and_crc_recovery();
     test_alignment_requires_consecutive_frames();

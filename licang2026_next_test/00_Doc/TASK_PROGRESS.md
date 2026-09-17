@@ -2,6 +2,12 @@
 
 > 本文件保留旧阶段进度和实验记录，不作为当前状态入口。当前STM32状态读取`00_Doc/CURRENT_STATUS.md`；跨工程任务读取`D:\programfile\licang\00_Context\CURRENT_TASK.md`。
 
+## 0.2 2026-09-18 小圆盘视觉协议Core
+
+- STM32 `nano_vision` Core已增加`NANO_VISION_SCENE_SMALL_DISC = 6`，继续使用原有球视觉`VISION_EVENT`和红蓝目标约束。
+- C端Host测试已用Python端生成的START和EVENT黄金帧核对场景值、Payload、CRC及往返解析；原有协议测试继续通过。
+- 当前只完成双方PC协议兼容，不包含Mission、停车、夹取、底盘绕行或Nano/F7实机验证。
+
 ## 0.1 2026-08-31旧集成工程现场进度快照
 
 本节覆盖下方尚未及时清理的旧“当前状态”描述，后续接手应以本节和最新Git提交为准。

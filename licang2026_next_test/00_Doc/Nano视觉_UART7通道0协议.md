@@ -1,6 +1,6 @@
 # Nano视觉 UART7通道0协议
 
-> 当前范围：本文对应STM32现有视觉协议Core，包含圆盘、低/高/中阶梯球视觉场景，以及仓库数字场景和`DIGIT_EVENT`。仓库数字仅完成双方PC协议测试，尚未完成Nano/F7实机验证和Mission接入。
+> 当前范围：本文对应STM32现有视觉协议Core，包含圆盘、低/高/中阶梯、小圆盘球视觉场景，以及仓库数字场景和`DIGIT_EVENT`。小圆盘和仓库数字仅完成双方PC协议测试，尚未完成Nano/F7实机验证和Mission接入。
 
 ## 1. 边界
 
@@ -10,6 +10,7 @@
 - F7端所有通道0事务必须通过`mult_uart_device_submit()`提交，设备号0映射通道0。
 - 整场任务需要在同一进程内切换圆盘和阶梯三层参数，Nano正式启动必须使用
   `--scene auto --mode auto`；固定场景启动只用于单场景标定和诊断。
+- 小圆盘单独标定时可使用`--scene small_disc --mode auto`，但仍需F7发送场景`6`的会话命令才开始识别。
 - 本协议只冻结当前最小球识别和仓库数字通信语义，不包含底盘、Mission仓库流程或完整比赛状态机。
 - Nano只给出颜色和相对抓取中心的偏差；`BALL_ALIGNED`由F7按容差和连续帧数判定。
 
@@ -50,7 +51,7 @@ CRC参数：多项式`0x1021`、初值`0xFFFF`、不反射、无最终异或；�
 
 | 偏移 | 字段 | 值 |
 |---:|---|---|
-| 0 | SCENE | `1=BALL_TURNTABLE`，`2=BALL_STAIR_LOW`，`3=BALL_STAIR_HIGH`，`4=BALL_STAIR_MID`，`5=WAREHOUSE_DIGIT` |
+| 0 | SCENE | `1=BALL_TURNTABLE`，`2=BALL_STAIR_LOW`，`3=BALL_STAIR_HIGH`，`4=BALL_STAIR_MID`，`5=WAREHOUSE_DIGIT`，`6=BALL_SMALL_DISC` |
 | 1 | TARGET_COLOR | `0=任意`，`1=红`，`2=蓝` |
 
 仓库数字正式流程使用V2会话事件模式，不使用轮询观测结果。
@@ -134,7 +135,7 @@ Nano收到匹配ACK后关闭本session。球流程中，F7在ACK发送完成后�
 2. 场景、目标颜色、结果年龄和X/Y偏差全部满足配置时，才累计一次有效对齐样本。
 3. 任一帧不满足条件、协议错误或事务超时，连续计数立即清零。
 4. 必须达到配置的连续确认帧数才产生`BALL_ALIGNED`；禁止单帧触发抓取。
-5. 当前Core的PC测试参数仅为假数据示例：X容差10 px、Y容差8 px、结果年龄100 ms、连续3帧、连续3次超时离线。真实参数必须在机械安装后分别标定`BALL_TURNTABLE`、`BALL_STAIR_LOW`、`BALL_STAIR_HIGH`和`BALL_STAIR_MID`。
+5. 当前Core的PC测试参数仅为假数据示例：X容差10 px、Y容差8 px、结果年龄100 ms、连续3帧、连续3次超时离线。真实参数必须在机械安装后分别标定`BALL_TURNTABLE`、`BALL_STAIR_LOW`、`BALL_STAIR_HIGH`、`BALL_STAIR_MID`和`BALL_SMALL_DISC`。
 6. F7链路超时或连续事务超时后标记Nano离线，不触发机械臂动作。
 
 ## 7. 当前验证边界
@@ -145,3 +146,4 @@ Nano收到匹配ACK后关闭本session。球流程中，F7在ACK发送完成后�
   低/高/中三层场景的C/Python协议测试及正式Keil链接已通过，Nano/F7分层场景切换实机尚未验证。
 - 仓库数字场景、会话目标约束和`DIGIT_EVENT`的Python/C编解码、共享黄金帧、长度、取值及CRC错误测试已通过。
 - 仓库数字尚未进行Nano/F7串口实机验证，也未接入Mission或底盘仓库流程。
+- 小圆盘场景值`6`、红蓝目标约束、START和`VISION_EVENT`共享黄金帧已通过Python/C测试；Nano/F7实机、Mission和底盘流程尚未验证。

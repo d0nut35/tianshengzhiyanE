@@ -31,6 +31,7 @@ extern "C" {
 #define NANO_VISION_SESSION_ID_PAYLOAD_SIZE  2U
 #define NANO_VISION_EVENT_ACK_PAYLOAD_SIZE   4U
 #define NANO_VISION_EVENT_PAYLOAD_SIZE       14U
+#define NANO_VISION_DIGIT_EVENT_PAYLOAD_SIZE 8U
 
 typedef enum {
     NANO_VISION_OK = 0,
@@ -56,6 +57,7 @@ typedef enum {
     NANO_VISION_MSG_SESSION_READY = 0x82U,
     NANO_VISION_MSG_EVENT         = 0x83U,
     NANO_VISION_MSG_SESSION_STOPPED = 0x84U,
+    NANO_VISION_MSG_DIGIT_EVENT   = 0x85U,
 } nano_vision_message_type_t;
 
 typedef enum {
@@ -64,6 +66,7 @@ typedef enum {
     NANO_VISION_SCENE_STAIR_LOW  = 2U,
     NANO_VISION_SCENE_STAIR_HIGH = 3U,
     NANO_VISION_SCENE_STAIR_MID  = 4U,
+    NANO_VISION_SCENE_WAREHOUSE_DIGIT = 5U,
     /* 兼容旧代码；新流程应按具体阶梯层选择场景。 */
     NANO_VISION_SCENE_STAIR      = NANO_VISION_SCENE_STAIR_LOW,
 } nano_vision_scene_t;
@@ -117,6 +120,19 @@ typedef struct {
     uint16_t session_id;
     nano_vision_observation_t observation;
 } nano_vision_event_t;
+
+/**
+ * @brief 仓库数字识别事件。
+ * @note 线载荷固定为session_id、digit、quality、frame_id、age_ms；
+ *       digit只允许1~3，quality范围为0~100，多字节字段均为小端。
+ */
+typedef struct {
+    uint16_t session_id;
+    uint8_t digit;
+    uint8_t quality;
+    uint16_t frame_id;
+    uint16_t age_ms;
+} nano_vision_digit_event_t;
 
 typedef struct {
     uint8_t version;
@@ -231,6 +247,14 @@ nano_vision_status_t nano_vision_build_event_frame(
     size_t capacity,
     size_t *frame_len);
 
+/** 将仓库数字事件编码为带帧头和CRC的完整协议帧。 */
+nano_vision_status_t nano_vision_build_digit_event_frame(
+    uint8_t sequence,
+    const nano_vision_digit_event_t *event,
+    uint8_t *frame,
+    size_t capacity,
+    size_t *frame_len);
+
 nano_vision_status_t nano_vision_build_event_ack_frame(
     uint8_t sequence,
     const nano_vision_event_ack_t *ack,
@@ -261,6 +285,12 @@ nano_vision_status_t nano_vision_decode_event(
     size_t len,
     nano_vision_event_t *event);
 
+/** 校验完整原始帧的类型、长度、CRC和数字事件字段后直接解析。 */
+nano_vision_status_t nano_vision_decode_digit_event(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_digit_event_t *event);
+
 nano_vision_status_t nano_vision_parse_poll(
     const nano_vision_frame_t *frame,
     nano_vision_poll_t *poll);
@@ -288,6 +318,11 @@ nano_vision_status_t nano_vision_parse_session_stopped(
 nano_vision_status_t nano_vision_parse_event(
     const nano_vision_frame_t *frame,
     nano_vision_event_t *event);
+
+/** 从已经通过通用帧解码的数据中解析仓库数字事件载荷。 */
+nano_vision_status_t nano_vision_parse_digit_event(
+    const nano_vision_frame_t *frame,
+    nano_vision_digit_event_t *event);
 
 nano_vision_status_t nano_vision_parse_event_ack(
     const nano_vision_frame_t *frame,

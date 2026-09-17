@@ -1,6 +1,6 @@
 # Nano视觉 UART7通道0协议
 
-> 当前范围：本文对应STM32现有球视觉协议Core，只包含圆盘和低/高/中阶梯场景。视觉仓库的Python端已经增加仓库数字扩展，但STM32端尚未同步；同步完成前不得用本文宣称仓库数字链路可用。
+> 当前范围：本文对应STM32现有视觉协议Core，包含圆盘、低/高/中阶梯球视觉场景，以及仓库数字场景和`DIGIT_EVENT`。仓库数字仅完成双方PC协议测试，尚未完成Nano/F7实机验证和Mission接入。
 
 ## 1. 边界
 
@@ -10,7 +10,7 @@
 - F7端所有通道0事务必须通过`mult_uart_device_submit()`提交，设备号0映射通道0。
 - 整场任务需要在同一进程内切换圆盘和阶梯三层参数，Nano正式启动必须使用
   `--scene auto --mode auto`；固定场景启动只用于单场景标定和诊断。
-- 本协议只冻结当前最小球识别语义，不包含底盘、圆盘区、积木数字或完整比赛状态机。
+- 本协议只冻结当前最小球识别和仓库数字通信语义，不包含底盘、Mission仓库流程或完整比赛状态机。
 - Nano只给出颜色和相对抓取中心的偏差；`BALL_ALIGNED`由F7按容差和连续帧数判定。
 
 ## 2. 通用帧
@@ -42,6 +42,7 @@ CRC参数：多项式`0x1021`、初值`0xFFFF`、不反射、无最终异或；�
 | `0x82` | Nano→F7 | SESSION_READY |
 | `0x83` | Nano→F7 | VISION_EVENT |
 | `0x84` | Nano→F7 | SESSION_STOPPED |
+| `0x85` | Nano→F7 | DIGIT_EVENT |
 
 ## 3. F7轮询 `TYPE=0x01`
 
@@ -49,8 +50,10 @@ CRC参数：多项式`0x1021`、初值`0xFFFF`、不反射、无最终异或；�
 
 | 偏移 | 字段 | 值 |
 |---:|---|---|
-| 0 | SCENE | `1=BALL_TURNTABLE`，`2=BALL_STAIR_LOW`，`3=BALL_STAIR_HIGH`，`4=BALL_STAIR_MID` |
+| 0 | SCENE | `1=BALL_TURNTABLE`，`2=BALL_STAIR_LOW`，`3=BALL_STAIR_HIGH`，`4=BALL_STAIR_MID`，`5=WAREHOUSE_DIGIT` |
 | 1 | TARGET_COLOR | `0=任意`，`1=红`，`2=蓝` |
+
+仓库数字正式流程使用V2会话事件模式，不使用轮询观测结果。
 
 ## 4. Nano观测 `TYPE=0x81`
 
@@ -73,6 +76,7 @@ CRC参数：多项式`0x1021`、初值`0xFFFF`、不反射、无最终异或；�
 
 载荷均为4字节：`SESSION_ID(u16) + SCENE(u8) + TARGET_COLOR(u8)`。
 `SESSION_ID`由F7递增且不能为0；READY必须回显同一个会话、场景和颜色。
+球场景的`TARGET_COLOR`只能为红或蓝；仓库数字场景必须为任意颜色`0`。
 
 F7发送START时通过`mult_uart_device_submit()`执行WRITE_READ。收到匹配READY后，
 F7通过同一接口提交READ并保持通道0等待视觉事件。等待期间Nano不发送无目标帧，
@@ -89,18 +93,33 @@ F7也不发送POLL；IC和ZDT事务必须等视觉会话结束后再提交。
 时才发送EVENT。一个session只锁存第一个合格事件；未收到ACK时按固定间隔重发
 相同SESSION_ID和FRAME_ID，不能用下一帧覆盖尚未确认的事件。
 
-### 5.3 EVENT_ACK
+### 5.3 仓库数字 DIGIT_EVENT
 
-载荷固定4字节：`SESSION_ID(u16) + FRAME_ID(u16)`。F7只有在CRC、会话、场景、
-颜色、结果年龄以及启动后新帧检查全部通过后才ACK。Nano收到匹配ACK后关闭本session。
-F7在ACK发送完成后才允许触发动作组12，保证Nano不会继续把同一球作为新事件发送。
+载荷固定8字节：
 
-### 5.4 SESSION_STOP / SESSION_STOPPED
+| 偏移 | 长度 | 字段 | 说明 |
+|---:|---:|---|---|
+| 0 | 2 | SESSION_ID | 非零会话号，小端 |
+| 2 | 1 | DIGIT | 只允许`1`、`2`、`3` |
+| 3 | 1 | QUALITY | `0~100` |
+| 4 | 2 | FRAME_ID | Nano相机帧序号，小端，允许自然回绕 |
+| 6 | 2 | AGE_MS | 识别结果年龄，小端 |
+
+仓库数字事件使用现有`EVENT_ACK`确认，ACK中的`SESSION_ID`和`FRAME_ID`必须与事件一致。
+
+### 5.4 EVENT_ACK
+
+载荷固定4字节：`SESSION_ID(u16) + FRAME_ID(u16)`。F7只有在CRC、会话、结果取值、
+结果年龄以及启动后新帧检查全部通过后才ACK；球事件还必须校验场景和颜色。
+Nano收到匹配ACK后关闭本session。球流程中，F7在ACK发送完成后才允许触发动作组12，
+保证Nano不会继续把同一球作为新事件发送。
+
+### 5.5 SESSION_STOP / SESSION_STOPPED
 
 载荷均为`SESSION_ID(u16)`。取消识别时F7发送STOP；Nano清除待发事件并回复STOPPED。
 超时情况下F7允许清理本地session，但不得因此触发机械动作。
 
-### 5.5 多球时序
+### 5.6 多球时序
 
 ```text
 动作11完成 -> 新SESSION_START -> READY -> 等待一次EVENT -> ACK -> 动作12
@@ -124,3 +143,5 @@ F7在ACK发送完成后才允许触发动作组12，保证Nano不会继续把同
 - V2 START/READY/EVENT/ACK/STOP的Python/C编解码、黄金帧、CRC和主机测试已通过。
 - V2 F7任务已接入`mult_uart_device_submit()`的WRITE_READ、READ和WRITE事务；
   低/高/中三层场景的C/Python协议测试及正式Keil链接已通过，Nano/F7分层场景切换实机尚未验证。
+- 仓库数字场景、会话目标约束和`DIGIT_EVENT`的Python/C编解码、共享黄金帧、长度、取值及CRC错误测试已通过。
+- 仓库数字尚未进行Nano/F7串口实机验证，也未接入Mission或底盘仓库流程。

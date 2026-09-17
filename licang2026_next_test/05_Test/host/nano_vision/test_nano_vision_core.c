@@ -35,6 +35,17 @@ static size_t build_observation(uint8_t sequence, uint8_t *frame)
     return frame_len;
 }
 
+static size_t refresh_frame_crc(uint8_t *frame)
+{
+    size_t frame_len = NANO_VISION_HEADER_SIZE + frame[5] +
+                       NANO_VISION_CRC_SIZE;
+    uint16_t crc = nano_vision_crc16_ccitt_false(&frame[2], 4U + frame[5]);
+
+    frame[frame_len - 2U] = (uint8_t)(crc & 0xFFU);
+    frame[frame_len - 1U] = (uint8_t)(crc >> 8U);
+    return frame_len;
+}
+
 static void test_crc_and_codec(void)
 {
     static const uint8_t check[] = "123456789";
@@ -414,6 +425,150 @@ static void test_event_session_codec(void)
         NANO_VISION_ERR_VALUE);
 }
 
+static void test_warehouse_digit_codec(void)
+{
+    static const uint8_t digit_golden[] = {
+        0xA5U, 0x5AU, 0x01U, 0x85U, 0x03U, 0x08U,
+        0x34U, 0x12U, 0x02U, 0x58U, 0x01U, 0x02U,
+        0x18U, 0x00U, 0x60U, 0x0FU,
+    };
+    nano_vision_session_t session = {
+        0x1234U,
+        NANO_VISION_SCENE_WAREHOUSE_DIGIT,
+        NANO_VISION_COLOR_ANY,
+    };
+    nano_vision_session_t parsed_session;
+    nano_vision_digit_event_t event = {
+        0x1234U,
+        2U,
+        88U,
+        513U,
+        24U,
+    };
+    nano_vision_digit_event_t parsed_event;
+    nano_vision_frame_t decoded;
+    uint8_t frame[NANO_VISION_FRAME_MAX];
+    size_t frame_len = 0U;
+    uint8_t digit;
+
+    assert(nano_vision_build_session_start_frame(
+        1U, &session, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
+    assert(nano_vision_decode_frame(frame, frame_len, &decoded) == NANO_VISION_OK);
+    assert(nano_vision_parse_session_start(
+        &decoded, &parsed_session) == NANO_VISION_OK);
+    assert(parsed_session.scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT);
+    assert(parsed_session.target_color == NANO_VISION_COLOR_ANY);
+
+    assert(nano_vision_build_session_ready_frame(
+        1U, &session, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
+    assert(nano_vision_decode_session_ready(
+        frame, frame_len, &parsed_session) == NANO_VISION_OK);
+    assert(parsed_session.scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT);
+    assert(parsed_session.target_color == NANO_VISION_COLOR_ANY);
+
+    for (digit = 1U; digit <= 3U; ++digit) {
+        event.digit = digit;
+        assert(nano_vision_build_digit_event_frame(
+            3U, &event, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
+        if (digit == 2U) {
+            assert(frame_len == sizeof(digit_golden));
+            assert(memcmp(frame, digit_golden, sizeof(digit_golden)) == 0);
+        }
+        assert(nano_vision_decode_frame(
+            frame, frame_len, &decoded) == NANO_VISION_OK);
+        assert(nano_vision_parse_digit_event(
+            &decoded, &parsed_event) == NANO_VISION_OK);
+        assert(parsed_event.session_id == event.session_id);
+        assert(parsed_event.digit == digit);
+        assert(parsed_event.quality == event.quality);
+        assert(parsed_event.frame_id == event.frame_id);
+        assert(parsed_event.age_ms == event.age_ms);
+        assert(nano_vision_decode_digit_event(
+            frame, frame_len, &parsed_event) == NANO_VISION_OK);
+        assert(parsed_event.digit == digit);
+    }
+
+    session.target_color = NANO_VISION_COLOR_RED;
+    assert(nano_vision_build_session_start_frame(
+        4U, &session, frame, sizeof(frame), &frame_len) ==
+        NANO_VISION_ERR_VALUE);
+    session.scene = NANO_VISION_SCENE_TURNTABLE;
+    session.target_color = NANO_VISION_COLOR_ANY;
+    assert(nano_vision_build_session_start_frame(
+        4U, &session, frame, sizeof(frame), &frame_len) ==
+        NANO_VISION_ERR_VALUE);
+}
+
+static void test_warehouse_digit_errors(void)
+{
+    nano_vision_digit_event_t event = {
+        0x1234U,
+        2U,
+        88U,
+        513U,
+        24U,
+    };
+    nano_vision_digit_event_t parsed_event;
+    nano_vision_frame_t decoded;
+    uint8_t frame[NANO_VISION_FRAME_MAX];
+    size_t frame_len = 0U;
+
+    /* 编码入口必须拒绝协议未定义的数字和超范围质量。 */
+    event.digit = 0U;
+    assert(nano_vision_build_digit_event_frame(
+        1U, &event, frame, sizeof(frame), &frame_len) ==
+        NANO_VISION_ERR_VALUE);
+    event.digit = 4U;
+    assert(nano_vision_build_digit_event_frame(
+        1U, &event, frame, sizeof(frame), &frame_len) ==
+        NANO_VISION_ERR_VALUE);
+    event.digit = 2U;
+    event.quality = 101U;
+    assert(nano_vision_build_digit_event_frame(
+        1U, &event, frame, sizeof(frame), &frame_len) ==
+        NANO_VISION_ERR_VALUE);
+    event.quality = 88U;
+
+    /* 重算CRC后确认非法数字由字段校验拒绝，而不是被CRC先拦截。 */
+    assert(nano_vision_build_digit_event_frame(
+        1U, &event, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
+    frame[8] = 0U;
+    frame_len = refresh_frame_crc(frame);
+    assert(nano_vision_decode_digit_event(
+        frame, frame_len, &parsed_event) == NANO_VISION_ERR_VALUE);
+    assert(nano_vision_decode_frame(
+        frame, frame_len, &decoded) == NANO_VISION_OK);
+    assert(nano_vision_parse_digit_event(
+        &decoded, &parsed_event) == NANO_VISION_ERR_VALUE);
+
+    /* 长度字段和CRC均自洽时，数字事件仍必须严格要求8字节载荷。 */
+    assert(nano_vision_build_digit_event_frame(
+        1U, &event, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
+    frame[5] = 7U;
+    frame_len = refresh_frame_crc(frame);
+    assert(nano_vision_decode_digit_event(
+        frame, frame_len, &parsed_event) == NANO_VISION_ERR_LENGTH);
+    assert(nano_vision_decode_frame(
+        frame, frame_len, &decoded) == NANO_VISION_OK);
+    assert(nano_vision_parse_digit_event(
+        &decoded, &parsed_event) == NANO_VISION_ERR_LENGTH);
+
+    assert(nano_vision_build_digit_event_frame(
+        1U, &event, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
+    frame[5] = 9U;
+    frame[14] = 0xAAU;
+    frame_len = refresh_frame_crc(frame);
+    assert(nano_vision_decode_digit_event(
+        frame, frame_len, &parsed_event) == NANO_VISION_ERR_LENGTH);
+
+    /* 保持原CRC后破坏载荷，验证完整帧入口能报告CRC错误。 */
+    assert(nano_vision_build_digit_event_frame(
+        1U, &event, frame, sizeof(frame), &frame_len) == NANO_VISION_OK);
+    frame[8] ^= 0x01U;
+    assert(nano_vision_decode_digit_event(
+        frame, frame_len, &parsed_event) == NANO_VISION_ERR_CRC);
+}
+
 int main(void)
 {
     test_crc_and_codec();
@@ -425,6 +580,8 @@ int main(void)
     test_timeout_disconnect_and_sequence_guard();
     test_early_candidate_accepts_fast_hold_but_keeps_guards();
     test_event_session_codec();
+    test_warehouse_digit_codec();
+    test_warehouse_digit_errors();
     puts("nano_vision_core fake tests passed");
     return 0;
 }

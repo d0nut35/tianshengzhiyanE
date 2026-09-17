@@ -9,7 +9,8 @@ static bool nano_vision_scene_is_valid(nano_vision_scene_t scene)
     return (scene == NANO_VISION_SCENE_TURNTABLE) ||
            (scene == NANO_VISION_SCENE_STAIR_LOW) ||
            (scene == NANO_VISION_SCENE_STAIR_HIGH) ||
-           (scene == NANO_VISION_SCENE_STAIR_MID);
+           (scene == NANO_VISION_SCENE_STAIR_MID) ||
+           (scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT);
 }
 
 static bool nano_vision_color_is_valid(nano_vision_color_t color)
@@ -22,10 +23,16 @@ static bool nano_vision_color_is_valid(nano_vision_color_t color)
 static bool nano_vision_session_is_valid(
     const nano_vision_session_t *session)
 {
-    return (session != NULL) && (session->session_id != 0U) &&
-           nano_vision_scene_is_valid(session->scene) &&
-           ((session->target_color == NANO_VISION_COLOR_RED) ||
-            (session->target_color == NANO_VISION_COLOR_BLUE));
+    if ((session == NULL) || (session->session_id == 0U) ||
+        !nano_vision_scene_is_valid(session->scene)) {
+        return false;
+    }
+    /* 仓库任务不按颜色筛选；球任务仍必须明确指定红色或蓝色。 */
+    if (session->scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT) {
+        return session->target_color == NANO_VISION_COLOR_ANY;
+    }
+    return (session->target_color == NANO_VISION_COLOR_RED) ||
+           (session->target_color == NANO_VISION_COLOR_BLUE);
 }
 
 static bool nano_vision_observation_is_valid_value(
@@ -39,6 +46,14 @@ static bool nano_vision_observation_is_valid_value(
            (observation->quality <= 100U) &&
            ((observation->status != NANO_VISION_OBS_VALID) ||
             (observation->color != NANO_VISION_COLOR_ANY));
+}
+
+static bool nano_vision_digit_event_is_valid(
+    const nano_vision_digit_event_t *event)
+{
+    return (event != NULL) && (event->session_id != 0U) &&
+           (event->digit >= 1U) && (event->digit <= 3U) &&
+           (event->quality <= 100U);
 }
 
 static void nano_vision_write_u16_le(uint8_t *data, uint16_t value)
@@ -263,6 +278,29 @@ nano_vision_status_t nano_vision_build_event_frame(
         frame, capacity, frame_len);
 }
 
+nano_vision_status_t nano_vision_build_digit_event_frame(
+    uint8_t sequence,
+    const nano_vision_digit_event_t *event,
+    uint8_t *frame,
+    size_t capacity,
+    size_t *frame_len)
+{
+    uint8_t payload[NANO_VISION_DIGIT_EVENT_PAYLOAD_SIZE];
+
+    if (!nano_vision_digit_event_is_valid(event)) {
+        return NANO_VISION_ERR_VALUE;
+    }
+    /* 固定8字节载荷：session_id + digit + quality + frame_id + age_ms。 */
+    nano_vision_write_u16_le(payload, event->session_id);
+    payload[2] = event->digit;
+    payload[3] = event->quality;
+    nano_vision_write_u16_le(&payload[4], event->frame_id);
+    nano_vision_write_u16_le(&payload[6], event->age_ms);
+    return nano_vision_build_frame(
+        NANO_VISION_MSG_DIGIT_EVENT, sequence, payload, sizeof(payload),
+        frame, capacity, frame_len);
+}
+
 nano_vision_status_t nano_vision_build_event_ack_frame(
     uint8_t sequence,
     const nano_vision_event_ack_t *ack,
@@ -408,6 +446,28 @@ nano_vision_status_t nano_vision_decode_event(
     return NANO_VISION_OK;
 }
 
+nano_vision_status_t nano_vision_decode_digit_event(
+    const uint8_t *data,
+    size_t len,
+    nano_vision_digit_event_t *event)
+{
+    nano_vision_status_t status;
+
+    if (event == NULL) return NANO_VISION_ERR_PARAM;
+    status = nano_vision_validate_message(
+        data, len, NANO_VISION_MSG_DIGIT_EVENT,
+        NANO_VISION_DIGIT_EVENT_PAYLOAD_SIZE);
+    if (status != NANO_VISION_OK) return status;
+    /* 原始帧载荷从偏移6开始，多字节字段按协议使用小端。 */
+    event->session_id = nano_vision_read_u16_le(&data[6]);
+    event->digit = data[8];
+    event->quality = data[9];
+    event->frame_id = nano_vision_read_u16_le(&data[10]);
+    event->age_ms = nano_vision_read_u16_le(&data[12]);
+    return nano_vision_digit_event_is_valid(event) ?
+        NANO_VISION_OK : NANO_VISION_ERR_VALUE;
+}
+
 nano_vision_status_t nano_vision_parse_poll(
     const nano_vision_frame_t *frame,
     nano_vision_poll_t *poll)
@@ -545,6 +605,27 @@ nano_vision_status_t nano_vision_parse_event(
         return NANO_VISION_ERR_VALUE;
     }
     return NANO_VISION_OK;
+}
+
+nano_vision_status_t nano_vision_parse_digit_event(
+    const nano_vision_frame_t *frame,
+    nano_vision_digit_event_t *event)
+{
+    if ((frame == NULL) || (event == NULL)) return NANO_VISION_ERR_PARAM;
+    if (frame->type != NANO_VISION_MSG_DIGIT_EVENT) {
+        return NANO_VISION_ERR_TYPE;
+    }
+    if (frame->payload_len != NANO_VISION_DIGIT_EVENT_PAYLOAD_SIZE) {
+        return NANO_VISION_ERR_LENGTH;
+    }
+    /* 通用帧已经移除帧头和CRC，此处只按8字节载荷布局取值。 */
+    event->session_id = nano_vision_read_u16_le(frame->payload);
+    event->digit = frame->payload[2];
+    event->quality = frame->payload[3];
+    event->frame_id = nano_vision_read_u16_le(&frame->payload[4]);
+    event->age_ms = nano_vision_read_u16_le(&frame->payload[6]);
+    return nano_vision_digit_event_is_valid(event) ?
+        NANO_VISION_OK : NANO_VISION_ERR_VALUE;
 }
 
 nano_vision_status_t nano_vision_parse_event_ack(

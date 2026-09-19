@@ -18,9 +18,14 @@
 #define MISSION_STAIR_HIGH_GROUP         15U
 #define MISSION_STAIR_MID_GROUP          16U
 #define MISSION_PLATFORM_AVOID_GROUP     17U /* 第五球完成后避开转盘旋转区域 */
+#define MISSION_STAIR_EXIT_GROUP         18U /* 阶梯结束后的撤离过渡姿态 */
+#define MISSION_SMALL_DISC_VISION_GROUP  19U /* 小圆盘绕行识别姿态 */
+#define MISSION_SMALL_DISC_GRASP_GROUP   20U /* 小圆盘抓球并放入车载转盘 */
+#define MISSION_SMALL_DISC_EXIT_GROUP    21U /* 小圆盘结束后的撤离过渡姿态 */
 
 #define MISSION_PLATFORM_BALL_COUNT       5U
 #define MISSION_STAIR_BALL_COUNT          2U
+#define MISSION_SMALL_DISC_BALL_COUNT     2U
 
 /* UART7复用器设备映射：Nano=通道0；IC和转盘映射收在各自Service。 */
 #define MISSION_VISION_DEVICE_ID MUX_DEVICE_0

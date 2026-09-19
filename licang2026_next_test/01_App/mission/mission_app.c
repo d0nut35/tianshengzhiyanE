@@ -40,11 +40,13 @@
 typedef enum {
     MISSION_VISION_SCENE_PLATFORM = 1,
     MISSION_VISION_SCENE_STAIR,
+    MISSION_VISION_SCENE_SMALL_DISC,
 } mission_vision_scene_t;
 
 typedef enum {
     MISSION_STORAGE_REGION_PLATFORM = 1,
     MISSION_STORAGE_REGION_STAIR,
+    MISSION_STORAGE_REGION_SMALL_DISC,
 } mission_storage_region_t;
 
 typedef enum {
@@ -103,6 +105,7 @@ typedef struct {
     /* 比赛流程数据由mission_task_entry唯一写入。 */
     uint8_t platform_balls;
     uint8_t stair_balls;
+    uint8_t small_disc_balls;
     uint8_t storage_slot;
     uint8_t fault_code;
 
@@ -201,6 +204,10 @@ static void mission_start_run(mission_context_t *ctx, mission_color_t color);
 static void mission_start_stair_layer(mission_context_t *ctx);
 /** 将低、高、中层映射到动作组14、15、16。 */
 static uint8_t mission_stair_grasp_group(mission_stair_layer_t layer);
+/** 阶梯视觉结束后执行动作组18，进入小圆盘前的机械臂过渡。 */
+static void mission_start_stair_exit(mission_context_t *ctx);
+/** 小圆盘视觉结束后执行动作组21，再回动作组10进入仓库。 */
+static void mission_start_small_disc_exit(mission_context_t *ctx);
 /** 处理用户START和STOP命令。 */
 static void mission_handle_command(
     mission_context_t *ctx,
@@ -481,6 +488,8 @@ static bool mission_start_vision(
     ctx->vision.session_id = ctx->vision.next_session_id;
     if (scene == MISSION_VISION_SCENE_PLATFORM) {
         ctx->vision.scene = NANO_VISION_SCENE_TURNTABLE;
+    } else if (scene == MISSION_VISION_SCENE_SMALL_DISC) {
+        ctx->vision.scene = NANO_VISION_SCENE_SMALL_DISC;
     } else if (layer == MISSION_STAIR_LOW) {
         ctx->vision.scene = NANO_VISION_SCENE_STAIR_LOW;
     } else if (layer == MISSION_STAIR_HIGH) {
@@ -605,8 +614,15 @@ static bool mission_record_ball(
     ball_manifest_color_t color;
     ball_manifest_status_t status;
 
-    region = (storage_region == MISSION_STORAGE_REGION_PLATFORM) ?
-        BALL_MANIFEST_REGION_TURNTABLE : BALL_MANIFEST_REGION_STAIR;
+    if (storage_region == MISSION_STORAGE_REGION_PLATFORM) {
+        region = BALL_MANIFEST_REGION_TURNTABLE;
+    } else if (storage_region == MISSION_STORAGE_REGION_STAIR) {
+        region = BALL_MANIFEST_REGION_STAIR;
+    } else if (storage_region == MISSION_STORAGE_REGION_SMALL_DISC) {
+        region = BALL_MANIFEST_REGION_PILLAR;
+    } else {
+        return false;
+    }
     color = (ctx->color == MISSION_COLOR_RED) ?
         BALL_MANIFEST_COLOR_RED : BALL_MANIFEST_COLOR_BLUE;
     if (read_ok) {
@@ -783,6 +799,10 @@ static void mission_handle_vision(mission_context_t *ctx)
         mission_reset_vision(ctx);
         if (ctx->state == MISSION_STATE_STAIR_WAIT_LAYER) {
             mission_start_stair_layer(ctx);
+        } else if (ctx->state == MISSION_STATE_STAIR_WAIT_VISION_END) {
+            mission_start_stair_exit(ctx);
+        } else if (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_VISION_END) {
+            mission_start_small_disc_exit(ctx);
         }
         return;
     }
@@ -811,6 +831,24 @@ static void mission_handle_vision(mission_context_t *ctx)
             }
             mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_RESUME,
                                 MISSION_OPERATION_TIMEOUT_MS);
+        } else if (ctx->state ==
+                   MISSION_STATE_SMALL_DISC_WAIT_VISION_START) {
+            if (!mission_send_chassis(MISSION_CMD_SMALL_DISC_START,
+                                      ctx->request_id)) {
+                mission_fail(ctx, MISSION_FAULT_QUEUE);
+                return;
+            }
+            mission_enter_state(ctx, MISSION_STATE_SMALL_DISC_RUNNING,
+                                MISSION_OPERATION_TIMEOUT_MS);
+        } else if (ctx->state ==
+                   MISSION_STATE_SMALL_DISC_WAIT_VISION_RESUME) {
+            if (!mission_send_chassis(MISSION_CMD_SMALL_DISC_RESUME,
+                                      ctx->request_id)) {
+                mission_fail(ctx, MISSION_FAULT_QUEUE);
+                return;
+            }
+            mission_enter_state(ctx, MISSION_STATE_SMALL_DISC_WAIT_RESUME,
+                                MISSION_OPERATION_TIMEOUT_MS);
         } else {
             if (!mission_send_chassis(MISSION_CMD_CAM_READY, ctx->request_id)) {
                 mission_fail(ctx, MISSION_FAULT_QUEUE);
@@ -821,8 +859,13 @@ static void mission_handle_vision(mission_context_t *ctx)
         }
         return;
     }
-    /* 5) 只接收当前会话、当前场景、当前颜色且未过期的小球事件。 */
-    if (ctx->vision.phase != MISSION_VISION_LISTENING) return;
+    /* 5) 只在底盘实际进入对应扫描状态后接收小球事件。 */
+    if ((ctx->vision.phase != MISSION_VISION_LISTENING) ||
+        ((ctx->state != MISSION_STATE_PLATFORM_WAIT_TARGET) &&
+         (ctx->state != MISSION_STATE_STAIR_SCANNING) &&
+         (ctx->state != MISSION_STATE_SMALL_DISC_RUNNING))) {
+        return;
+    }
     status = nano_vision_decode_event(
         ctx->vision.mail_data, ctx->vision.mail_len, &event);
     if ((status != NANO_VISION_OK) ||
@@ -834,7 +877,7 @@ static void mission_handle_vision(mission_context_t *ctx)
         (event.observation.age_ms > MISSION_VISION_EVENT_MAX_AGE_MS)) {
         return;
     }
-    /* 6) 先确认该视觉帧，阶梯场景还要先通知底盘停车。 */
+    /* 6) 先确认该视觉帧；运动中的阶梯和小圆盘还要请求底盘停车。 */
     ack.session_id = ctx->vision.session_id;
     ack.frame_id = event.observation.frame_id;
     status = nano_vision_build_event_ack_frame(
@@ -861,7 +904,15 @@ static void mission_handle_vision(mission_context_t *ctx)
         }
         mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_PAUSE,
                             MISSION_OPERATION_TIMEOUT_MS);
-    } else {
+    } else if (ctx->state == MISSION_STATE_SMALL_DISC_RUNNING) {
+        if (!mission_send_chassis(MISSION_CMD_SMALL_DISC_STOP,
+                                  ctx->request_id)) {
+            mission_fail(ctx, MISSION_FAULT_QUEUE);
+            return;
+        }
+        mission_enter_state(ctx, MISSION_STATE_SMALL_DISC_WAIT_PAUSE,
+                            MISSION_OPERATION_TIMEOUT_MS);
+    } else if (ctx->state == MISSION_STATE_PLATFORM_WAIT_TARGET) {
         /* ACK发送完成后由mission_vision_process启动动作组12。 */
         mission_enter_state(ctx, MISSION_STATE_PLATFORM_WAIT_GRASP,
                             MISSION_OPERATION_TIMEOUT_MS);
@@ -901,6 +952,11 @@ static void mission_vision_process(mission_context_t *ctx)
                 mission_fail(ctx, (grasp_group == 0U) ?
                     MISSION_FAULT_PROTOCOL : MISSION_FAULT_ARM);
             }
+        } else if (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_ACK) {
+            if (!mission_start_arm(ctx, MISSION_SMALL_DISC_GRASP_GROUP,
+                                   MISSION_STATE_SMALL_DISC_WAIT_GRASP)) {
+                mission_fail(ctx, MISSION_FAULT_ARM);
+            }
         }
     }
 }
@@ -939,6 +995,7 @@ static void mission_start_run(mission_context_t *ctx, mission_color_t color)
     ctx->color = color;
     ctx->platform_balls = 0U;
     ctx->stair_balls = 0U;
+    ctx->small_disc_balls = 0U;
     ctx->storage_slot = 0U;
     ctx->fault_code = MISSION_FAULT_NONE;
     /* 2) 请求底盘去圆盘工作位。 */
@@ -995,6 +1052,24 @@ static uint8_t mission_stair_grasp_group(mission_stair_layer_t layer)
         return MISSION_STAIR_MID_GROUP;
     }
     return 0U;
+}
+
+/** 阶梯视觉已停止后，以18到10两段动作保证移动到小圆盘前机械臂安全。 */
+static void mission_start_stair_exit(mission_context_t *ctx)
+{
+    if (!mission_start_arm(ctx, MISSION_STAIR_EXIT_GROUP,
+                           MISSION_STATE_STAIR_WAIT_EXIT)) {
+        mission_fail(ctx, MISSION_FAULT_ARM);
+    }
+}
+
+/** 小圆盘完整绕行后先执行21撤离，再由动作完成分支回到动作组10。 */
+static void mission_start_small_disc_exit(mission_context_t *ctx)
+{
+    if (!mission_start_arm(ctx, MISSION_SMALL_DISC_EXIT_GROUP,
+                           MISSION_STATE_SMALL_DISC_WAIT_EXIT)) {
+        mission_fail(ctx, MISSION_FAULT_ARM);
+    }
 }
 
 /** 处理用户命令；非READY启动命令被忽略，STOP在运行阶段始终有效。 */
@@ -1148,18 +1223,67 @@ static void mission_handle_chassis(
                             MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
-    /* 8) 中层走完后停止视觉，当前实现直接结束Mission。 */
+    /* 8) 阶梯走完后停止视觉，再按18、10的顺序准备前往小圆盘。 */
     if (event->type == CHASSIS_CMD_STAIRS_FINISHED) {
-        if ((ctx->vision.phase != MISSION_VISION_IDLE) &&
-            !mission_stop_vision(ctx)) {
-            mission_fail(ctx, MISSION_FAULT_VISION);
-            return;
+        if (ctx->vision.phase != MISSION_VISION_IDLE) {
+            mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_VISION_END,
+                                MISSION_OPERATION_TIMEOUT_MS);
+            if (!mission_stop_vision(ctx)) {
+                mission_fail(ctx, MISSION_FAULT_VISION);
+            }
+        } else {
+            mission_start_stair_exit(ctx);
         }
-        mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
+        return;
+    }
+    /* 9) 小圆盘到位后先执行动作组19，完成后才开启场景6。 */
+    if ((ctx->state == MISSION_STATE_WAIT_SMALL_DISC) &&
+        (event->type == CHASSIS_CMD_SMALL_DISC_READY)) {
+        if (!mission_start_arm(ctx, MISSION_SMALL_DISC_VISION_GROUP,
+                               MISSION_STATE_SMALL_DISC_WAIT_POSE)) {
+            mission_fail(ctx, MISSION_FAULT_ARM);
+        }
+        return;
+    }
+    /* 10) ACK和实际停车都完成后，才允许动作组20抓取并放球。 */
+    if ((ctx->state == MISSION_STATE_SMALL_DISC_WAIT_PAUSE) &&
+        (event->type == CHASSIS_CMD_SMALL_DISC_PAUSED)) {
+        if (ctx->vision.phase == MISSION_VISION_ACKING) {
+            mission_enter_state(ctx, MISSION_STATE_SMALL_DISC_WAIT_ACK,
+                                MISSION_OPERATION_TIMEOUT_MS);
+        } else if (!mission_start_arm(
+                       ctx,
+                       MISSION_SMALL_DISC_GRASP_GROUP,
+                       MISSION_STATE_SMALL_DISC_WAIT_GRASP)) {
+            mission_fail(ctx, MISSION_FAULT_ARM);
+        }
+        return;
+    }
+    /* 11) 底盘确认恢复后继续等待视觉事件或完整绕圈结束。 */
+    if ((ctx->state == MISSION_STATE_SMALL_DISC_WAIT_RESUME) &&
+        (event->type == CHASSIS_CMD_SMALL_DISC_RESUMED)) {
+        mission_enter_state(ctx, MISSION_STATE_SMALL_DISC_RUNNING,
+                            MISSION_OPERATION_TIMEOUT_MS);
+        return;
+    }
+    /* 12) 抓球数量不改变完整绕圈条件；结束后按21、10进入仓库。 */
+    if ((ctx->state == MISSION_STATE_SMALL_DISC_RUNNING) &&
+        (event->type == CHASSIS_CMD_SMALL_DISC_FINISHED)) {
+        if (ctx->vision.phase != MISSION_VISION_IDLE) {
+            mission_enter_state(ctx,
+                                MISSION_STATE_SMALL_DISC_WAIT_VISION_END,
+                                MISSION_OPERATION_TIMEOUT_MS);
+            if (!mission_stop_vision(ctx)) {
+                mission_fail(ctx, MISSION_FAULT_VISION);
+            }
+        } else {
+            mission_start_small_disc_exit(ctx);
+        }
+        return;
     }
 }
 
-/** 处理唯一在途动作组结果，并按圆盘或阶梯子流程继续。 */
+/** 处理唯一在途动作组结果，并按圆盘、阶梯或小圆盘子流程继续。 */
 static void mission_handle_arm(mission_context_t *ctx, bool success)
 {
     /* 0) 只处理当前状态正在等待的动作组回报。 */
@@ -1171,7 +1295,14 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         (ctx->state != MISSION_STATE_PLATFORM_WAIT_DEPARTURE_POSE) &&
         (ctx->state != MISSION_STATE_STAIR_WAIT_POSE) &&
         (ctx->state != MISSION_STATE_STAIR_WAIT_GRASP) &&
-        (ctx->state != MISSION_STATE_STAIR_WAIT_RETURN)) {
+        (ctx->state != MISSION_STATE_STAIR_WAIT_RETURN) &&
+        (ctx->state != MISSION_STATE_STAIR_WAIT_EXIT) &&
+        (ctx->state != MISSION_STATE_STAIR_WAIT_SAFE) &&
+        (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_POSE) &&
+        (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_GRASP) &&
+        (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_RETURN) &&
+        (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_EXIT) &&
+        (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_SAFE)) {
         return;
     }
     /* 1) 任一动作组失败都进入统一故障停车流程。 */
@@ -1279,6 +1410,72 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         } else {
             mission_handle_storage(ctx);
         }
+        return;
+    }
+    /* 9) 阶梯结束先由18过渡到10，再通知底盘前往小圆盘。 */
+    if (ctx->state == MISSION_STATE_STAIR_WAIT_EXIT) {
+        if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
+                               MISSION_STATE_STAIR_WAIT_SAFE)) {
+            mission_fail(ctx, MISSION_FAULT_ARM);
+        }
+        return;
+    }
+    if (ctx->state == MISSION_STATE_STAIR_WAIT_SAFE) {
+        (void)mission_next_request_id(ctx);
+        if (!mission_send_chassis(MISSION_CMD_GO_SMALL_DISC,
+                                  ctx->request_id)) {
+            mission_fail(ctx, MISSION_FAULT_QUEUE);
+            return;
+        }
+        mission_enter_state(ctx, MISSION_STATE_WAIT_SMALL_DISC,
+                            MISSION_OPERATION_TIMEOUT_MS);
+        return;
+    }
+    /* 10) 到达小圆盘后，动作组19到位才启动独立场景6。 */
+    if (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_POSE) {
+        if (!mission_start_vision(
+                ctx,
+                MISSION_VISION_SCENE_SMALL_DISC,
+                MISSION_STAIR_NONE,
+                MISSION_STATE_SMALL_DISC_WAIT_VISION_START)) {
+            mission_fail(ctx, MISSION_FAULT_VISION);
+        }
+        return;
+    }
+    /* 11) 动作组20抓取放球完成后，先回动作组19再读IC和转动转盘。 */
+    if (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_GRASP) {
+        if (!mission_start_arm(ctx, MISSION_SMALL_DISC_VISION_GROUP,
+                               MISSION_STATE_SMALL_DISC_WAIT_RETURN)) {
+            mission_fail(ctx, MISSION_FAULT_ARM);
+        }
+        return;
+    }
+    if (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_RETURN) {
+        mission_enter_state(ctx, MISSION_STATE_SMALL_DISC_WAIT_STORAGE,
+                            MISSION_OPERATION_TIMEOUT_MS);
+        if (!mission_store_ball(ctx, MISSION_STORAGE_REGION_SMALL_DISC)) {
+            mission_fail(ctx, MISSION_FAULT_STORAGE);
+        } else {
+            mission_handle_storage(ctx);
+        }
+        return;
+    }
+    /* 12) 完整绕圈后由21过渡到10，再下发已有仓库1号位命令。 */
+    if (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_EXIT) {
+        if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
+                               MISSION_STATE_SMALL_DISC_WAIT_SAFE)) {
+            mission_fail(ctx, MISSION_FAULT_ARM);
+        }
+        return;
+    }
+    if (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_SAFE) {
+        (void)mission_next_request_id(ctx);
+        if (!mission_send_chassis(MISSION_CMD_GO_DEPOT_1, ctx->request_id)) {
+            mission_fail(ctx, MISSION_FAULT_QUEUE);
+            return;
+        }
+        /* 仓库到位回执尚未定义，先无超时等待后续仓库流程接入。 */
+        mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1, 0U);
     }
 }
 
@@ -1287,9 +1484,10 @@ static void mission_handle_storage(mission_context_t *ctx)
 {
     mission_state_t completed_state = ctx->state;
 
-    /* 0) 只接受圆盘或阶梯存球流程的完成结果。 */
+    /* 0) 只接受圆盘、阶梯或小圆盘存球流程的完成结果。 */
     if ((completed_state != MISSION_STATE_PLATFORM_WAIT_STORAGE) &&
-        (completed_state != MISSION_STATE_STAIR_WAIT_STORAGE)) {
+        (completed_state != MISSION_STATE_STAIR_WAIT_STORAGE) &&
+        (completed_state != MISSION_STATE_SMALL_DISC_WAIT_STORAGE)) {
         return;
     }
     /* 1) 每次读卡和转盘推进成功后占用一个新槽位。 */
@@ -1332,6 +1530,26 @@ static void mission_handle_storage(mission_context_t *ctx)
             mission_fail(ctx, MISSION_FAULT_VISION);
         } else {
             /* 视觉会话就绪后由mission_handle_vision发送STAIR_RESUME。 */
+        }
+        return;
+    }
+    if (completed_state == MISSION_STATE_SMALL_DISC_WAIT_STORAGE) {
+        /* 4) 第一球重新开启场景6；第二球后只恢复并走完整个剩余圆周。 */
+        ++ctx->small_disc_balls;
+        if (ctx->small_disc_balls >= MISSION_SMALL_DISC_BALL_COUNT) {
+            if (!mission_send_chassis(MISSION_CMD_SMALL_DISC_RESUME,
+                                      ctx->request_id)) {
+                mission_fail(ctx, MISSION_FAULT_QUEUE);
+                return;
+            }
+            mission_enter_state(ctx, MISSION_STATE_SMALL_DISC_WAIT_RESUME,
+                                MISSION_OPERATION_TIMEOUT_MS);
+        } else if (!mission_start_vision(
+                       ctx,
+                       MISSION_VISION_SCENE_SMALL_DISC,
+                       MISSION_STAIR_NONE,
+                       MISSION_STATE_SMALL_DISC_WAIT_VISION_RESUME)) {
+            mission_fail(ctx, MISSION_FAULT_VISION);
         }
     }
 }
@@ -1511,6 +1729,7 @@ mission_app_status_t mission_app_get_snapshot(mission_app_snapshot_t *snapshot)
     snapshot->chassis_request_id = ctx->request_id;
     snapshot->platform_balls = ctx->platform_balls;
     snapshot->stair_balls = ctx->stair_balls;
+    snapshot->small_disc_balls = ctx->small_disc_balls;
     snapshot->storage_slot = ctx->storage_slot;
     snapshot->fault_code = ctx->fault_code;
     taskEXIT_CRITICAL();

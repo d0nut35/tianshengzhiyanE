@@ -13,6 +13,7 @@
 #include "app_link.h"
 #include "app_route.h"
 #include "app_stairs.h"
+#include "app_util.h" /* [lyx] 小圆盘绕行使用统一tick换算。 */
 #include "chassis_align.h"
 #include "chassis_service.h"
 #include "hwt101_adaption.h"
@@ -35,9 +36,7 @@
 #define APP_BOOT_POLL_MS  10U     /* 等应用启动标志的轮询周期，ms */
 #define APP_CSVC_WAIT_MS  1000U   /* 等底盘服务稳定，ms */
 
-/* 暂定配置：协议已有 MISSION_CMD_GO_DEPOT_1~4，但 Mission 尚未下发且无对应
- * READY 事件，仓库与回原点段暂以固定延时替代命令等待，补齐后换 link_wait。 */
-#define APP_ARM_WAIT_MS   1000U  /* 等机械臂夹球完成，ms（暂定） */
+/* 暂定配置：仓库尚无 READY 事件，2~4 号位和回原点仍使用固定停留时间。 */
 #define APP_DEPOT_WAIT_MS 3000U   /* 每个仓库工作位停留占位，ms（暂定） */
 #define APP_HOME_WAIT_MS  3000U   /* 回原点后停留，ms（暂定） */
 #define APP_IDLE_MS       1000U   /* 流程结束后的空转周期，ms */
@@ -55,6 +54,8 @@
 #define APP_CYL_V_MMS     200.0f    /* 绕圈线速度，mm/s */
 #define APP_CYL_R_MM      (-350.0f) /* 绕圈半径，符号定转向，mm */
 #define APP_CYL_ARC_MS    11000U    /* 一圈时长，2π·350/200≈11.0s（暂定） */
+/* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
+#define APP_CYL_POLL_MS   10U
 
 /* 仓库横移：1 号位找线标定后沿地图 +y 开环横移到 2~4 号位，不再找线；
  * 航向 180° 时车体系 vy 为负即沿地图 +y 前进 */
@@ -75,24 +76,104 @@ static const osThreadAttr_t g_task_attr = {
     .priority   = osPriorityNormal,
 };
 
+/* [lyx] 小圆盘绕行上下文；暂停时间不计入完整一圈的运动时长。 */
+typedef struct {
+    uint16_t req_id;
+    uint8_t  paused;
+    uint8_t  failed;
+} small_disc_ctx_t;
+
 static void app_task(void *arg);
-static app_status_t cyl_round(void);
+/* [lyx] 小圆盘命令钩子和可暂停绕行流程。 */
+static uint8_t small_disc_hook(
+    const chassis_mission_command_t *cmd,
+    void *ctx);
+static app_status_t small_disc_round(uint16_t req_id);
 static app_status_t depot_shift(int16_t y_mm);
 
 /**
- * @brief  绕圆柱一圈：定半径画圆按固定时长跑完后停车
- * @retval APP_OK / APP_ERR=画圆或停车命令被拒
- * @note   需底盘已在绕圈起点静止；不按里程计判圈，只按 APP_CYL_ARC_MS 计时
+ * @brief  [lyx] 处理小圆盘绕行中的停车和恢复命令
+ * @param  cmd Mission 命令
+ * @param  ctx 小圆盘运行上下文
+ * @retval 1=已消费小圆盘命令 / 0=交给链路默认处理
  */
-static app_status_t cyl_round(void)
+static uint8_t small_disc_hook(
+    const chassis_mission_command_t *cmd,
+    void *ctx)
 {
-    osDelay(APP_CYL_SETTLE_MS);
+    small_disc_ctx_t *disc = (small_disc_ctx_t *)ctx;
+    uint8_t ok = 1U;
+
+    if ((cmd->type != MISSION_CMD_SMALL_DISC_STOP) &&
+        (cmd->type != MISSION_CMD_SMALL_DISC_RESUME)) {
+        return 0U;
+    }
+    if (cmd->request_id != disc->req_id) {
+        return 1U;
+    }
+    if (cmd->type == MISSION_CMD_SMALL_DISC_STOP) {
+        if ((disc->paused == 0U) && (align_stop() != ALIGN_OK)) {
+            ok = 0U;
+        }
+        if (ok != 0U) {
+            disc->paused = 1U;
+        }
+        if (link_post(CHASSIS_CMD_SMALL_DISC_PAUSED,
+                      disc->req_id, ok) != APP_OK) {
+            ok = 0U;
+        }
+    } else {
+        if ((disc->paused != 0U) &&
+            (csvc_arc(APP_CYL_V_MMS, APP_CYL_R_MM, false) != CSVC_OK)) {
+            ok = 0U;
+        }
+        if (ok != 0U) {
+            disc->paused = 0U;
+        }
+        if (link_post(CHASSIS_CMD_SMALL_DISC_RESUMED,
+                      disc->req_id, ok) != APP_OK) {
+            ok = 0U;
+        }
+    }
+    if (ok == 0U) {
+        disc->failed = 1U;
+    }
+    return 1U;
+}
+
+/**
+ * @brief  [lyx] 绕小圆盘完整一圈，并允许视觉触发停车和恢复
+ * @param  req_id 小圆盘阶段请求编号
+ * @retval APP_OK / APP_ERR=画圆、停车、恢复或回执失败
+ * @note   只累计底盘实际运动时间，抓球暂停后仍会补完剩余圆周。
+ */
+static app_status_t small_disc_round(uint16_t req_id)
+{
+    small_disc_ctx_t ctx;
+    uint32_t elapsed = 0U;
+    uint32_t arc_ticks = util_ms_ticks(APP_CYL_ARC_MS);
+    uint32_t poll_ticks = util_ms_ticks(APP_CYL_POLL_MS);
+
+    ctx.req_id = req_id;
+    ctx.paused = 0U;
+    ctx.failed = 0U;
     if (csvc_arc(APP_CYL_V_MMS, APP_CYL_R_MM, false) != CSVC_OK) {
-        APP_LOGE("cyl arc fail");
+        APP_LOGE("small disc arc fail");
         return APP_ERR;
     }
-    osDelay(APP_CYL_ARC_MS);
-    return (align_stop() == ALIGN_OK) ? APP_OK : APP_ERR;
+    while ((elapsed < arc_ticks) && (ctx.failed == 0U)) {
+        uint32_t started = osKernelGetTickCount();
+        uint8_t was_paused = ctx.paused;
+
+        (void)link_poll(small_disc_hook, &ctx, poll_ticks);
+        if (was_paused == 0U) {
+            elapsed += osKernelGetTickCount() - started;
+        }
+    }
+    if ((align_stop() != ALIGN_OK) || (ctx.failed != 0U)) {
+        return APP_ERR;
+    }
+    return APP_OK;
 }
 
 /**
@@ -156,14 +237,24 @@ static void app_task(void *arg)
             (void)csvc_set_pose(pos, yaw);
         }
     }
-    /* 阶梯后去圆柱：经前置点直线切入绕圈起点，再绕圆柱一圈 */
-    if ((route_go(ROUTE_CYL_PRE) == APP_OK) &&
-        (route_go(ROUTE_CYL) == APP_OK)) {
-        (void)cyl_round();
+    /* [lyx] 阶梯结束后等待上层放行，再进入小圆盘识别和可暂停绕行流程。 */
+    if (link_wait(MISSION_CMD_GO_SMALL_DISC, &id, osWaitForever) == APP_OK) {
+        ok = ((route_go(ROUTE_CYL_PRE) == APP_OK) &&
+              (route_go(ROUTE_CYL) == APP_OK)) ? 1U : 0U;
+        if (ok != 0U) {
+            osDelay(APP_CYL_SETTLE_MS);
+        }
+        (void)link_post(CHASSIS_CMD_SMALL_DISC_READY, id, ok);
+        if ((ok != 0U) &&
+            (link_wait(MISSION_CMD_SMALL_DISC_START,
+                       &id, osWaitForever) == APP_OK)) {
+            ok = (small_disc_round(id) == APP_OK) ? 1U : 0U;
+            (void)link_post(CHASSIS_CMD_SMALL_DISC_FINISHED, id, ok);
+        }
     }
 
-    /* 以下为暂定时序，见 APP_ARM_WAIT_MS 处说明 */
-    osDelay(APP_ARM_WAIT_MS);
+    /* [lyx] 小圆盘退出姿态完成后，等待上层下发已有的仓库1号位命令。 */
+    (void)link_wait(MISSION_CMD_GO_DEPOT_1, &id, osWaitForever);
     /* 仓库：1 号位找线标定，再横移轮流到 2~4 号位，每点停留占位；
      * 1 号位失败则位姿不可信，不盲横移直接回家 */
     if (route_go(ROUTE_DEPOT) == APP_OK) {

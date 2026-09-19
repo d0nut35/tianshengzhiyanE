@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define CHASSIS_MISSION_LINK_VERSION       1U
+#define CHASSIS_MISSION_LINK_VERSION       2U
 #define CHASSIS_MISSION_REQUEST_ID_INVALID 0U
 #define CHASSIS_MISSION_QUEUE_DEPTH        8U
 #define CHASSIS_MISSION_FLAG_EVENT         (1UL << 0)
@@ -34,6 +34,11 @@ enum {
     MISSION_CMD_STAIR_STOP,    /* 识别到球，请求暂停横移。 */
     MISSION_CMD_STAIR_RESUME,  /* 抓取完成，请求恢复横移。 */
     MISSION_CMD_STOP,          /* 安全停止当前底盘动作。 */
+    /* 小圆盘阶段命令按前往、启动、停车、恢复顺序连续排列。 */
+    MISSION_CMD_GO_SMALL_DISC,  /* 执行回小圆盘工作位。 */
+    MISSION_CMD_SMALL_DISC_START,  /* 机械臂和视觉就绪，开始完整绕行。 */
+    MISSION_CMD_SMALL_DISC_STOP,   /* 识别到球，请求暂停绕行。 */
+    MISSION_CMD_SMALL_DISC_RESUME, /* 抓取和存球完成，继续剩余绕行。 */
     MISSION_CMD_GO_DEPOT_1,    /* 执行回立体仓库工作位1,y坐标2208 */
     MISSION_CMD_GO_DEPOT_2,    /* 执行回立体仓库工作位2,y坐标2403 */
     MISSION_CMD_GO_DEPOT_3,    /* 执行回立体仓库工作位3,y坐标2598 */
@@ -45,16 +50,20 @@ enum {
 typedef uint8_t chassis_command_type_t;
 enum {
     CHASSIS_CMD_NONE = 0U,
-    CHASSIS_CMD_MISSION_READY,   /* 底盘初始化完成。 */
-    CHASSIS_CMD_PLATFORM_READY,  /* 已到圆盘工作位。 */
-    CHASSIS_CMD_STAIRS_READY,    /* 已到阶梯起始工作位。 */
-    CHASSIS_CMD_STAIR_LOW,       /* 低层扫描段就绪。 */
-    CHASSIS_CMD_STAIR_HIGH,      /* 高层扫描段就绪。 */
-    CHASSIS_CMD_STAIR_MID,       /* 中层扫描段就绪。 */
-    CHASSIS_CMD_STAIR_PAUSE,     /* 横移已经实际暂停。 */
-    CHASSIS_CMD_STAIR_RESUME,    /* 横移已经恢复。 */
-    CHASSIS_CMD_STAIRS_FINISHED, /* 中层结束，阶梯路段完成。 */
-    CHASSIS_CMD_STOPPED,         /* 底盘已经停止。 */
+    CHASSIS_CMD_MISSION_READY,          /* 底盘初始化完成。 */
+    CHASSIS_CMD_PLATFORM_READY,         /* 已到圆盘工作位。 */
+    CHASSIS_CMD_STAIRS_READY,           /* 已到阶梯起始工作位。 */
+    CHASSIS_CMD_STAIR_LOW,              /* 低层扫描段就绪。 */
+    CHASSIS_CMD_STAIR_HIGH,             /* 高层扫描段就绪。 */
+    CHASSIS_CMD_STAIR_MID,              /* 中层扫描段就绪。 */
+    CHASSIS_CMD_STAIR_PAUSE,            /* 横移已经实际暂停。 */
+    CHASSIS_CMD_STAIR_RESUME,           /* 横移已经恢复。 */
+    CHASSIS_CMD_STAIRS_FINISHED,        /* 中层结束，阶梯路段完成。 */
+    CHASSIS_CMD_STOPPED,                /* 底盘已经停止。 */
+    CHASSIS_CMD_SMALL_DISC_READY,       /* 已到绕行起点并实际停车。 */
+    CHASSIS_CMD_SMALL_DISC_PAUSED,      /* 绕行已经实际暂停。 */
+    CHASSIS_CMD_SMALL_DISC_RESUMED,     /* 绕行已经恢复。 */
+    CHASSIS_CMD_SMALL_DISC_FINISHED,    /* 完整一圈结束并实际停车。 */
 };
 
 /** Mission写入底盘命令队列。 */

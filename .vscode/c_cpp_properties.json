@@ -1,7 +1,7 @@
 {
     "configurations": [
         {
-            "name": "STM32F750 FreeRTOS",
+            "name": "STM32F756 FreeRTOS",
             "includePath": [
                 "${workspaceFolder}/licang2026_next_test/**",
                 "${workspaceFolder}/licang2026_next_test/Middlewares/Third_Party/FreeRTOS/Source/include",
@@ -10,7 +10,7 @@
             ],
             "defines": [
                 "USE_HAL_DRIVER",
-                "STM32F750xx",
+                "STM32F756xx",
                 "RTT_USE_ASM=0"
             ],
             "cStandard": "c11",

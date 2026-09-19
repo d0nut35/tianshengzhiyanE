@@ -2,6 +2,14 @@
 
 > 本文件保留旧阶段进度和实验记录，不作为当前状态入口。当前STM32状态读取`00_Doc/CURRENT_STATUS.md`；跨工程任务读取`D:\programfile\licang\00_Context\CURRENT_TASK.md`。
 
+## 0.3 2026-09-19 小圆盘流程与F756迁移检查点
+
+- 小圆盘Mission及底盘链路已实现，底盘新增代码标注`[lyx]`；当前代码沿用定时绕行，尚未整机实测。
+- F750V8T6→F756VGT6器件配置迁移已完成并使用Keil ARMCLANG 6.24全量重建：0错误、0警告。CubeMX截图显示目标型号正确；未重新生成代码，尚未上板验证。
+- Flash链接容量已扩展到1 MiB；map中ROM合计60588字节、RW+ZI合计118224字节。本机下载算法已同步，O3未调整，工程目录暂不改名。当前停点详见`CURRENT_STATUS.md`及外层`CURRENT_TASK.md`。
+- 用户现场反馈当前转盘视觉识别/触发抓取有问题，后续单独重调视觉；本轮未修改视觉仓库代码。
+- 原有Keil本地修改已备份并保留。此前PC测试和历史F750实机结果不能当作F756验证结果。
+
 ## 0.2 2026-09-18 小圆盘视觉协议Core
 
 - STM32 `nano_vision` Core已增加`NANO_VISION_SCENE_SMALL_DISC = 6`，继续使用原有球视觉`VISION_EVENT`和红蓝目标约束。

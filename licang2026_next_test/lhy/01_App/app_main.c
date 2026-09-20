@@ -36,8 +36,6 @@
 #define APP_BOOT_POLL_MS  10U     /* 等应用启动标志的轮询周期，ms */
 #define APP_CSVC_WAIT_MS  1000U   /* 等底盘服务稳定，ms */
 
-/* 暂定配置：仓库尚无 READY 事件，2~4 号位和回原点仍使用固定停留时间。 */
-#define APP_DEPOT_WAIT_MS 3000U   /* 每个仓库工作位停留占位，ms（暂定） */
 #define APP_HOME_WAIT_MS  3000U   /* 回原点后停留，ms（暂定） */
 #define APP_IDLE_MS       1000U   /* 流程结束后的空转周期，ms */
 
@@ -65,10 +63,19 @@
 static osThreadId_t g_task = NULL;  /* 底盘任务 */
 static uint8_t      g_app_up = 0U;  /* 应用启动标志，1=资源就绪 */
 
-/* 仓库 2~4 号工作位 y，按递增排列；1 号位坐标在 app_route 点表 */
-static const int16_t g_depot_y[] = { 2403, 2598, 2793 };
+/* 仓库点位表：Mission 命令 → 目标 y → 到位回执；1 号位由 route_go 到达 */
+static const struct {
+    mission_command_type_t cmd;  /* 期望的 Mission 仓库命令 */
+    int16_t                y_mm; /* 该工作位地图 y，mm */
+    chassis_command_type_t rsp;  /* 到位后回执的事件类型 */
+} g_depot_tbl[] = {
+    { MISSION_CMD_GO_DEPOT_1, 2208, CHASSIS_CMD_DEPOT_1_READY },
+    { MISSION_CMD_GO_DEPOT_2, 2403, CHASSIS_CMD_DEPOT_2_READY },
+    { MISSION_CMD_GO_DEPOT_3, 2598, CHASSIS_CMD_DEPOT_3_READY },
+    { MISSION_CMD_GO_DEPOT_4, 2793, CHASSIS_CMD_DEPOT_4_READY },
+};
 
-#define APP_DEPOT_NUM  (sizeof(g_depot_y) / sizeof(g_depot_y[0]))
+#define DEPOT_TBL_NUM  (sizeof(g_depot_tbl) / sizeof(g_depot_tbl[0]))
 
 static const osThreadAttr_t g_task_attr = {
     .name       = "chassis",
@@ -90,6 +97,7 @@ static uint8_t small_disc_hook(
     void *ctx);
 static app_status_t small_disc_round(uint16_t req_id);
 static app_status_t depot_shift(int16_t y_mm);
+static uint8_t depot_hook(const chassis_mission_command_t *cmd, void *ctx);
 
 /**
  * @brief  [lyx] 处理小圆盘绕行中的停车和恢复命令
@@ -200,6 +208,34 @@ static app_status_t depot_shift(int16_t y_mm)
     return (align_stop() == ALIGN_OK) ? APP_OK : APP_ERR;
 }
 
+/* 仓库命令分发上下文 */
+typedef struct {
+    mission_command_type_t cmd; /* 捕获到的仓库命令类型 */
+    uint16_t               id;  /* 请求编号，回执时原样带回 */
+    uint8_t                got; /* 1=已捕获仓库命令 */
+} depot_ctx_t;
+
+/**
+ * @brief  link_poll 钩子：捕获仓库命令 GO_DEPOT_1~4 与 DEPOT_OK
+ * @param  cmd 出队的 Mission 命令
+ * @param  ctx 仓库分发上下文 depot_ctx_t
+ * @retval 1=命令已消费 / 0=交由 link_poll 走默认处理
+ */
+static uint8_t depot_hook(const chassis_mission_command_t *cmd, void *ctx)
+{
+    depot_ctx_t *depot = (depot_ctx_t *)ctx;
+
+    /* GO_DEPOT_1~DEPOT_OK 在协议中连续排列，区间判断即覆盖全部仓库命令 */
+    if ((cmd->type < MISSION_CMD_GO_DEPOT_1) ||
+        (cmd->type > MISSION_CMD_DEPOT_OK)) {
+        return 0U;
+    }
+    depot->cmd = cmd->type;
+    depot->id  = cmd->request_id;
+    depot->got = 1U;
+    return 1U;
+}
+
 /**
  * @brief  应用主任务：按 Mission 命令串行执行底盘任务点
  * @param  arg 未用
@@ -211,7 +247,7 @@ static void app_task(void *arg)
     uint8_t     ok;                   /* 阶段结果，1=成功 */
     map_point_t pos = { 0, 0 };       /* 阶梯线尾停车处里程计坐标 */
     float       yaw = 0.0f;           /* 阶梯线尾停车处航向，deg */
-    uint8_t     i;                    /* 仓库横移目标索引 */
+    uint8_t     i;                    /* 仓库点位表索引 */
 
     (void)arg;
     while (g_app_up == 0U) {
@@ -255,16 +291,39 @@ static void app_task(void *arg)
 
     /* [lyx] 小圆盘退出姿态完成后，等待上层下发已有的仓库1号位命令。 */
     (void)link_wait(MISSION_CMD_GO_DEPOT_1, &id, osWaitForever);
-    /* 仓库：1 号位找线标定，再横移轮流到 2~4 号位，每点停留占位；
+    /* 仓库：1 号位找线标定作为横移基准，到位后由 Mission 逐点驱动横移；
      * 1 号位失败则位姿不可信，不盲横移直接回家 */
-    if (route_go(ROUTE_DEPOT) == APP_OK) {
-        osDelay(APP_DEPOT_WAIT_MS);
-        for (i = 0U; i < APP_DEPOT_NUM; i++) {
-            if (depot_shift(g_depot_y[i]) != APP_OK) {
-                APP_LOGE("depot shift %u fail", (unsigned)i);
+    ok = (route_go(ROUTE_DEPOT) == APP_OK) ? 1U : 0U;
+    (void)link_post(CHASSIS_CMD_DEPOT_1_READY, id, ok);
+    if (ok != 0U) {
+        depot_ctx_t dctx; /* 仓库命令分发上下文 */
+
+        /* 收到 DEPOT_OK 才退出，其余仓库命令查表横移并回执 */
+        for (;;) {
+            dctx.got = 0U;
+            while (dctx.got == 0U) {
+                (void)link_poll(depot_hook, &dctx, osWaitForever);
+            }
+            if (dctx.cmd == MISSION_CMD_DEPOT_OK) {
                 break;
             }
-            osDelay(APP_DEPOT_WAIT_MS);
+            ok = 0U;
+            for (i = 0U; i < DEPOT_TBL_NUM; i++) {
+                if (g_depot_tbl[i].cmd == dctx.cmd) {
+                    /* 1 号位已由 route_go 到达，重复下发无需再横移 */
+                    if (dctx.cmd == MISSION_CMD_GO_DEPOT_1) {
+                        ok = 1U;
+                    } else {
+                        ok = (depot_shift(g_depot_tbl[i].y_mm) == APP_OK)
+                             ? 1U : 0U;
+                    }
+                    (void)link_post(g_depot_tbl[i].rsp, dctx.id, ok);
+                    break;
+                }
+            }
+            if (ok == 0U) {
+                APP_LOGE("depot cmd %u fail", (unsigned)dctx.cmd);
+            }
         }
     }
     (void)route_go(ROUTE_HOME);

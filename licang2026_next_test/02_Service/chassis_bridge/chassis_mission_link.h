@@ -64,6 +64,11 @@ enum {
     CHASSIS_CMD_SMALL_DISC_PAUSED,      /* 绕行已经实际暂停。 */
     CHASSIS_CMD_SMALL_DISC_RESUMED,     /* 绕行已经恢复。 */
     CHASSIS_CMD_SMALL_DISC_FINISHED,    /* 完整一圈结束并实际停车。 */
+    /* 立体仓库到位回执，与 MISSION_CMD_GO_DEPOT_1~4 一一对应。 */
+    CHASSIS_CMD_DEPOT_1_READY,          /* 已到仓库工作位1。 */
+    CHASSIS_CMD_DEPOT_2_READY,          /* 已到仓库工作位2。 */
+    CHASSIS_CMD_DEPOT_3_READY,          /* 已到仓库工作位3。 */
+    CHASSIS_CMD_DEPOT_4_READY,          /* 已到仓库工作位4。 */
 };
 
 /** Mission写入底盘命令队列。 */

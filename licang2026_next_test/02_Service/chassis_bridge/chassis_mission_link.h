@@ -18,7 +18,8 @@
 extern "C" {
 #endif
 
-#define CHASSIS_MISSION_LINK_VERSION       2U
+/* [lyx] 增加回家到位回执，链路约定版本同步递增。 */
+#define CHASSIS_MISSION_LINK_VERSION       3U
 #define CHASSIS_MISSION_REQUEST_ID_INVALID 0U
 #define CHASSIS_MISSION_QUEUE_DEPTH        8U
 #define CHASSIS_MISSION_FLAG_EVENT         (1UL << 0)
@@ -69,6 +70,7 @@ enum {
     CHASSIS_CMD_DEPOT_2_READY,          /* 已到仓库工作位2。 */
     CHASSIS_CMD_DEPOT_3_READY,          /* 已到仓库工作位3。 */
     CHASSIS_CMD_DEPOT_4_READY,          /* 已到仓库工作位4。 */
+    CHASSIS_CMD_HOME_READY,             /* [lyx] 已到起点并实际停车。 */
 };
 
 /** Mission写入底盘命令队列。 */

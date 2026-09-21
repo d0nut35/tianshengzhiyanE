@@ -314,6 +314,8 @@ static void app_task(void *arg)
                 (void)link_poll(depot_hook, &dctx, osWaitForever);
             }
             if (dctx.cmd == MISSION_CMD_DEPOT_OK) {
+                /* [lyx] 回家到位回执沿用DEPOT_OK请求编号。 */
+                id = dctx.id;
                 break;
             }
             ok = 0U;
@@ -331,7 +333,12 @@ static void app_task(void *arg)
             }
         }
     }
-    (void)route_go(ROUTE_HOME);
+    /* [lyx] 回家后显式保持零速度，确认停车成功后再向Mission回执。 */
+    ok = (route_go(ROUTE_HOME) == APP_OK) ? 1U : 0U;
+    if (align_stop() != ALIGN_OK) {
+        ok = 0U;
+    }
+    (void)link_post(CHASSIS_CMD_HOME_READY, id, ok);
     osDelay(APP_HOME_WAIT_MS);
 
     /* 当前 Mission 流程到此结束，任务保持低功耗等待。 */

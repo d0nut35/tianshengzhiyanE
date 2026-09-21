@@ -12,9 +12,11 @@
 
 /*
  * 底盘整段联调开关：1=动作组10下模拟Mission指令，0=正式比赛流程。
- * 测试依次执行圆盘、阶梯、小圆盘和仓库1→2→3→4→1→3，不启用视觉和抓球。
+ * 测试依次执行圆盘、阶梯、小圆盘和仓库1→2→3→4→1→3→1，再回家；
+ * 不启用视觉和抓球。
  */
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED  1U
+#define MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS 1000U
 
 #define MISSION_HOME_ACTION_GROUP        10U
 #define MISSION_PLATFORM_VISION_GROUP    11U

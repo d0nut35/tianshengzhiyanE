@@ -1710,6 +1710,7 @@ static void mission_chassis_route_test_entry(void *argument)
         MISSION_CMD_GO_DEPOT_4,
         MISSION_CMD_GO_DEPOT_1,
         MISSION_CMD_GO_DEPOT_3,
+        MISSION_CMD_GO_DEPOT_1,
     };
     static const chassis_command_type_t depot_events[] = {
         CHASSIS_CMD_DEPOT_1_READY,
@@ -1718,6 +1719,7 @@ static void mission_chassis_route_test_entry(void *argument)
         CHASSIS_CMD_DEPOT_4_READY,
         CHASSIS_CMD_DEPOT_1_READY,
         CHASSIS_CMD_DEPOT_3_READY,
+        CHASSIS_CMD_DEPOT_1_READY,
     };
     mission_context_t *ctx = (mission_context_t *)argument;
     chassis_mission_event_t event;
@@ -1767,6 +1769,8 @@ static void mission_chassis_route_test_entry(void *argument)
         mission_fail(ctx, MISSION_FAULT_CHASSIS);
         return;
     }
+    /* 圆盘到位后停留1秒，再请求前往阶梯。 */
+    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
 
     /* 2) 阶梯低层事件到达后直接放行，全程不发识别停车命令。 */
     request_id = mission_next_request_id(ctx);
@@ -1778,6 +1782,8 @@ static void mission_chassis_route_test_entry(void *argument)
         mission_fail(ctx, MISSION_FAULT_CHASSIS);
         return;
     }
+    /* 阶梯到位后停留1秒，再放行低层横移。 */
+    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
     for (;;) {
         if (osMessageQueueGet(
                 mission_event_queue, &event, NULL,
@@ -1798,6 +1804,8 @@ static void mission_chassis_route_test_entry(void *argument)
             break;
         }
     }
+    /* 阶梯完成后停留1秒，再请求前往小圆盘。 */
+    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
 
     /* 3) 小圆盘到位后直接开始完整绕行，不触发停车和恢复。 */
     if (!mission_chassis_test_send_wait(
@@ -1807,6 +1815,8 @@ static void mission_chassis_route_test_entry(void *argument)
         mission_fail(ctx, MISSION_FAULT_CHASSIS);
         return;
     }
+    /* 小圆盘到位后停留1秒，再开始完整绕行。 */
+    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
     request_id = ctx->request_id;
     if (!mission_send_chassis(MISSION_CMD_SMALL_DISC_START, request_id) ||
         !mission_chassis_test_wait_event(
@@ -1814,6 +1824,8 @@ static void mission_chassis_route_test_entry(void *argument)
         mission_fail(ctx, MISSION_FAULT_CHASSIS);
         return;
     }
+    /* 小圆盘完整绕行结束后停留1秒，再请求前往仓库。 */
+    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
 
     /* 4) 仓库复用已有点位命令，逐点等待对应READY后再继续。 */
     for (i = 0U; i < (sizeof(depot_commands) / sizeof(depot_commands[0])); i++) {
@@ -1823,10 +1835,19 @@ static void mission_chassis_route_test_entry(void *argument)
             mission_fail(ctx, MISSION_FAULT_CHASSIS);
             return;
         }
+        if (i == 0U) {
+            /* 首次到达仓库1号位后停留1秒，再开始仓库点位测试。 */
+            osDelay(mission_ms_to_ticks(
+                MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
+        }
     }
     request_id = mission_next_request_id(ctx);
-    if (!mission_send_chassis(MISSION_CMD_DEPOT_OK, request_id)) {
-        mission_fail(ctx, MISSION_FAULT_QUEUE);
+    mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1,
+                        MISSION_OPERATION_TIMEOUT_MS);
+    if (!mission_send_chassis(MISSION_CMD_DEPOT_OK, request_id) ||
+        !mission_chassis_test_wait_event(
+            CHASSIS_CMD_HOME_READY, request_id)) {
+        mission_fail(ctx, MISSION_FAULT_CHASSIS);
         return;
     }
     mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);

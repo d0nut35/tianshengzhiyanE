@@ -35,7 +35,7 @@
 #define AL_CCW_W_DEG     5.0f     /* 逆时针扫描角速度，deg/s */
 #define AL_TURN_W_DEG    8.0f     /* 回到中值的角速度，deg/s */
 #define AL_YAW_TOL_DEG   0.8f     /* 回中角度容差，deg */
-#define AL_MID_YAW_OFS   (-3.0f)  /* 中值补偿，沿 IMU yaw 正向，deg */
+#define AL_MID_YAW_OFS   (-1.56f)  /* 中值补偿，沿 IMU yaw 正向，deg */
 #define AL_SEEK_VX_MMS   20.0f    /* 找线时的右移速度，mm/s */
 #define AL_SCAN_MS       5U       /* 灰度与 IMU 轮询周期，ms */
 #define AL_STOP_MS       80U      /* 停车后机械稳定时间，ms */

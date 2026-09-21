@@ -134,6 +134,8 @@ static uint32_t mission_ms_to_ticks(uint32_t ms);
 static uint32_t mission_wait_ticks(const mission_context_t *ctx);
 /** Mission主任务入口，串行处理命令、底盘和设备事件。 */
 static void mission_task_entry(void *argument);
+/** 动作组10下模拟上层指令的底盘整段联调任务。 */
+static void mission_chassis_route_test_entry(void *argument);
 /** 机械臂命令发送完成回调；发送失败时唤醒Mission。 */
 static void mission_arm_tx_done(
     void *user_ctx,
@@ -222,6 +224,17 @@ static void mission_handle_arm(mission_context_t *ctx, bool success);
 static void mission_handle_storage(mission_context_t *ctx);
 /** 检查当前状态是否到期并触发自动启动或故障。 */
 static void mission_check_timeout(mission_context_t *ctx);
+
+/** 等待测试流程指定的底盘回执。 */
+static bool mission_chassis_test_wait_event(
+    chassis_command_type_t expected,
+    uint16_t request_id);
+/** 发送一条测试命令并等待对应底盘回执。 */
+static bool mission_chassis_test_send_wait(
+    mission_context_t *ctx,
+    mission_command_type_t command,
+    chassis_command_type_t expected,
+    mission_state_t wait_state);
 
 /** 把毫秒转换为CMSIS-RTOS tick，非零毫秒至少返回1 tick。 */
 static uint32_t mission_ms_to_ticks(uint32_t ms)
@@ -1630,6 +1643,195 @@ static void mission_task_entry(void *argument)
     }
 }
 
+/**
+ * @brief 等待指定请求编号和类型的底盘成功回执
+ * @param expected 期望的底盘事件类型
+ * @param request_id 当前测试步骤的请求编号
+ * @return 匹配成功回执返回true，超时或失败回执返回false
+ */
+static bool mission_chassis_test_wait_event(
+    chassis_command_type_t expected,
+    uint16_t request_id)
+{
+    chassis_mission_event_t event;
+    uint32_t timeout = mission_ms_to_ticks(MISSION_OPERATION_TIMEOUT_MS);
+
+    for (;;) {
+        if (osMessageQueueGet(
+                mission_event_queue, &event, NULL, timeout) != osOK) {
+            return false;
+        }
+        if (event.request_id != request_id) {
+            continue;
+        }
+        if (event.is_ready == 0U) {
+            return false;
+        }
+        if (event.type == expected) {
+            return true;
+        }
+    }
+}
+
+/**
+ * @brief 用新请求编号发送一条底盘测试命令并等待回执
+ * @param ctx Mission上下文
+ * @param command 已有Mission到底盘命令
+ * @param expected 对应的底盘到位回执
+ * @param wait_state 测试期间供快照查看的等待状态
+ * @return 命令入队且收到成功回执返回true
+ */
+static bool mission_chassis_test_send_wait(
+    mission_context_t *ctx,
+    mission_command_type_t command,
+    chassis_command_type_t expected,
+    mission_state_t wait_state)
+{
+    uint16_t request_id = mission_next_request_id(ctx);
+
+    mission_enter_state(ctx, wait_state, MISSION_OPERATION_TIMEOUT_MS);
+    if (!mission_send_chassis(command, request_id)) {
+        return false;
+    }
+    return mission_chassis_test_wait_event(expected, request_id);
+}
+
+/**
+ * @brief 保持动作组10，模拟Mission依次驱动整条底盘路线
+ * @param argument 指向全局Mission上下文
+ * @note 不启动视觉、IC、车载转盘或抓球；仓库严格使用已有GO_DEPOT命令。
+ */
+static void mission_chassis_route_test_entry(void *argument)
+{
+    static const mission_command_type_t depot_commands[] = {
+        MISSION_CMD_GO_DEPOT_1,
+        MISSION_CMD_GO_DEPOT_2,
+        MISSION_CMD_GO_DEPOT_3,
+        MISSION_CMD_GO_DEPOT_4,
+        MISSION_CMD_GO_DEPOT_1,
+        MISSION_CMD_GO_DEPOT_3,
+    };
+    static const chassis_command_type_t depot_events[] = {
+        CHASSIS_CMD_DEPOT_1_READY,
+        CHASSIS_CMD_DEPOT_2_READY,
+        CHASSIS_CMD_DEPOT_3_READY,
+        CHASSIS_CMD_DEPOT_4_READY,
+        CHASSIS_CMD_DEPOT_1_READY,
+        CHASSIS_CMD_DEPOT_3_READY,
+    };
+    mission_context_t *ctx = (mission_context_t *)argument;
+    chassis_mission_event_t event;
+    chassis_mission_command_t command;
+    uint32_t flags;
+    uint16_t request_id;
+    uint8_t arm_ready = 0U;
+    uint8_t chassis_ready = 0U;
+    uint8_t i;
+
+    /* 0) 动作组10和底盘可并行初始化，双方均完成后再回复握手。 */
+    mission_enter_state(ctx, MISSION_STATE_WAIT_HOME, 0U);
+    while ((arm_ready == 0U) || (chassis_ready == 0U)) {
+        flags = osThreadFlagsWait(
+            CHASSIS_MISSION_FLAG_EVENT | MISSION_FLAG_ARM_OK |
+                MISSION_FLAG_ARM_FAIL,
+            osFlagsWaitAny,
+            osWaitForever);
+        if ((flags & MISSION_FLAG_ARM_FAIL) != 0U) {
+            mission_fail(ctx, MISSION_FAULT_ARM);
+            return;
+        }
+        if ((flags & MISSION_FLAG_ARM_OK) != 0U) {
+            arm_ready = 1U;
+            mission_enter_state(ctx, MISSION_STATE_WAIT_CHASSIS_READY, 0U);
+        }
+        if ((flags & CHASSIS_MISSION_FLAG_EVENT) != 0U) {
+            while (osMessageQueueGet(
+                       mission_event_queue, &event, NULL, 0U) == osOK) {
+                if ((event.type == CHASSIS_CMD_MISSION_READY) &&
+                    (event.is_ready != 0U)) {
+                    ctx->request_id = event.request_id;
+                    chassis_ready = 1U;
+                }
+            }
+        }
+    }
+    if (!mission_send_chassis(MISSION_CMD_MISSION_READY, ctx->request_id)) {
+        mission_fail(ctx, MISSION_FAULT_QUEUE);
+        return;
+    }
+
+    /* 1) 圆盘只验证导航到位，不切姿态、不启动视觉和抓球。 */
+    if (!mission_chassis_test_send_wait(
+            ctx, MISSION_CMD_GO_PLATFORM, CHASSIS_CMD_PLATFORM_READY,
+            MISSION_STATE_WAIT_PLATFORM)) {
+        mission_fail(ctx, MISSION_FAULT_CHASSIS);
+        return;
+    }
+
+    /* 2) 阶梯低层事件到达后直接放行，全程不发识别停车命令。 */
+    request_id = mission_next_request_id(ctx);
+    mission_enter_state(ctx, MISSION_STATE_WAIT_STAIRS,
+                        MISSION_OPERATION_TIMEOUT_MS);
+    if (!mission_send_chassis(MISSION_CMD_GO_STAIRS, request_id) ||
+        !mission_chassis_test_wait_event(
+            CHASSIS_CMD_STAIRS_READY, request_id)) {
+        mission_fail(ctx, MISSION_FAULT_CHASSIS);
+        return;
+    }
+    for (;;) {
+        if (osMessageQueueGet(
+                mission_event_queue, &event, NULL,
+                mission_ms_to_ticks(MISSION_OPERATION_TIMEOUT_MS)) != osOK ||
+            event.request_id != request_id || event.is_ready == 0U) {
+            mission_fail(ctx, MISSION_FAULT_CHASSIS);
+            return;
+        }
+        if (event.type == CHASSIS_CMD_STAIR_LOW) {
+            command.request_id = request_id;
+            command.type = MISSION_CMD_CAM_READY;
+            command.is_ready = 1U;
+            if (!chassis_mission_link_send_command(&command, 0U)) {
+                mission_fail(ctx, MISSION_FAULT_QUEUE);
+                return;
+            }
+        } else if (event.type == CHASSIS_CMD_STAIRS_FINISHED) {
+            break;
+        }
+    }
+
+    /* 3) 小圆盘到位后直接开始完整绕行，不触发停车和恢复。 */
+    if (!mission_chassis_test_send_wait(
+            ctx, MISSION_CMD_GO_SMALL_DISC,
+            CHASSIS_CMD_SMALL_DISC_READY,
+            MISSION_STATE_WAIT_SMALL_DISC)) {
+        mission_fail(ctx, MISSION_FAULT_CHASSIS);
+        return;
+    }
+    request_id = ctx->request_id;
+    if (!mission_send_chassis(MISSION_CMD_SMALL_DISC_START, request_id) ||
+        !mission_chassis_test_wait_event(
+            CHASSIS_CMD_SMALL_DISC_FINISHED, request_id)) {
+        mission_fail(ctx, MISSION_FAULT_CHASSIS);
+        return;
+    }
+
+    /* 4) 仓库复用已有点位命令，逐点等待对应READY后再继续。 */
+    for (i = 0U; i < (sizeof(depot_commands) / sizeof(depot_commands[0])); i++) {
+        if (!mission_chassis_test_send_wait(
+                ctx, depot_commands[i], depot_events[i],
+                MISSION_STATE_WAIT_DEPOT_1)) {
+            mission_fail(ctx, MISSION_FAULT_CHASSIS);
+            return;
+        }
+    }
+    request_id = mission_next_request_id(ctx);
+    if (!mission_send_chassis(MISSION_CMD_DEPOT_OK, request_id)) {
+        mission_fail(ctx, MISSION_FAULT_QUEUE);
+        return;
+    }
+    mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
+}
+
 /** @copydoc mission_app_init() */
 mission_app_status_t mission_app_init(void)
 {
@@ -1642,6 +1844,7 @@ mission_app_status_t mission_app_init(void)
     /* 1) 清空运行上下文并初始化小球档案。 */
     (void)memset(ctx, 0, sizeof(*ctx));
     ball_manifest_init(&ctx->manifest);
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
     /* 2) 初始化IC读卡器。 */
     if (ic_init() != IC_CARD_OK) {
         return MISSION_APP_ERR_IO;
@@ -1665,7 +1868,14 @@ mission_app_status_t mission_app_init(void)
     if (ctx->command_queue == NULL) {
         return MISSION_APP_ERR_RESOURCE;
     }
+#endif
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    /* 测试模式只创建模拟指令任务，避免初始化本轮不使用的业务设备。 */
+    ctx->task = osThreadNew(
+        mission_chassis_route_test_entry, ctx, &g_mission_task_attr);
+#else
     ctx->task = osThreadNew(mission_task_entry, ctx, &g_mission_task_attr);
+#endif
     if (ctx->task == NULL) {
         return MISSION_APP_ERR_RESOURCE;
     }
@@ -1692,6 +1902,11 @@ mission_app_status_t mission_app_init(void)
 /** @copydoc mission_app_submit_command() */
 mission_app_status_t mission_app_submit_command(mission_user_command_t command)
 {
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    /* 整段测试上电自动运行，不接收正式红蓝方用户命令。 */
+    (void)command;
+    return MISSION_APP_ERR_STATE;
+#else
     mission_context_t *ctx = &g_mission;
     uint32_t flags;
 
@@ -1709,6 +1924,7 @@ mission_app_status_t mission_app_submit_command(mission_user_command_t command)
     return ((flags & osFlagsError) == 0U)
         ? MISSION_APP_OK
         : MISSION_APP_ERR_IO;
+#endif
 }
 
 /** @copydoc mission_app_get_snapshot() */

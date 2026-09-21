@@ -10,6 +10,12 @@
 #define MISSION_READY_TIMEOUT_MS          0U
 #define MISSION_AUTO_START_DELAY_MS    4000U
 
+/*
+ * 底盘整段联调开关：1=动作组10下模拟Mission指令，0=正式比赛流程。
+ * 测试依次执行圆盘、阶梯、小圆盘和仓库1→2→3→4→1→3，不启用视觉和抓球。
+ */
+#define MISSION_CHASSIS_ROUTE_TEST_ENABLED  1U
+
 #define MISSION_HOME_ACTION_GROUP        10U
 #define MISSION_PLATFORM_VISION_GROUP    11U
 #define MISSION_PLATFORM_GRASP_GROUP     12U
@@ -52,5 +58,9 @@
 #define MISSION_GATE_CONFIRM_SAMPLES            3U
 #define MISSION_GATE_CONFIRM_INTERVAL_MS        5U
 #define MISSION_SLOT_USE_CW                      1U
+
+#if (MISSION_CHASSIS_ROUTE_TEST_ENABLED > 1U)
+#error "MISSION_CHASSIS_ROUTE_TEST_ENABLED must be 0 or 1"
+#endif
 
 #endif /* MISSION_CONFIG_H */

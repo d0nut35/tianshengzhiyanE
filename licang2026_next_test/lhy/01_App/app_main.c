@@ -55,9 +55,9 @@
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
 
-/* 仓库横移：1 号位找线标定后沿地图 +y 开环横移到 2~4 号位，不再找线；
- * 航向 180° 时车体系 vy 为负即沿地图 +y 前进 */
-#define APP_DEPOT_VY_MMS  (-70.0f)  /* 横移速度，车体系 vy，mm/s */
+/* 仓库横移：1 号位找线标定后按里程计 y 在 1~4 号位间开环横移，不再找线；
+ * [lyx] 航向 180° 时车体系 vy 为负即沿地图 +y 前进，反向时取相反速度。 */
+#define APP_DEPOT_VY_MMS  (-70.0f)  /* 正向横移速度，车体系 vy，mm/s */
 #define APP_DEPOT_POLL_MS 10U       /* 横移中位姿轮询周期，ms */
 
 static osThreadId_t g_task = NULL;  /* 底盘任务 */
@@ -185,8 +185,8 @@ static app_status_t small_disc_round(uint16_t req_id)
 }
 
 /**
- * @brief  沿地图 +y 开环横移到指定 y 后停车
- * @param  y_mm 目标 y，mm，需大于当前 y
+ * @brief  [lyx] 根据当前里程计 y 双向横移到指定仓库位置后停车
+ * @param  y_mm 目标 y，mm
  * @retval APP_OK / APP_ERR=命令下发或位姿读取失败（已停车）
  * @note   只按里程计 y 判停，x 与航向不闭环，依赖 1 号位刚标定过的位姿
  */
@@ -194,8 +194,16 @@ static app_status_t depot_shift(int16_t y_mm)
 {
     map_point_t pos = { 0, 0 };  /* 里程计坐标 */
     float       yaw = 0.0f;      /* 里程计航向，附带量 */
+    float       vy_mms;          /* [lyx] 按目标方向选择的车体系横移速度 */
 
-    if (csvc_free(0.0f, APP_DEPOT_VY_MMS, 0.0f) != CSVC_OK) {
+    if (csvc_get_pose(&pos, &yaw) != CSVC_OK) {
+        return APP_ERR;
+    }
+    if (pos.y_mm == y_mm) {
+        return APP_OK;
+    }
+    vy_mms = (pos.y_mm < y_mm) ? APP_DEPOT_VY_MMS : -APP_DEPOT_VY_MMS;
+    if (csvc_free(0.0f, vy_mms, 0.0f) != CSVC_OK) {
         return APP_ERR;
     }
     do {
@@ -204,7 +212,8 @@ static app_status_t depot_shift(int16_t y_mm)
             (void)align_stop();
             return APP_ERR;
         }
-    } while (pos.y_mm < y_mm);
+    } while (((vy_mms < 0.0f) && (pos.y_mm < y_mm)) ||
+             ((vy_mms > 0.0f) && (pos.y_mm > y_mm)));
     return (align_stop() == ALIGN_OK) ? APP_OK : APP_ERR;
 }
 
@@ -310,13 +319,9 @@ static void app_task(void *arg)
             ok = 0U;
             for (i = 0U; i < DEPOT_TBL_NUM; i++) {
                 if (g_depot_tbl[i].cmd == dctx.cmd) {
-                    /* 1 号位已由 route_go 到达，重复下发无需再横移 */
-                    if (dctx.cmd == MISSION_CMD_GO_DEPOT_1) {
-                        ok = 1U;
-                    } else {
-                        ok = (depot_shift(g_depot_tbl[i].y_mm) == APP_OK)
-                             ? 1U : 0U;
-                    }
+                    /* [lyx] 首次1号位由route_go标定，后续1~4号位统一双向横移。 */
+                    ok = (depot_shift(g_depot_tbl[i].y_mm) == APP_OK)
+                         ? 1U : 0U;
                     (void)link_post(g_depot_tbl[i].rsp, dctx.id, ok);
                     break;
                 }

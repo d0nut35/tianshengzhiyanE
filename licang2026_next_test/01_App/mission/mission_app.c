@@ -8,6 +8,7 @@
 
 #include "mission_app.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "FreeRTOS.h"
@@ -24,6 +25,10 @@
 #include "nano_vision_core.h"
 #include "gate.h"
 #include "zdt_turntable_service.h"
+
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+#include "debug_uart1.h"
+#endif
 
 #define MISSION_FLAG_COMMAND       (1UL << 1)
 #define MISSION_FLAG_ARM_OK        (1UL << 2)
@@ -67,6 +72,26 @@ typedef enum {
     MISSION_FAULT_QUEUE,
     MISSION_FAULT_PROTOCOL,
 } mission_fault_t;
+
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+/** 无线联调首条运动指令确定本轮采用纯路径或单目标模式。 */
+typedef enum {
+    MISSION_TEST_MODE_IDLE = 0,
+    MISSION_TEST_MODE_PATH,
+    MISSION_TEST_MODE_TARGET,
+} mission_test_mode_t;
+
+/** 测试阶段既用于目标选择，也用于限制纯路径指令顺序。 */
+typedef enum {
+    MISSION_TEST_STAGE_NONE = 0,
+    MISSION_TEST_STAGE_PLATFORM,
+    MISSION_TEST_STAGE_STAIRS,
+    MISSION_TEST_STAGE_SMALL_DISC,
+    MISSION_TEST_STAGE_DEPOT,
+    MISSION_TEST_STAGE_HOME,
+    MISSION_TEST_STAGE_DONE,
+} mission_test_stage_t;
+#endif
 
 typedef struct {
     mission_vision_phase_t phase;
@@ -122,6 +147,22 @@ typedef struct {
 
 static mission_context_t g_mission;
 
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+/** USART1无线联调任务的运行状态和文本缓冲区。 */
+typedef struct {
+    debug_uart1_t debug;                   /* 现有DMA空闲接收封装。 */
+    mission_test_mode_t mode;              /* 本轮测试方式。 */
+    mission_test_stage_t target;           /* 唯一启用抓取的区域。 */
+    mission_test_stage_t expected;         /* 当前允许的路径指令。 */
+    uint8_t depot_position;                /* 0=未进仓库，1~4=当前位置。 */
+    uint8_t reported_ball_count;           /* 已自动打印的球记录数。 */
+    bool stop_requested;                   /* STOP已下发，等待停车回执。 */
+    char text[224];                        /* 单条可读回复缓冲区。 */
+} mission_wireless_test_t;
+
+static mission_wireless_test_t g_wireless_test;
+#endif
+
 static const osThreadAttr_t g_mission_task_attr = {
     .name = "mission_app",
     .stack_size = MISSION_TASK_STACK_SIZE,
@@ -134,8 +175,8 @@ static uint32_t mission_ms_to_ticks(uint32_t ms);
 static uint32_t mission_wait_ticks(const mission_context_t *ctx);
 /** Mission主任务入口，串行处理命令、底盘和设备事件。 */
 static void mission_task_entry(void *argument);
-/** 动作组10下模拟上层指令的底盘整段联调任务。 */
-static void mission_chassis_route_test_entry(void *argument);
+/** 动作组10下接收USART1指令的独立联调任务。 */
+static void mission_wireless_test_entry(void *argument);
 /** 机械臂命令发送完成回调；发送失败时唤醒Mission。 */
 static void mission_arm_tx_done(
     void *user_ctx,
@@ -225,16 +266,49 @@ static void mission_handle_storage(mission_context_t *ctx);
 /** 检查当前状态是否到期并触发自动启动或故障。 */
 static void mission_check_timeout(mission_context_t *ctx);
 
-/** 等待测试流程指定的底盘回执。 */
-static bool mission_chassis_test_wait_event(
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+/** 输出无线测试文本。 */
+static void mission_test_write(const char *text);
+/** 输出当前测试状态。 */
+static void mission_test_print_status(const mission_context_t *ctx);
+/** 输出一条小球档案。 */
+static void mission_test_print_ball(
+    const mission_context_t *ctx,
+    uint8_t sequence);
+/** 输出全部小球档案。 */
+static void mission_test_print_balls(const mission_context_t *ctx);
+/** 打印本轮新追加的小球档案。 */
+static void mission_test_print_new_balls(const mission_context_t *ctx);
+/** 读取并规范化一条USART1命令。 */
+static bool mission_test_take_command(char *command, size_t capacity);
+/** 处理运动期间仍允许执行的查询和停车指令。 */
+static bool mission_test_handle_aux_command(
+    mission_context_t *ctx,
+    const char *command);
+/** 在2秒阶段停留期间继续响应查询和停车。 */
+static bool mission_test_pause(mission_context_t *ctx);
+/** 在可响应STOP的前提下等待一条底盘事件。 */
+static bool mission_test_wait_chassis_event(
+    mission_context_t *ctx,
     chassis_command_type_t expected,
     uint16_t request_id);
-/** 发送一条测试命令并等待对应底盘回执。 */
-static bool mission_chassis_test_send_wait(
+/** 发送底盘命令并等待对应事件。 */
+static bool mission_test_send_wait(
     mission_context_t *ctx,
     mission_command_type_t command,
     chassis_command_type_t expected,
     mission_state_t wait_state);
+/** 跳过转盘业务，仅验证导航并停留2秒。 */
+static bool mission_test_skip_platform(mission_context_t *ctx);
+/** 跳过阶梯视觉抓取，放行并走完整个阶梯后停留2秒。 */
+static bool mission_test_skip_stairs(mission_context_t *ctx);
+/** 跳过小圆盘视觉抓取，完整绕行后停留2秒。 */
+static bool mission_test_skip_small_disc(mission_context_t *ctx);
+/** 运行指定目标区域的正式视觉抓取子流程。 */
+static bool mission_test_run_target(
+    mission_context_t *ctx,
+    mission_test_stage_t target);
+#endif
 
 /** 把毫秒转换为CMSIS-RTOS tick，非零毫秒至少返回1 tick。 */
 static uint32_t mission_ms_to_ticks(uint32_t ms)
@@ -1643,45 +1717,297 @@ static void mission_task_entry(void *argument)
     }
 }
 
-/**
- * @brief 等待指定请求编号和类型的底盘成功回执
- * @param expected 期望的底盘事件类型
- * @param request_id 当前测试步骤的请求编号
- * @return 匹配成功回执返回true，超时或失败回执返回false
- */
-static bool mission_chassis_test_wait_event(
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+/** 将测试阶段转换成无线串口可读名称。 */
+static const char *mission_test_stage_name(mission_test_stage_t stage)
+{
+    if (stage == MISSION_TEST_STAGE_PLATFORM) return "PLATFORM";
+    if (stage == MISSION_TEST_STAGE_STAIRS) return "STAIRS";
+    if (stage == MISSION_TEST_STAGE_SMALL_DISC) return "DISC";
+    if (stage == MISSION_TEST_STAGE_DEPOT) return "DEPOT";
+    if (stage == MISSION_TEST_STAGE_HOME) return "HOME";
+    if (stage == MISSION_TEST_STAGE_DONE) return "DONE";
+    return "NONE";
+}
+
+/** 将球来源区域转换成无线串口可读名称。 */
+static const char *mission_test_region_name(ball_manifest_region_t region)
+{
+    if (region == BALL_MANIFEST_REGION_TURNTABLE) return "PLATFORM";
+    if (region == BALL_MANIFEST_REGION_STAIR) return "STAIRS";
+    if (region == BALL_MANIFEST_REGION_PILLAR) return "DISC";
+    return "INVALID";
+}
+
+/** 将Mission目标颜色转换成无线串口可读名称。 */
+static const char *mission_test_color_name(mission_color_t color)
+{
+    if (color == MISSION_COLOR_RED) return "RED";
+    if (color == MISSION_COLOR_BLUE) return "BLUE";
+    return "NONE";
+}
+
+/** 将档案中的球颜色转换成无线串口可读名称。 */
+static const char *mission_test_record_color_name(
+    ball_manifest_color_t color)
+{
+    if (color == BALL_MANIFEST_COLOR_RED) return "RED";
+    if (color == BALL_MANIFEST_COLOR_BLUE) return "BLUE";
+    return "INVALID";
+}
+
+/** 将球档案状态转换成无线串口可读名称。 */
+static const char *mission_test_record_state_name(ball_manifest_state_t state)
+{
+    if (state == BALL_MANIFEST_STATE_STORED) return "STORED";
+    if (state == BALL_MANIFEST_STATE_PLACED) return "PLACED";
+    if (state == BALL_MANIFEST_STATE_READ_FAILED) return "READ_FAILED";
+    return "INVALID";
+}
+
+/** @copydoc mission_test_write */
+static void mission_test_write(const char *text)
+{
+    if (text != NULL) {
+        (void)debug_uart1_write_text(&g_wireless_test.debug, text);
+    }
+}
+
+/** @copydoc mission_test_print_status */
+static void mission_test_print_status(const mission_context_t *ctx)
+{
+    const char *mode = "IDLE";
+
+    if (g_wireless_test.mode == MISSION_TEST_MODE_PATH) mode = "PATH";
+    if (g_wireless_test.mode == MISSION_TEST_MODE_TARGET) mode = "ROUTE";
+    (void)snprintf(
+        g_wireless_test.text,
+        sizeof(g_wireless_test.text),
+        "STATUS MODE=%s TARGET=%s EXPECT=%s STATE=%u COLOR=%s "
+        "BALLS=%u SLOT=%u FAULT=%u\r\n",
+        mode,
+        mission_test_stage_name(g_wireless_test.target),
+        mission_test_stage_name(g_wireless_test.expected),
+        (unsigned)ctx->state,
+        mission_test_color_name(ctx->color),
+        (unsigned)ctx->manifest.count,
+        (unsigned)ctx->storage_slot,
+        (unsigned)ctx->fault_code);
+    mission_test_write(g_wireless_test.text);
+}
+
+/** @copydoc mission_test_print_ball */
+static void mission_test_print_ball(
+    const mission_context_t *ctx,
+    uint8_t sequence)
+{
+    ball_manifest_record_t record;
+
+    if (ball_manifest_get(&ctx->manifest, sequence, &record) !=
+        BALL_MANIFEST_OK) {
+        mission_test_write("ERR BALL\r\n");
+        return;
+    }
+    (void)snprintf(
+        g_wireless_test.text,
+        sizeof(g_wireless_test.text),
+        "BALL N=%u RAW_SEQ=%u REGION=%s COLOR=%s IC=0x%02X "
+        "ROW=%u COL=%u SLOT=%u STATE=%s\r\n",
+        (unsigned)record.sequence + 1U,
+        (unsigned)record.sequence,
+        mission_test_region_name(record.region),
+        mission_test_record_color_name(record.color),
+        (unsigned)record.ic_code,
+        (unsigned)record.target_row,
+        (unsigned)record.target_column,
+        (unsigned)record.storage_slot,
+        mission_test_record_state_name(record.state));
+    mission_test_write(g_wireless_test.text);
+}
+
+/** @copydoc mission_test_print_balls */
+static void mission_test_print_balls(const mission_context_t *ctx)
+{
+    uint8_t i;
+
+    (void)snprintf(
+        g_wireless_test.text,
+        sizeof(g_wireless_test.text),
+        "BALL COUNT=%u\r\n",
+        (unsigned)ctx->manifest.count);
+    mission_test_write(g_wireless_test.text);
+    for (i = 0U; i < ctx->manifest.count; ++i) {
+        mission_test_print_ball(ctx, i);
+    }
+}
+
+/** @copydoc mission_test_print_new_balls */
+static void mission_test_print_new_balls(const mission_context_t *ctx)
+{
+    while (g_wireless_test.reported_ball_count < ctx->manifest.count) {
+        mission_test_print_ball(ctx, g_wireless_test.reported_ball_count);
+        ++g_wireless_test.reported_ball_count;
+    }
+}
+
+/** @copydoc mission_test_take_command */
+static bool mission_test_take_command(char *command, size_t capacity)
+{
+    uint8_t raw[DEBUG_UART1_RX_BUFFER_SIZE];
+    size_t raw_len = 0U;
+    size_t in;
+    size_t out = 0U;
+    bool pending_space = false;
+
+    if ((command == NULL) || (capacity < 2U) ||
+        !debug_uart1_take_message(
+            &g_wireless_test.debug,
+            raw,
+            sizeof(raw),
+            &raw_len)) {
+        return false;
+    }
+    for (in = 0U; in < raw_len; ++in) {
+        char ch = (char)raw[in];
+
+        if ((ch == ' ') || (ch == '\t') || (ch == '\r') || (ch == '\n')) {
+            pending_space = (out > 0U);
+            continue;
+        }
+        if (pending_space && (out + 1U < capacity)) {
+            command[out++] = ' ';
+        }
+        pending_space = false;
+        if ((ch >= 'a') && (ch <= 'z')) {
+            ch = (char)(ch - 'a' + 'A');
+        }
+        if (out + 1U < capacity) {
+            command[out++] = ch;
+        }
+    }
+    command[out] = '\0';
+    return (out > 0U);
+}
+
+/** @copydoc mission_test_handle_aux_command */
+static bool mission_test_handle_aux_command(
+    mission_context_t *ctx,
+    const char *command)
+{
+    unsigned int ball_number;
+
+    if (strcmp(command, "HELP") == 0) {
+        mission_test_write(
+            "PATH: PLATFORM STAIRS DISC DEPOT D1 D2 D3 D4 HOME\r\n"
+            "TARGET: ROUTE PLATFORM|STAIRS|DISC RED|BLUE, ROUTE DEPOT\r\n"
+            "QUERY: STATUS BALLS BALL n STOP HELP\r\n");
+        return true;
+    }
+    if (strcmp(command, "STATUS") == 0) {
+        mission_test_print_status(ctx);
+        return true;
+    }
+    if (strcmp(command, "BALLS") == 0) {
+        mission_test_print_balls(ctx);
+        return true;
+    }
+    if ((sscanf(command, "BALL %u", &ball_number) == 1) &&
+        (ball_number >= 1U) &&
+        (ball_number <= ctx->manifest.count)) {
+        mission_test_print_ball(ctx, (uint8_t)(ball_number - 1U));
+        return true;
+    }
+    if (strncmp(command, "BALL ", 5U) == 0) {
+        mission_test_write("ERR BALL\r\n");
+        return true;
+    }
+    if (strcmp(command, "STOP") == 0) {
+        uint16_t request_id;
+
+        if (g_wireless_test.stop_requested ||
+            (ctx->state == MISSION_STATE_STOPPED)) {
+            mission_test_write("STOPPED\r\n");
+            return true;
+        }
+        request_id = mission_next_request_id(ctx);
+        if (!mission_send_chassis(MISSION_CMD_STOP, request_id)) {
+            mission_test_write("ERR STOP\r\n");
+            return true;
+        }
+        g_wireless_test.stop_requested = true;
+        mission_enter_state(ctx, MISSION_STATE_STOPPING,
+                            MISSION_OPERATION_TIMEOUT_MS);
+        mission_test_write("OK STOP\r\n");
+        return true;
+    }
+    return false;
+}
+
+/** @copydoc mission_test_pause */
+static bool mission_test_pause(mission_context_t *ctx)
+{
+    char command[DEBUG_UART1_RX_BUFFER_SIZE];
+    uint32_t deadline = osKernelGetTickCount() +
+        mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS);
+
+    while ((int32_t)(deadline - osKernelGetTickCount()) > 0) {
+        if (mission_test_take_command(command, sizeof(command))) {
+            if (!mission_test_handle_aux_command(ctx, command)) {
+                mission_test_write("BUSY\r\n");
+            }
+            if (g_wireless_test.stop_requested) {
+                (void)mission_test_wait_chassis_event(
+                    ctx, CHASSIS_CMD_STOPPED, ctx->request_id);
+                return false;
+            }
+        }
+        osDelay(mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
+    }
+    return true;
+}
+
+/** @copydoc mission_test_wait_chassis_event */
+static bool mission_test_wait_chassis_event(
+    mission_context_t *ctx,
     chassis_command_type_t expected,
     uint16_t request_id)
 {
     chassis_mission_event_t event;
-    uint32_t timeout = mission_ms_to_ticks(MISSION_OPERATION_TIMEOUT_MS);
+    char command[DEBUG_UART1_RX_BUFFER_SIZE];
+    uint32_t deadline = osKernelGetTickCount() +
+        mission_ms_to_ticks(MISSION_OPERATION_TIMEOUT_MS);
+    uint32_t poll = mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS);
 
     for (;;) {
+        if (mission_test_take_command(command, sizeof(command)) &&
+            !mission_test_handle_aux_command(ctx, command)) {
+            mission_test_write("BUSY\r\n");
+        }
         if (osMessageQueueGet(
-                mission_event_queue, &event, NULL, timeout) != osOK) {
+                mission_event_queue, &event, NULL, poll) == osOK) {
+            if (g_wireless_test.stop_requested &&
+                (event.request_id == ctx->request_id) &&
+                (event.type == CHASSIS_CMD_STOPPED)) {
+                mission_enter_state(ctx, MISSION_STATE_STOPPED, 0U);
+                mission_test_write("STOPPED\r\n");
+                return (expected == CHASSIS_CMD_STOPPED);
+            }
+            if (g_wireless_test.stop_requested) {
+                continue;
+            }
+            if ((event.request_id == request_id) &&
+                (event.type == expected)) {
+                return (event.is_ready != 0U);
+            }
+        }
+        if ((int32_t)(osKernelGetTickCount() - deadline) >= 0) {
             return false;
-        }
-        if (event.request_id != request_id) {
-            continue;
-        }
-        if (event.is_ready == 0U) {
-            return false;
-        }
-        if (event.type == expected) {
-            return true;
         }
     }
 }
 
-/**
- * @brief 用新请求编号发送一条底盘测试命令并等待回执
- * @param ctx Mission上下文
- * @param command 已有Mission到底盘命令
- * @param expected 对应的底盘到位回执
- * @param wait_state 测试期间供快照查看的等待状态
- * @return 命令入队且收到成功回执返回true
- */
-static bool mission_chassis_test_send_wait(
+/** @copydoc mission_test_send_wait */
+static bool mission_test_send_wait(
     mission_context_t *ctx,
     mission_command_type_t command,
     chassis_command_type_t expected,
@@ -1690,45 +2016,247 @@ static bool mission_chassis_test_send_wait(
     uint16_t request_id = mission_next_request_id(ctx);
 
     mission_enter_state(ctx, wait_state, MISSION_OPERATION_TIMEOUT_MS);
-    if (!mission_send_chassis(command, request_id)) {
+    return mission_send_chassis(command, request_id) &&
+        mission_test_wait_chassis_event(ctx, expected, request_id);
+}
+
+/** @copydoc mission_test_skip_platform */
+static bool mission_test_skip_platform(mission_context_t *ctx)
+{
+    return mission_test_send_wait(
+               ctx,
+               MISSION_CMD_GO_PLATFORM,
+               CHASSIS_CMD_PLATFORM_READY,
+               MISSION_STATE_WAIT_PLATFORM) &&
+        mission_test_pause(ctx);
+}
+
+/** @copydoc mission_test_skip_stairs */
+static bool mission_test_skip_stairs(mission_context_t *ctx)
+{
+    chassis_mission_event_t event;
+    char command_text[DEBUG_UART1_RX_BUFFER_SIZE];
+    uint16_t request_id = mission_next_request_id(ctx);
+    uint32_t deadline;
+    uint32_t poll = mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS);
+
+    mission_enter_state(ctx, MISSION_STATE_WAIT_STAIRS,
+                        MISSION_OPERATION_TIMEOUT_MS);
+    if (!mission_send_chassis(MISSION_CMD_GO_STAIRS, request_id) ||
+        !mission_test_wait_chassis_event(
+            ctx, CHASSIS_CMD_STAIRS_READY, request_id)) {
         return false;
     }
-    return mission_chassis_test_wait_event(expected, request_id);
+    deadline = osKernelGetTickCount() +
+        mission_ms_to_ticks(MISSION_OPERATION_TIMEOUT_MS);
+    for (;;) {
+        if (mission_test_take_command(command_text, sizeof(command_text)) &&
+            !mission_test_handle_aux_command(ctx, command_text)) {
+            mission_test_write("BUSY\r\n");
+        }
+        if (osMessageQueueGet(
+                mission_event_queue, &event, NULL, poll) == osOK) {
+            if (g_wireless_test.stop_requested &&
+                (event.request_id == ctx->request_id) &&
+                (event.type == CHASSIS_CMD_STOPPED)) {
+                mission_enter_state(ctx, MISSION_STATE_STOPPED, 0U);
+                mission_test_write("STOPPED\r\n");
+                return false;
+            }
+            if (event.request_id != request_id) {
+                continue;
+            }
+            if (event.is_ready == 0U) return false;
+            if (event.type == CHASSIS_CMD_STAIR_LOW) {
+                if (!mission_send_chassis(MISSION_CMD_CAM_READY, request_id)) {
+                    return false;
+                }
+            } else if (event.type == CHASSIS_CMD_STAIRS_FINISHED) {
+                return mission_test_pause(ctx);
+            }
+        }
+        if ((int32_t)(osKernelGetTickCount() - deadline) >= 0) {
+            return false;
+        }
+    }
+}
+
+/** @copydoc mission_test_skip_small_disc */
+static bool mission_test_skip_small_disc(mission_context_t *ctx)
+{
+    uint16_t request_id;
+
+    if (!mission_test_send_wait(
+            ctx,
+            MISSION_CMD_GO_SMALL_DISC,
+            CHASSIS_CMD_SMALL_DISC_READY,
+            MISSION_STATE_WAIT_SMALL_DISC)) {
+        return false;
+    }
+    request_id = ctx->request_id;
+    if (!mission_send_chassis(MISSION_CMD_SMALL_DISC_START, request_id) ||
+        !mission_test_wait_chassis_event(
+            ctx, CHASSIS_CMD_SMALL_DISC_FINISHED, request_id)) {
+        return false;
+    }
+    return mission_test_pause(ctx);
 }
 
 /**
- * @brief 保持动作组10，模拟Mission依次驱动整条底盘路线
- * @param argument 指向全局Mission上下文
- * @note 不启动视觉、IC、车载转盘或抓球；仓库严格使用已有GO_DEPOT命令。
+ * @brief 复用正式子流程处理目标区域事件，在动作组10完成时截断后续路线
+ * @param ctx Mission上下文
+ * @param target 本次唯一启用视觉抓取的区域
+ * @return true=目标完整完成，false=停车或故障
+ * @note 正式mission_task_entry及其自动转场不修改；截断只存在于测试任务。
  */
-static void mission_chassis_route_test_entry(void *argument)
+static bool mission_test_run_target(
+    mission_context_t *ctx,
+    mission_test_stage_t target)
+{
+    chassis_mission_event_t chassis_event;
+    char command[DEBUG_UART1_RX_BUFFER_SIZE];
+    uint32_t flags;
+    uint32_t wait_ticks;
+    bool finish_arm;
+
+    if (target == MISSION_TEST_STAGE_PLATFORM) {
+        if (!mission_test_send_wait(
+                ctx, MISSION_CMD_GO_PLATFORM, CHASSIS_CMD_PLATFORM_READY,
+                MISSION_STATE_WAIT_PLATFORM) ||
+            !mission_start_arm(ctx, MISSION_PLATFORM_VISION_GROUP,
+                               MISSION_STATE_PLATFORM_WAIT_POSE)) {
+            return false;
+        }
+    } else if (target == MISSION_TEST_STAGE_STAIRS) {
+        if (!mission_test_skip_platform(ctx) ||
+            !mission_test_send_wait(
+                ctx, MISSION_CMD_GO_STAIRS, CHASSIS_CMD_STAIRS_READY,
+                MISSION_STATE_WAIT_STAIRS)) {
+            return false;
+        }
+        ctx->stair_layer = MISSION_STAIR_NONE;
+        if (!mission_start_arm(ctx, MISSION_STAIR_VISION_GROUP,
+                               MISSION_STATE_STAIR_WAIT_POSE)) {
+            return false;
+        }
+    } else if (target == MISSION_TEST_STAGE_SMALL_DISC) {
+        if (!mission_test_skip_platform(ctx) ||
+            !mission_test_skip_stairs(ctx) ||
+            !mission_test_send_wait(
+                ctx, MISSION_CMD_GO_SMALL_DISC,
+                CHASSIS_CMD_SMALL_DISC_READY,
+                MISSION_STATE_WAIT_SMALL_DISC) ||
+            !mission_start_arm(ctx, MISSION_SMALL_DISC_VISION_GROUP,
+                               MISSION_STATE_SMALL_DISC_WAIT_POSE)) {
+            return false;
+        }
+    } else if (target == MISSION_TEST_STAGE_DEPOT) {
+        if (!mission_test_skip_platform(ctx) ||
+            !mission_test_skip_stairs(ctx) ||
+            !mission_test_skip_small_disc(ctx) ||
+            !mission_test_send_wait(
+                ctx, MISSION_CMD_GO_DEPOT_1,
+                CHASSIS_CMD_DEPOT_1_READY,
+                MISSION_STATE_WAIT_DEPOT_1)) {
+            return false;
+        }
+        g_wireless_test.depot_position = 1U;
+        return true;
+    } else {
+        return false;
+    }
+
+    for (;;) {
+        wait_ticks = mission_wait_ticks(ctx);
+        if ((wait_ticks == osWaitForever) ||
+            (wait_ticks > mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS))) {
+            wait_ticks = mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS);
+        }
+        flags = osThreadFlagsWait(
+            MISSION_ALL_FLAGS, osFlagsWaitAny, wait_ticks);
+        if ((flags & osFlagsError) == 0U) {
+            if ((flags & CHASSIS_MISSION_FLAG_EVENT) != 0U) {
+                while (osMessageQueueGet(
+                           mission_event_queue,
+                           &chassis_event,
+                           NULL,
+                           0U) == osOK) {
+                    mission_handle_chassis(ctx, &chassis_event);
+                }
+            }
+            if ((flags & MISSION_FLAG_ARM_FAIL) != 0U) {
+                mission_handle_arm(ctx, false);
+            } else if ((flags & MISSION_FLAG_ARM_OK) != 0U) {
+                finish_arm =
+                    ((target == MISSION_TEST_STAGE_PLATFORM) &&
+                     (ctx->state ==
+                      MISSION_STATE_PLATFORM_WAIT_DEPARTURE_POSE)) ||
+                    ((target == MISSION_TEST_STAGE_STAIRS) &&
+                     (ctx->state == MISSION_STATE_STAIR_WAIT_SAFE)) ||
+                    ((target == MISSION_TEST_STAGE_SMALL_DISC) &&
+                     (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_SAFE));
+                if (finish_arm) {
+                    ctx->active_arm_group = 0U;
+                    mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
+                } else {
+                    mission_handle_arm(ctx, true);
+                }
+            }
+            if ((flags & MISSION_FLAG_VISION_DONE) != 0U) {
+                mission_handle_vision(ctx);
+            }
+        }
+        mission_vision_process(ctx);
+        mission_check_timeout(ctx);
+        mission_test_print_new_balls(ctx);
+        if (mission_test_take_command(command, sizeof(command)) &&
+            !mission_test_handle_aux_command(ctx, command)) {
+            mission_test_write("BUSY\r\n");
+        }
+        if (ctx->state == MISSION_STATE_COMPLETE) return true;
+        if ((ctx->state == MISSION_STATE_STOPPED) ||
+            (ctx->state == MISSION_STATE_FAULT)) {
+            return false;
+        }
+    }
+}
+
+/**
+ * @brief USART1无线联调任务：运行纯路径分段测试或单目标视觉抓取测试
+ * @param argument 指向全局Mission上下文
+ * @note 底盘仍只接收既有Mission命令；正式Mission主任务不参与本测试。
+ */
+static void mission_wireless_test_entry(void *argument)
 {
     static const mission_command_type_t depot_commands[] = {
         MISSION_CMD_GO_DEPOT_1,
         MISSION_CMD_GO_DEPOT_2,
         MISSION_CMD_GO_DEPOT_3,
         MISSION_CMD_GO_DEPOT_4,
-        MISSION_CMD_GO_DEPOT_1,
-        MISSION_CMD_GO_DEPOT_3,
-        MISSION_CMD_GO_DEPOT_1,
     };
     static const chassis_command_type_t depot_events[] = {
         CHASSIS_CMD_DEPOT_1_READY,
         CHASSIS_CMD_DEPOT_2_READY,
         CHASSIS_CMD_DEPOT_3_READY,
         CHASSIS_CMD_DEPOT_4_READY,
-        CHASSIS_CMD_DEPOT_1_READY,
-        CHASSIS_CMD_DEPOT_3_READY,
-        CHASSIS_CMD_DEPOT_1_READY,
     };
     mission_context_t *ctx = (mission_context_t *)argument;
     chassis_mission_event_t event;
-    chassis_mission_command_t command;
+    char command[DEBUG_UART1_RX_BUFFER_SIZE];
     uint32_t flags;
     uint16_t request_id;
     uint8_t arm_ready = 0U;
     uint8_t chassis_ready = 0U;
-    uint8_t i;
+    uint8_t depot;
+    bool ok;
+
+    (void)memset(&g_wireless_test, 0, sizeof(g_wireless_test));
+    if (!debug_uart1_init(&g_wireless_test.debug)) {
+        mission_enter_state(ctx, MISSION_STATE_FAULT, 0U);
+        ctx->fault_code = MISSION_FAULT_PROTOCOL;
+        return;
+    }
+    mission_test_write("MISSION WIRELESS TEST BOOT\r\n");
 
     /* 0) 动作组10和底盘可并行初始化，双方均完成后再回复握手。 */
     mission_enter_state(ctx, MISSION_STATE_WAIT_HOME, 0U);
@@ -1740,6 +2268,7 @@ static void mission_chassis_route_test_entry(void *argument)
             osWaitForever);
         if ((flags & MISSION_FLAG_ARM_FAIL) != 0U) {
             mission_fail(ctx, MISSION_FAULT_ARM);
+            mission_test_write("FAULT ARM HOME\r\n");
             return;
         }
         if ((flags & MISSION_FLAG_ARM_OK) != 0U) {
@@ -1759,99 +2288,239 @@ static void mission_chassis_route_test_entry(void *argument)
     }
     if (!mission_send_chassis(MISSION_CMD_MISSION_READY, ctx->request_id)) {
         mission_fail(ctx, MISSION_FAULT_QUEUE);
+        mission_test_write("FAULT LINK\r\n");
         return;
     }
+    mission_enter_state(ctx, MISSION_STATE_READY, 0U);
+    g_wireless_test.expected = MISSION_TEST_STAGE_PLATFORM;
+    mission_test_write("READY EXPECT=PLATFORM OR ROUTE\r\n");
 
-    /* 1) 圆盘只验证导航到位，不切姿态、不启动视觉和抓球。 */
-    if (!mission_chassis_test_send_wait(
-            ctx, MISSION_CMD_GO_PLATFORM, CHASSIS_CMD_PLATFORM_READY,
-            MISSION_STATE_WAIT_PLATFORM)) {
-        mission_fail(ctx, MISSION_FAULT_CHASSIS);
-        return;
-    }
-    /* 圆盘到位后停留1秒，再请求前往阶梯。 */
-    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
-
-    /* 2) 阶梯低层事件到达后直接放行，全程不发识别停车命令。 */
-    request_id = mission_next_request_id(ctx);
-    mission_enter_state(ctx, MISSION_STATE_WAIT_STAIRS,
-                        MISSION_OPERATION_TIMEOUT_MS);
-    if (!mission_send_chassis(MISSION_CMD_GO_STAIRS, request_id) ||
-        !mission_chassis_test_wait_event(
-            CHASSIS_CMD_STAIRS_READY, request_id)) {
-        mission_fail(ctx, MISSION_FAULT_CHASSIS);
-        return;
-    }
-    /* 阶梯到位后停留1秒，再放行低层横移。 */
-    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
     for (;;) {
-        if (osMessageQueueGet(
-                mission_event_queue, &event, NULL,
-                mission_ms_to_ticks(MISSION_OPERATION_TIMEOUT_MS)) != osOK ||
-            event.request_id != request_id || event.is_ready == 0U) {
-            mission_fail(ctx, MISSION_FAULT_CHASSIS);
-            return;
+        if (!mission_test_take_command(command, sizeof(command))) {
+            osDelay(mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
+            continue;
         }
-        if (event.type == CHASSIS_CMD_STAIR_LOW) {
-            command.request_id = request_id;
-            command.type = MISSION_CMD_CAM_READY;
-            command.is_ready = 1U;
-            if (!chassis_mission_link_send_command(&command, 0U)) {
-                mission_fail(ctx, MISSION_FAULT_QUEUE);
-                return;
+        if (mission_test_handle_aux_command(ctx, command)) {
+            if (g_wireless_test.stop_requested &&
+                (ctx->state != MISSION_STATE_STOPPED)) {
+                (void)mission_test_wait_chassis_event(
+                    ctx, CHASSIS_CMD_STOPPED, ctx->request_id);
             }
-        } else if (event.type == CHASSIS_CMD_STAIRS_FINISHED) {
-            break;
+            continue;
         }
-    }
-    /* 阶梯完成后停留1秒，再请求前往小圆盘。 */
-    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
+        if (g_wireless_test.stop_requested ||
+            (ctx->state == MISSION_STATE_STOPPED) ||
+            ((ctx->state == MISSION_STATE_COMPLETE) &&
+             (g_wireless_test.target != MISSION_TEST_STAGE_DEPOT))) {
+            mission_test_write("ERR RESET REQUIRED\r\n");
+            continue;
+        }
 
-    /* 3) 小圆盘到位后直接开始完整绕行，不触发停车和恢复。 */
-    if (!mission_chassis_test_send_wait(
-            ctx, MISSION_CMD_GO_SMALL_DISC,
-            CHASSIS_CMD_SMALL_DISC_READY,
-            MISSION_STATE_WAIT_SMALL_DISC)) {
-        mission_fail(ctx, MISSION_FAULT_CHASSIS);
-        return;
-    }
-    /* 小圆盘到位后停留1秒，再开始完整绕行。 */
-    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
-    request_id = ctx->request_id;
-    if (!mission_send_chassis(MISSION_CMD_SMALL_DISC_START, request_id) ||
-        !mission_chassis_test_wait_event(
-            CHASSIS_CMD_SMALL_DISC_FINISHED, request_id)) {
-        mission_fail(ctx, MISSION_FAULT_CHASSIS);
-        return;
-    }
-    /* 小圆盘完整绕行结束后停留1秒，再请求前往仓库。 */
-    osDelay(mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
+        /* 1) ROUTE命令自动跳过前置区域，只在目标区域执行正式业务。 */
+        if ((strcmp(command, "ROUTE PLATFORM RED") == 0) ||
+            (strcmp(command, "ROUTE PLATFORM BLUE") == 0) ||
+            (strcmp(command, "ROUTE STAIRS RED") == 0) ||
+            (strcmp(command, "ROUTE STAIRS BLUE") == 0) ||
+            (strcmp(command, "ROUTE DISC RED") == 0) ||
+            (strcmp(command, "ROUTE DISC BLUE") == 0) ||
+            (strcmp(command, "ROUTE DEPOT") == 0)) {
+            if (g_wireless_test.mode != MISSION_TEST_MODE_IDLE) {
+                mission_test_write("ERR RESET REQUIRED\r\n");
+                continue;
+            }
+            g_wireless_test.mode = MISSION_TEST_MODE_TARGET;
+            if (strncmp(command, "ROUTE PLATFORM", 14U) == 0) {
+                g_wireless_test.target = MISSION_TEST_STAGE_PLATFORM;
+            } else if (strncmp(command, "ROUTE STAIRS", 12U) == 0) {
+                g_wireless_test.target = MISSION_TEST_STAGE_STAIRS;
+            } else if (strncmp(command, "ROUTE DISC", 10U) == 0) {
+                g_wireless_test.target = MISSION_TEST_STAGE_SMALL_DISC;
+            } else {
+                g_wireless_test.target = MISSION_TEST_STAGE_DEPOT;
+            }
+            ctx->color = (strstr(command, " BLUE") != NULL)
+                ? MISSION_COLOR_BLUE : MISSION_COLOR_RED;
+            if (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT) {
+                ctx->color = MISSION_COLOR_NONE;
+            }
+            ctx->platform_balls = 0U;
+            ctx->stair_balls = 0U;
+            ctx->small_disc_balls = 0U;
+            ctx->storage_slot = 0U;
+            ctx->fault_code = MISSION_FAULT_NONE;
+            ball_manifest_init(&ctx->manifest);
+            g_wireless_test.reported_ball_count = 0U;
+            if ((g_wireless_test.target != MISSION_TEST_STAGE_DEPOT) &&
+                !mission_prepare_zdt(ctx)) {
+                mission_fail(ctx, MISSION_FAULT_STORAGE);
+                mission_test_write("FAULT STORAGE INIT\r\n");
+                continue;
+            }
+            (void)snprintf(
+                g_wireless_test.text,
+                sizeof(g_wireless_test.text),
+                "OK ROUTE TARGET=%s COLOR=%s\r\n",
+                mission_test_stage_name(g_wireless_test.target),
+                mission_test_color_name(ctx->color));
+            mission_test_write(g_wireless_test.text);
+            ok = mission_test_run_target(ctx, g_wireless_test.target);
+            if (ok) {
+                g_wireless_test.expected =
+                    (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT)
+                    ? MISSION_TEST_STAGE_DEPOT : MISSION_TEST_STAGE_DONE;
+                (void)snprintf(
+                    g_wireless_test.text,
+                    sizeof(g_wireless_test.text),
+                    "DONE %s\r\n",
+                    mission_test_stage_name(g_wireless_test.target));
+                mission_test_write(g_wireless_test.text);
+                if (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT) {
+                    mission_test_write("READY D1 D2 D3 D4 HOME\r\n");
+                }
+            } else if (!g_wireless_test.stop_requested) {
+                mission_fail(ctx, MISSION_FAULT_CHASSIS);
+                mission_test_write("FAULT ROUTE\r\n");
+            }
+            continue;
+        }
 
-    /* 4) 仓库复用已有点位命令，逐点等待对应READY后再继续。 */
-    for (i = 0U; i < (sizeof(depot_commands) / sizeof(depot_commands[0])); i++) {
-        if (!mission_chassis_test_send_wait(
-                ctx, depot_commands[i], depot_events[i],
-                MISSION_STATE_WAIT_DEPOT_1)) {
+        /* 2) 纯路径模式由每条短指令逐段放行，不启用任何视觉或抓球。 */
+        if (strcmp(command, "PLATFORM") == 0) {
+            if ((g_wireless_test.mode != MISSION_TEST_MODE_IDLE) ||
+                (g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM)) {
+                mission_test_write("ERR ORDER EXPECT=PLATFORM\r\n");
+                continue;
+            }
+            g_wireless_test.mode = MISSION_TEST_MODE_PATH;
+            ctx->color = MISSION_COLOR_NONE;
+            ok = mission_test_skip_platform(ctx);
+            if (ok) {
+                g_wireless_test.expected = MISSION_TEST_STAGE_STAIRS;
+                mission_test_write("DONE PLATFORM\r\nREADY STAIRS\r\n");
+            }
+        } else if (strcmp(command, "STAIRS") == 0) {
+            if ((g_wireless_test.mode != MISSION_TEST_MODE_PATH) ||
+                (g_wireless_test.expected != MISSION_TEST_STAGE_STAIRS)) {
+                (void)snprintf(
+                    g_wireless_test.text,
+                    sizeof(g_wireless_test.text),
+                    "ERR ORDER EXPECT=%s\r\n",
+                    mission_test_stage_name(g_wireless_test.expected));
+                mission_test_write(g_wireless_test.text);
+                continue;
+            }
+            ok = mission_test_skip_stairs(ctx);
+            if (ok) {
+                g_wireless_test.expected = MISSION_TEST_STAGE_SMALL_DISC;
+                mission_test_write("DONE STAIRS\r\nREADY DISC\r\n");
+            }
+        } else if (strcmp(command, "DISC") == 0) {
+            if ((g_wireless_test.mode != MISSION_TEST_MODE_PATH) ||
+                (g_wireless_test.expected !=
+                 MISSION_TEST_STAGE_SMALL_DISC)) {
+                (void)snprintf(
+                    g_wireless_test.text,
+                    sizeof(g_wireless_test.text),
+                    "ERR ORDER EXPECT=%s\r\n",
+                    mission_test_stage_name(g_wireless_test.expected));
+                mission_test_write(g_wireless_test.text);
+                continue;
+            }
+            ok = mission_test_skip_small_disc(ctx);
+            if (ok) {
+                g_wireless_test.expected = MISSION_TEST_STAGE_DEPOT;
+                mission_test_write("DONE DISC\r\nREADY DEPOT\r\n");
+            }
+        } else if (strcmp(command, "DEPOT") == 0) {
+            if ((g_wireless_test.mode != MISSION_TEST_MODE_PATH) ||
+                (g_wireless_test.expected != MISSION_TEST_STAGE_DEPOT)) {
+                (void)snprintf(
+                    g_wireless_test.text,
+                    sizeof(g_wireless_test.text),
+                    "ERR ORDER EXPECT=%s\r\n",
+                    mission_test_stage_name(g_wireless_test.expected));
+                mission_test_write(g_wireless_test.text);
+                continue;
+            }
+            ok = mission_test_send_wait(
+                ctx, MISSION_CMD_GO_DEPOT_1, CHASSIS_CMD_DEPOT_1_READY,
+                MISSION_STATE_WAIT_DEPOT_1);
+            if (ok && mission_test_pause(ctx)) {
+                g_wireless_test.depot_position = 1U;
+                mission_test_write(
+                    "DONE DEPOT\r\nREADY D1 D2 D3 D4 HOME\r\n");
+            } else {
+                ok = false;
+            }
+        } else if ((command[0] == 'D') &&
+                   (command[1] >= '1') && (command[1] <= '4') &&
+                   (command[2] == '\0')) {
+            if ((g_wireless_test.depot_position == 0U) ||
+                (g_wireless_test.expected != MISSION_TEST_STAGE_DEPOT)) {
+                mission_test_write("ERR ORDER EXPECT=DEPOT\r\n");
+                continue;
+            }
+            depot = (uint8_t)(command[1] - '0');
+            ok = mission_test_send_wait(
+                ctx,
+                depot_commands[depot - 1U],
+                depot_events[depot - 1U],
+                MISSION_STATE_WAIT_DEPOT_1);
+            if (ok) {
+                g_wireless_test.depot_position = depot;
+                (void)snprintf(
+                    g_wireless_test.text,
+                    sizeof(g_wireless_test.text),
+                    "DONE D%u\r\n",
+                    (unsigned)depot);
+                mission_test_write(g_wireless_test.text);
+            }
+        } else if (strcmp(command, "HOME") == 0) {
+            if ((g_wireless_test.depot_position == 0U) ||
+                (g_wireless_test.expected != MISSION_TEST_STAGE_DEPOT)) {
+                mission_test_write("ERR ORDER EXPECT=DEPOT\r\n");
+                continue;
+            }
+            ok = true;
+            if (g_wireless_test.depot_position != 1U) {
+                ok = mission_test_send_wait(
+                    ctx, MISSION_CMD_GO_DEPOT_1,
+                    CHASSIS_CMD_DEPOT_1_READY,
+                    MISSION_STATE_WAIT_DEPOT_1);
+                if (ok) g_wireless_test.depot_position = 1U;
+            }
+            if (ok) {
+                request_id = mission_next_request_id(ctx);
+                mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1,
+                                    MISSION_OPERATION_TIMEOUT_MS);
+                ok = mission_send_chassis(
+                         MISSION_CMD_DEPOT_OK, request_id) &&
+                    mission_test_wait_chassis_event(
+                        ctx, CHASSIS_CMD_HOME_READY, request_id);
+            }
+            if (ok) {
+                g_wireless_test.expected = MISSION_TEST_STAGE_DONE;
+                mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
+                mission_test_write("DONE HOME\r\n");
+            }
+        } else {
+            (void)snprintf(
+                g_wireless_test.text,
+                sizeof(g_wireless_test.text),
+                "ERR ORDER EXPECT=%s\r\n",
+                mission_test_stage_name(g_wireless_test.expected));
+            mission_test_write(g_wireless_test.text);
+            continue;
+        }
+
+        if (!ok && !g_wireless_test.stop_requested &&
+            (ctx->state != MISSION_STATE_FAULT)) {
             mission_fail(ctx, MISSION_FAULT_CHASSIS);
-            return;
-        }
-        if (i == 0U) {
-            /* 首次到达仓库1号位后停留1秒，再开始仓库点位测试。 */
-            osDelay(mission_ms_to_ticks(
-                MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS));
+            mission_test_write("FAULT PATH\r\n");
         }
     }
-    request_id = mission_next_request_id(ctx);
-    mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1,
-                        MISSION_OPERATION_TIMEOUT_MS);
-    if (!mission_send_chassis(MISSION_CMD_DEPOT_OK, request_id) ||
-        !mission_chassis_test_wait_event(
-            CHASSIS_CMD_HOME_READY, request_id)) {
-        mission_fail(ctx, MISSION_FAULT_CHASSIS);
-        return;
-    }
-    mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
 }
+#endif
 
 /** @copydoc mission_app_init() */
 mission_app_status_t mission_app_init(void)
@@ -1865,12 +2534,10 @@ mission_app_status_t mission_app_init(void)
     /* 1) 清空运行上下文并初始化小球档案。 */
     (void)memset(ctx, 0, sizeof(*ctx));
     ball_manifest_init(&ctx->manifest);
-#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
-    /* 2) 初始化IC读卡器。 */
+    /* 2) 目标区域测试会复用正式读卡和车载转盘服务。 */
     if (ic_init() != IC_CARD_OK) {
         return MISSION_APP_ERR_IO;
     }
-    /* 3) 用正式参数初始化车载转盘。 */
     {
         turn_config_t config = {
             MISSION_ZDT_ADDRESS,
@@ -1881,7 +2548,8 @@ mission_app_status_t mission_app_init(void)
             return MISSION_APP_ERR_IO;
         }
     }
-    /* 4) 创建用户命令队列和唯一Mission任务。 */
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    /* 3) 正式流程创建用户命令队列；无线测试直接读取USART1。 */
     ctx->command_queue = osMessageQueueNew(
         MISSION_COMMAND_QUEUE_DEPTH,
         sizeof(mission_user_command_t),
@@ -1891,9 +2559,9 @@ mission_app_status_t mission_app_init(void)
     }
 #endif
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
-    /* 测试模式只创建模拟指令任务，避免初始化本轮不使用的业务设备。 */
+    /* 测试模式只创建独立无线任务，不改动正式Mission主任务。 */
     ctx->task = osThreadNew(
-        mission_chassis_route_test_entry, ctx, &g_mission_task_attr);
+        mission_wireless_test_entry, ctx, &g_mission_task_attr);
 #else
     ctx->task = osThreadNew(mission_task_entry, ctx, &g_mission_task_attr);
 #endif
@@ -1924,7 +2592,7 @@ mission_app_status_t mission_app_init(void)
 mission_app_status_t mission_app_submit_command(mission_user_command_t command)
 {
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
-    /* 整段测试上电自动运行，不接收正式红蓝方用户命令。 */
+    /* 无线测试任务直接解析USART1，不接收正式红蓝方用户命令。 */
     (void)command;
     return MISSION_APP_ERR_STATE;
 #else

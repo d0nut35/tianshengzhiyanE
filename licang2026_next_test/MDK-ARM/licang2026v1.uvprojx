@@ -314,7 +314,7 @@
           </ArmAdsMisc>
           <Cads>
             <interw>1</interw>
-            <Optim>6</Optim>
+            <Optim>4</Optim>
             <oTime>0</oTime>
             <SplitLS>0</SplitLS>
             <OneElfS>1</OneElfS>
@@ -1480,7 +1480,7 @@
                     <v6WtE>2</v6WtE>
                     <v6Rtti>2</v6Rtti>
                     <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
+                      <MiscControls>-fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
                       <Define></Define>
                       <Undefine></Undefine>
                       <IncludePath></IncludePath>
@@ -1561,7 +1561,7 @@
                     <v6WtE>2</v6WtE>
                     <v6Rtti>2</v6Rtti>
                     <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
+                      <MiscControls>-fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
                       <Define></Define>
                       <Undefine></Undefine>
                       <IncludePath></IncludePath>
@@ -1627,7 +1627,7 @@
                     <v6WtE>2</v6WtE>
                     <v6Rtti>2</v6Rtti>
                     <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
+                      <MiscControls>-fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
                       <Define></Define>
                       <Undefine></Undefine>
                       <IncludePath></IncludePath>
@@ -1753,7 +1753,7 @@
                     <v6WtE>2</v6WtE>
                     <v6Rtti>2</v6Rtti>
                     <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
+                      <MiscControls>-fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
                       <Define></Define>
                       <Undefine></Undefine>
                       <IncludePath></IncludePath>
@@ -1849,7 +1849,7 @@
                     <v6WtE>2</v6WtE>
                     <v6Rtti>2</v6Rtti>
                     <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
+                      <MiscControls>-fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
                       <Define></Define>
                       <Undefine></Undefine>
                       <IncludePath></IncludePath>
@@ -1950,7 +1950,7 @@
                     <v6WtE>2</v6WtE>
                     <v6Rtti>2</v6Rtti>
                     <VariousControls>
-                      <MiscControls>-Oz -fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
+                      <MiscControls>-fno-unwind-tables -fno-asynchronous-unwind-tables</MiscControls>
                       <Define></Define>
                       <Undefine></Undefine>
                       <IncludePath></IncludePath>

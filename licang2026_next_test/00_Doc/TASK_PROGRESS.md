@@ -2,6 +2,10 @@
 
 > 本文件保留旧阶段进度和实验记录，不作为当前状态入口。当前STM32状态读取`00_Doc/CURRENT_STATUS.md`；跨工程任务读取`D:\programfile\licang\00_Context\CURRENT_TASK.md`。
 
+## 0.5 2026-09-21 统一O3编译优化
+
+- 2026-09-21按用户要求统一使用O3：Keil目标Optim=4，分组/文件Optim=0继承目标，移除六处文件级-Oz覆盖，保留其余编译参数。ARMCLANG 6.24全量重建为0错误、0警告；Code=93960、RO-data=2580、RW-data=24、ZI-data=118592，Total ROM=96564字节，LR_IROM1=96568字节（上限1 MiB）。无线测试开关保持1，正式Mission及底盘源码未改。此结果仅为编译验证，O3下USART1、Nano/F7、底盘及整机尚未重新实测，未证明速度提升。
+
 ## 0.4 2026-09-21 无线分阶段测试与调参前检查点
 
 - STM32分支`licnag2026_E`新增本地提交`406ac35 增加Mission无线分阶段测试`；其后增加仓库专用`HOME_DIRECT`，用于从当前D1~D4位置直接执行已有回家路线。调参前初检时，本地远端跟踪引用`origin/main`和`origin/licnag2026_E`均为`8adb900`；用户随后授权提交并推送调参前版本。

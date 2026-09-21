@@ -1898,7 +1898,8 @@ static bool mission_test_handle_aux_command(
 
     if (strcmp(command, "HELP") == 0) {
         mission_test_write(
-            "PATH: PLATFORM STAIRS DISC DEPOT D1 D2 D3 D4 HOME\r\n"
+            "PATH: PLATFORM STAIRS DISC DEPOT D1 D2 D3 D4\r\n"
+            "DEPOT: HOME HOME_DIRECT\r\n"
             "TARGET: ROUTE PLATFORM|STAIRS|DISC RED|BLUE, ROUTE DEPOT\r\n"
             "QUERY: STATUS BALLS BALL n STOP HELP\r\n");
         return true;
@@ -2375,7 +2376,8 @@ static void mission_wireless_test_entry(void *argument)
                     mission_test_stage_name(g_wireless_test.target));
                 mission_test_write(g_wireless_test.text);
                 if (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT) {
-                    mission_test_write("READY D1 D2 D3 D4 HOME\r\n");
+                    mission_test_write(
+                        "READY D1 D2 D3 D4 HOME HOME_DIRECT\r\n");
                 }
             } else if (!g_wireless_test.stop_requested) {
                 mission_fail(ctx, MISSION_FAULT_CHASSIS);
@@ -2448,7 +2450,8 @@ static void mission_wireless_test_entry(void *argument)
             if (ok && mission_test_pause(ctx)) {
                 g_wireless_test.depot_position = 1U;
                 mission_test_write(
-                    "DONE DEPOT\r\nREADY D1 D2 D3 D4 HOME\r\n");
+                    "DONE DEPOT\r\n"
+                    "READY D1 D2 D3 D4 HOME HOME_DIRECT\r\n");
             } else {
                 ok = false;
             }
@@ -2475,14 +2478,17 @@ static void mission_wireless_test_entry(void *argument)
                     (unsigned)depot);
                 mission_test_write(g_wireless_test.text);
             }
-        } else if (strcmp(command, "HOME") == 0) {
+        } else if ((strcmp(command, "HOME") == 0) ||
+                   (strcmp(command, "HOME_DIRECT") == 0)) {
             if ((g_wireless_test.depot_position == 0U) ||
                 (g_wireless_test.expected != MISSION_TEST_STAGE_DEPOT)) {
                 mission_test_write("ERR ORDER EXPECT=DEPOT\r\n");
                 continue;
             }
             ok = true;
-            if (g_wireless_test.depot_position != 1U) {
+            /* HOME先回1号位；HOME_DIRECT用于验证当前位置直接回家。 */
+            if ((strcmp(command, "HOME") == 0) &&
+                (g_wireless_test.depot_position != 1U)) {
                 ok = mission_test_send_wait(
                     ctx, MISSION_CMD_GO_DEPOT_1,
                     CHASSIS_CMD_DEPOT_1_READY,
@@ -2501,7 +2507,9 @@ static void mission_wireless_test_entry(void *argument)
             if (ok) {
                 g_wireless_test.expected = MISSION_TEST_STAGE_DONE;
                 mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
-                mission_test_write("DONE HOME\r\n");
+                mission_test_write(
+                    (strcmp(command, "HOME_DIRECT") == 0)
+                    ? "DONE HOME_DIRECT\r\n" : "DONE HOME\r\n");
             }
         } else {
             (void)snprintf(

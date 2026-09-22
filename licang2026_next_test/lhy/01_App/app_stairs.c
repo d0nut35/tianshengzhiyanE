@@ -4,7 +4,7 @@
  * @note    - 沿地图 +y 反向慢速横移，层边界待实机标定
  *          - 末层不看 y，以 1 号灰度离线（高电平）作为线尾停车条件
  *          - 横移中每周期先分发命令再查边界；暂停期间不判边界
- *          - 切层后 Mission 异步切换视觉，切换期间车仍在走，属识别盲区
+ *          - 切层时停车等待视觉就绪，再原地稳定 1 s 后继续横移 [lyx]
  */
 
 #include "app_stairs.h"
@@ -31,8 +31,9 @@
 #endif
 
 /* 横移参数：车体系 vy 为负即沿地图 +y 反向前进 */
-#define ST_VY_MMS      (-70.0f) /* 横移速度，车体系 vy，mm/s */
+#define ST_VY_MMS      (-60.0f) /* 横移速度，车体系 vy，mm/s */
 #define ST_POLL_MS     10U      /* 横移中命令/位姿轮询周期，ms */
+#define ST_SETTLE_MS   1000U    /* 切层视觉就绪后的原地稳定时间，ms [lyx] */
 #define ST_HIGH_Y_MM   2700     /* 低层结束、高层起点 y，mm（暂定） */
 #define ST_MID_Y_MM    2420     /* 高层结束、中层起点 y，mm（暂定） */
 #define ST_END_ID      1U       /* 线尾检测灰度板上序号，离线即中层结束 */
@@ -44,6 +45,7 @@ typedef struct {
     uint8_t                moving;    /* 1=低层已放行，全程横移不再清零 */
     uint8_t                paused;    /* 1=收到 STAIR_STOP 尚未恢复 */
     uint8_t                cam_ready; /* 1=本层事件已被 CAM_READY 确认 */
+    uint8_t                settling;  /* 1=切层后原地稳定，恢复时暂不横移 [lyx] */
 } stair_ctx_t;
 
 /* 层结束判定方式 */
@@ -99,7 +101,7 @@ static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx)
                 break;
             }
             sc->paused = 0U;
-            if (sc->moving != 0U) {
+            if ((sc->moving != 0U) && (sc->settling == 0U)) {
                 (void)csvc_free(0.0f, ST_VY_MMS, 0.0f);
             }
             (void)link_post(CHASSIS_CMD_STAIR_RESUME, sc->req_id, 1U);
@@ -145,27 +147,44 @@ app_status_t stairs_sweep(uint16_t req_id)
 {
     stair_ctx_t  ctx;                        /* 运行上下文 */
     uint32_t     poll = util_ms_ticks(ST_POLL_MS); /* 轮询 tick 数 */
+    uint32_t     settle_start;               /* 切层稳定计时起点 [lyx] */
+    uint32_t     settle_ticks = util_ms_ticks(ST_SETTLE_MS); /* 稳定 tick [lyx] */
     uint8_t      done = 0U;                  /* 本层到边界标志 */
     uint8_t      i;                          /* 层索引 */
 
     ctx.req_id = req_id;
     ctx.paused = 0U;
     ctx.moving = 0U;
+    ctx.settling = 0U;
     for (i = 0U; i < ST_LAYER_NUM; i++) {
+        if (ctx.moving != 0U) {
+            /* [lyx] 高/中层切入前先停车，消除视觉会话切换期间的盲移。 */
+            if (align_stop() != ALIGN_OK) {
+                return APP_ERR;
+            }
+            ctx.settling = 1U;
+        }
         ctx.layer_evt = g_layers[i].evt;
         ctx.cam_ready = 0U;
         (void)link_post(ctx.layer_evt, req_id, 1U);
+        /* 每层都等视觉会话就绪；低层还要等机械臂先到识别姿态。 [lyx] */
+        while (ctx.cam_ready == 0U) {
+            (void)link_poll(stair_hook, &ctx, osWaitForever);
+        }
         if (ctx.moving == 0U) {
-            /* 仅低层起点等放行：机械臂需先到识别姿态 */
-            while (ctx.cam_ready == 0U) {
-                (void)link_poll(stair_hook, &ctx, osWaitForever);
-            }
             ctx.moving = 1U;
-            if ((ctx.paused == 0U) &&
-                (csvc_free(0.0f, ST_VY_MMS, 0.0f) != CSVC_OK)) {
-                ST_LOGE("stair move fail");
-                return APP_ERR;
+        } else {
+            /* [lyx] READY 后仍原地等 1 s，期间持续处理抓球暂停/恢复命令。 */
+            settle_start = osKernelGetTickCount();
+            while ((osKernelGetTickCount() - settle_start) < settle_ticks) {
+                (void)link_poll(stair_hook, &ctx, poll);
             }
+            ctx.settling = 0U;
+        }
+        if ((ctx.paused == 0U) &&
+            (csvc_free(0.0f, ST_VY_MMS, 0.0f) != CSVC_OK)) {
+            ST_LOGE("stair move fail");
+            return APP_ERR;
         }
         for (;;) {
             (void)link_poll(stair_hook, &ctx, poll);

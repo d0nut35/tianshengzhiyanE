@@ -33,9 +33,9 @@
 /* 横移参数：车体系 vy 为负即沿地图 +y 反向前进 */
 #define ST_VY_MMS      (-60.0f) /* 横移速度，车体系 vy，mm/s */
 #define ST_POLL_MS     10U      /* 横移中命令/位姿轮询周期，ms */
-#define ST_SETTLE_MS   1000U    /* 切层视觉就绪后的原地稳定时间，ms [lyx] */
-#define ST_HIGH_Y_MM   2700     /* 低层结束、高层起点 y，mm（暂定） */
-#define ST_MID_Y_MM    2420     /* 高层结束、中层起点 y，mm（暂定） */
+#define ST_SETTLE_MS   500U     /* 切层视觉就绪后的原地稳定时间，ms [lyx] */
+#define ST_HIGH_Y_MM   2750     /* 低层结束、高层起点 y，mm [lyx] */
+#define ST_MID_Y_MM    2400     /* 高层结束、中层起点 y，mm [lyx] */
 #define ST_END_ID      1U       /* 线尾检测灰度板上序号，离线即中层结束 */
 
 /* 运行上下文：暴露给命令钩子，使暂停与层事件互不阻塞 */

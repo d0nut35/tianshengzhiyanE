@@ -60,6 +60,11 @@
 #define APP_DEPOT_VY_MMS  (-70.0f)  /* 正向横移速度，车体系 vy，mm/s */
 #define APP_DEPOT_POLL_MS 10U       /* 横移中位姿轮询周期，ms */
 
+/* 绕完后沿车体 -x 开环后退，径向退出圆柱膨胀区（起点距圆心 300 < 膨胀半径 350），
+ * 否则去仓库的 A* 起点落在障碍内被拒 */
+#define APP_CYL_EXIT_VX_MMS (-100.0f) /* 退出速度，车体系 vx，mm/s */
+#define APP_CYL_EXIT_MS     2000U     /* 退出时长，≈200mm（暂定） */
+
 static osThreadId_t g_task = NULL;  /* 底盘任务 */
 static uint8_t      g_app_up = 0U;  /* 应用启动标志，1=资源就绪 */
 
@@ -245,6 +250,24 @@ static uint8_t depot_hook(const chassis_mission_command_t *cmd, void *ctx)
     return 1U;
 }
 
+
+
+/**
+ * @brief  沿车体 -x 开环后退固定时长，径向退出圆柱膨胀区后停车
+ * @retval APP_OK / APP_ERR=命令被拒
+ * @note   画圆时 ICR 恒在车体 +x 前方 |R| 处，车始终正对圆心，
+ *         故无论停在圆周何处，车体 -x 即径向外，与绕圈是否走满一圈无关
+ */
+static app_status_t cyl_exit(void)
+{
+    if (csvc_free(APP_CYL_EXIT_VX_MMS, 0.0f, 0.0f) != CSVC_OK) {
+        APP_LOGE("cyl exit fail");
+        return APP_ERR;
+    }
+    osDelay(APP_CYL_EXIT_MS);
+    return (align_stop() == ALIGN_OK) ? APP_OK : APP_ERR;
+}
+
 /**
  * @brief  应用主任务：按 Mission 命令串行执行底盘任务点
  * @param  arg 未用
@@ -297,6 +320,8 @@ static void app_task(void *arg)
             (void)link_post(CHASSIS_CMD_SMALL_DISC_FINISHED, id, ok);
         }
     }
+    /*圆盘退出逻辑*/
+    (void)cyl_exit();
 
     /* [lyx] 小圆盘退出姿态完成后，等待上层下发已有的仓库1号位命令。 */
     (void)link_wait(MISSION_CMD_GO_DEPOT_1, &id, osWaitForever);

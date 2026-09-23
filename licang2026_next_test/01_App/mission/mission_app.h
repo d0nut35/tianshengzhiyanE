@@ -89,6 +89,12 @@ typedef enum {
     MISSION_COLOR_BLUE,
 } mission_color_t;
 
+/**
+ * @brief 当前比赛红蓝方，供其他模块选择对应地图。
+ * @note 仅Mission任务写入；其他模块只读。启动前或纯路径测试时为NONE。
+ */
+extern volatile mission_color_t g_mission_side;
+
 typedef enum {
     MISSION_STAIR_NONE = 0,
     MISSION_STAIR_LOW,

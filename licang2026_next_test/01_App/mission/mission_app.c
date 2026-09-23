@@ -122,7 +122,6 @@ typedef struct {
 
     /* 单一state描述当前唯一允许完成的异步操作。 */
     mission_state_t state;
-    mission_color_t color;
     mission_stair_layer_t stair_layer;
     uint16_t request_id;
     uint32_t deadline_tick;
@@ -146,6 +145,9 @@ typedef struct {
 } mission_context_t;
 
 static mission_context_t g_mission;
+
+/* 当前比赛红蓝方由Mission唯一维护，其他模块只读并据此选择地图。 */
+volatile mission_color_t g_mission_side = MISSION_COLOR_NONE;
 
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
 /** USART1无线联调任务的运行状态和文本缓冲区。 */
@@ -589,7 +591,7 @@ static bool mission_start_vision(
     }
     session.session_id = ctx->vision.session_id;
     session.scene = ctx->vision.scene;
-    session.target_color = (ctx->color == MISSION_COLOR_RED) ?
+    session.target_color = (g_mission_side == MISSION_COLOR_RED) ?
         NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE;
     status = nano_vision_build_session_start_frame(
         mission_next_vision_sequence(&ctx->vision),
@@ -710,7 +712,7 @@ static bool mission_record_ball(
     } else {
         return false;
     }
-    color = (ctx->color == MISSION_COLOR_RED) ?
+    color = (g_mission_side == MISSION_COLOR_RED) ?
         BALL_MANIFEST_COLOR_RED : BALL_MANIFEST_COLOR_BLUE;
     if (read_ok) {
         status = ball_manifest_append(
@@ -900,7 +902,7 @@ static void mission_handle_vision(mission_context_t *ctx)
         if ((status != NANO_VISION_OK) ||
             (session.session_id != ctx->vision.session_id) ||
             (session.scene != ctx->vision.scene) ||
-            (session.target_color != ((ctx->color == MISSION_COLOR_RED) ?
+            (session.target_color != ((g_mission_side == MISSION_COLOR_RED) ?
                 NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE))) {
             mission_fail(ctx, MISSION_FAULT_VISION);
             return;
@@ -959,7 +961,7 @@ static void mission_handle_vision(mission_context_t *ctx)
         (event.session_id != ctx->vision.session_id) ||
         (event.observation.scene != ctx->vision.scene) ||
         (event.observation.status != NANO_VISION_OBS_VALID) ||
-        (event.observation.color != ((ctx->color == MISSION_COLOR_RED) ?
+        (event.observation.color != ((g_mission_side == MISSION_COLOR_RED) ?
             NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE)) ||
         (event.observation.age_ms > MISSION_VISION_EVENT_MAX_AGE_MS)) {
         return;
@@ -1079,7 +1081,7 @@ static void mission_start_run(mission_context_t *ctx, mission_color_t color)
     uint16_t request_id = mission_next_request_id(ctx);
 
     /* 1) 保存红蓝方并清空本轮小球、槽位和故障计数。 */
-    ctx->color = color;
+    g_mission_side = color;
     ctx->platform_balls = 0U;
     ctx->stair_balls = 0U;
     ctx->small_disc_balls = 0U;
@@ -1789,7 +1791,7 @@ static void mission_test_print_status(const mission_context_t *ctx)
         mission_test_stage_name(g_wireless_test.target),
         mission_test_stage_name(g_wireless_test.expected),
         (unsigned)ctx->state,
-        mission_test_color_name(ctx->color),
+        mission_test_color_name(g_mission_side),
         (unsigned)ctx->manifest.count,
         (unsigned)ctx->storage_slot,
         (unsigned)ctx->fault_code);
@@ -2339,10 +2341,10 @@ static void mission_wireless_test_entry(void *argument)
             } else {
                 g_wireless_test.target = MISSION_TEST_STAGE_DEPOT;
             }
-            ctx->color = (strstr(command, " BLUE") != NULL)
+            g_mission_side = (strstr(command, " BLUE") != NULL)
                 ? MISSION_COLOR_BLUE : MISSION_COLOR_RED;
             if (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT) {
-                ctx->color = MISSION_COLOR_NONE;
+                g_mission_side = MISSION_COLOR_NONE;
             }
             ctx->platform_balls = 0U;
             ctx->stair_balls = 0U;
@@ -2362,7 +2364,7 @@ static void mission_wireless_test_entry(void *argument)
                 sizeof(g_wireless_test.text),
                 "OK ROUTE TARGET=%s COLOR=%s\r\n",
                 mission_test_stage_name(g_wireless_test.target),
-                mission_test_color_name(ctx->color));
+                mission_test_color_name(g_mission_side));
             mission_test_write(g_wireless_test.text);
             ok = mission_test_run_target(ctx, g_wireless_test.target);
             if (ok) {
@@ -2394,7 +2396,7 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             g_wireless_test.mode = MISSION_TEST_MODE_PATH;
-            ctx->color = MISSION_COLOR_NONE;
+            g_mission_side = MISSION_COLOR_NONE;
             ok = mission_test_skip_platform(ctx);
             if (ok) {
                 g_wireless_test.expected = MISSION_TEST_STAGE_STAIRS;
@@ -2541,6 +2543,7 @@ mission_app_status_t mission_app_init(void)
     }
     /* 1) 清空运行上下文并初始化小球档案。 */
     (void)memset(ctx, 0, sizeof(*ctx));
+    g_mission_side = MISSION_COLOR_NONE;
     ball_manifest_init(&ctx->manifest);
     /* 2) 目标区域测试会复用正式读卡和车载转盘服务。 */
     if (ic_init() != IC_CARD_OK) {
@@ -2637,7 +2640,7 @@ mission_app_status_t mission_app_get_snapshot(mission_app_snapshot_t *snapshot)
     }
     taskENTER_CRITICAL();
     snapshot->state = ctx->state;
-    snapshot->color = ctx->color;
+    snapshot->color = g_mission_side;
     snapshot->stair_layer = ctx->stair_layer;
     snapshot->chassis_request_id = ctx->request_id;
     snapshot->platform_balls = ctx->platform_balls;

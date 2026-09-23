@@ -55,11 +55,11 @@ static const route_pt_t g_route[ROUTE_NUM] = {
     /* STAIRS：阶梯起始工作位，即低层起点 */
     { CSVC_NAV_PATH, {2100, 2920},   0.0f, 500.0f, 60.0f,
       {2107, 2950}, FIX_LINE },
-    /* CYL_PRE：圆柱前置点，先直线到此再平推入位，避免斜穿 */
-    { CSVC_NAV_LINE, {1700, 2520}, 180.0f, 500.0f, 60.0f,
+    /* [lyx] CYL_PRE：圆柱前置点，先直线到此再平推入位，避免斜穿 */
+    { CSVC_NAV_LINE, {1700, 2595}, 180.0f, 500.0f, 60.0f,
       {   0,    0}, FIX_NONE },
-    /* CYL：圆柱绕圈起点，到点后由 app_main 定半径绕一圈 */
-    { CSVC_NAV_LINE, {1550, 2560}, 180.0f, 500.0f, 60.0f,
+    /* [lyx] CYL：圆柱绕圈起点，到点后由 app_main 定半径绕一圈 */
+    { CSVC_NAV_LINE, {1475, 2595}, 180.0f, 500.0f, 60.0f,
       {   0,    0}, FIX_NONE },
     /* DEPOT：立体仓库 1 号工作位，找线标定后作为 2~4 号位横移基准 */
     { CSVC_NAV_PATH, { 440, 2208}, 180.0f, 500.0f, 60.0f,

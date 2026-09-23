@@ -49,11 +49,14 @@
 
 /* 绕圆柱一圈：定半径画圆跑固定时长后停车，时长以 2πR/v 理论值起步、实机标定 */
 #define APP_CYL_SETTLE_MS 1000U     /* 到绕圈起点后等底盘稳定，ms */
-#define APP_CYL_V_MMS     200.0f    /* 绕圈线速度，mm/s */
-#define APP_CYL_R_MM      (-350.0f) /* 绕圈半径，符号定转向，mm */
-#define APP_CYL_ARC_MS    11000U    /* 一圈时长，2π·350/200≈11.0s（暂定） */
+#define APP_CYL_V_MMS     180.0f    /* [lyx] 绕圈线速度，mm/s */
+#define APP_CYL_R_MM      (-315.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
+#define APP_CYL_ARC_MS    11545U    /* [lyx] 180mm/s、半径315mm理论绕1.05圈 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
+/* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */
+#define APP_CYL_EXIT_VX_MMS (-100.0f) /* [lyx] 车体 -x 平移速度，mm/s */
+#define APP_CYL_EXIT_MS     1800U     /* [lyx] 平移时长，理论位移约180mm */
 
 /* 仓库横移：1 号位找线标定后按里程计 y 在 1~4 号位间开环横移，不再找线；
  * [lyx] 航向 180° 时车体系 vy 为负即沿地图 +y 前进，反向时取相反速度。 */
@@ -112,6 +115,11 @@ static uint8_t small_disc_hook(
     small_disc_ctx_t *disc = (small_disc_ctx_t *)ctx;
     uint8_t ok = 1U;
 
+    /* [lyx] 全局STOP交给链路停车，同时结束当前绕行或退出动作。 */
+    if (cmd->type == MISSION_CMD_STOP) {
+        disc->failed = 1U;
+        return 0U;
+    }
     if ((cmd->type != MISSION_CMD_SMALL_DISC_STOP) &&
         (cmd->type != MISSION_CMD_SMALL_DISC_RESUME)) {
         return 0U;
@@ -149,6 +157,26 @@ static uint8_t small_disc_hook(
     return 1U;
 }
 
+/** [lyx] 绕行结束后沿车体 -x 平移，期间继续处理停车命令。 */
+static app_status_t small_disc_exit(small_disc_ctx_t *ctx, uint32_t poll_ticks)
+{
+    uint32_t started = osKernelGetTickCount();
+
+    if (csvc_free(APP_CYL_EXIT_VX_MMS, 0.0f, 0.0f) != CSVC_OK) {
+        APP_LOGE("small disc exit fail");
+        return APP_ERR;
+    }
+    while ((osKernelGetTickCount() - started) <
+           util_ms_ticks(APP_CYL_EXIT_MS)) {
+        (void)link_poll(small_disc_hook, ctx, poll_ticks);
+        if ((ctx->paused != 0U) || (ctx->failed != 0U)) {
+            (void)align_stop();
+            return APP_ERR;
+        }
+    }
+    return (align_stop() == ALIGN_OK) ? APP_OK : APP_ERR;
+}
+
 /**
  * @brief  [lyx] 绕小圆盘完整一圈，并允许视觉触发停车和恢复
  * @param  req_id 小圆盘阶段请求编号
@@ -181,7 +209,7 @@ static app_status_t small_disc_round(uint16_t req_id)
     if ((align_stop() != ALIGN_OK) || (ctx.failed != 0U)) {
         return APP_ERR;
     }
-    return APP_OK;
+    return small_disc_exit(&ctx, poll_ticks);
 }
 
 /**

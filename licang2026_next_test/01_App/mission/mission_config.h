@@ -14,7 +14,7 @@
  * Mission无线联调开关：1=USART1指令测试任务，0=正式比赛流程。
  * 测试任务支持纯路径分段控制，以及只在指定区域启用完整视觉抓取。
  */
-#define MISSION_CHASSIS_ROUTE_TEST_ENABLED  1U
+#define MISSION_CHASSIS_ROUTE_TEST_ENABLED  0U
 #define MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS 2000U
 #define MISSION_WIRELESS_POLL_MS               10U
 

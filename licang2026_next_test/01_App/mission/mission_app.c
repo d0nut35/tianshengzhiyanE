@@ -142,6 +142,10 @@ typedef struct {
     bool initialized;
     bool chassis_ready;
     uint8_t active_arm_group;
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    uint8_t arm_boot_state;                 /* 0=未尝试，1=注册失败，2=下发失败，3=已入队。 */
+    volatile uint32_t arm_last_action_report; /* 高位为事件，低8位为动作组。 */
+#endif
 } mission_context_t;
 
 static mission_context_t g_mission;
@@ -155,9 +159,10 @@ typedef struct {
     debug_uart1_t debug;                   /* 现有DMA空闲接收封装。 */
     mission_test_mode_t mode;              /* 本轮测试方式。 */
     mission_test_stage_t target;           /* 唯一启用抓取的区域。 */
-    mission_test_stage_t expected;         /* 当前允许的路径指令。 */
+    mission_test_stage_t expected;         /* 下一个未完成的纯路径阶段。 */
     uint8_t depot_position;                /* 0=未进仓库，1~4=当前位置。 */
     uint8_t reported_ball_count;           /* 已自动打印的球记录数。 */
+    bool arm_ready;                         /* 动作组10完成回报已被测试任务确认。 */
     bool stop_requested;                   /* STOP已下发，等待停车回执。 */
     char text[224];                        /* 单条可读回复缓冲区。 */
 } mission_wireless_test_t;
@@ -177,7 +182,7 @@ static uint32_t mission_ms_to_ticks(uint32_t ms);
 static uint32_t mission_wait_ticks(const mission_context_t *ctx);
 /** Mission主任务入口，串行处理命令、底盘和设备事件。 */
 static void mission_task_entry(void *argument);
-/** 动作组10下接收USART1指令的独立联调任务。 */
+/** 机械臂可选、底盘就绪后接收USART1指令的独立联调任务。 */
 static void mission_wireless_test_entry(void *argument);
 /** 机械臂命令发送完成回调；发送失败时唤醒Mission。 */
 static void mission_arm_tx_done(
@@ -354,6 +359,16 @@ static void mission_arm_report(
     mission_context_t *ctx = (mission_context_t *)user_ctx;
     uint32_t flag = 0U;
 
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    /* 诊断保留原始组号，便于发现完成回报未匹配当前动作组。 */
+    if ((ctx != NULL) && (report != NULL) &&
+        ((report_events & (LSC16_REPORT_EVENT_ACTION_STARTED |
+                           LSC16_REPORT_EVENT_ACTION_STOPPED |
+                           LSC16_REPORT_EVENT_ACTION_COMPLETED)) != 0U)) {
+        ctx->arm_last_action_report =
+            ((report_events & 0xFFU) << 8) | report->action_group;
+    }
+#endif
     if ((ctx == NULL) || (report == NULL) ||
         (report->action_group != ctx->active_arm_group)) {
         return;
@@ -1786,7 +1801,8 @@ static void mission_test_print_status(const mission_context_t *ctx)
         g_wireless_test.text,
         sizeof(g_wireless_test.text),
         "STATUS MODE=%s TARGET=%s EXPECT=%s STATE=%u COLOR=%s "
-        "BALLS=%u SLOT=%u FAULT=%u\r\n",
+        "BALLS=%u SLOT=%u FAULT=%u ARM_BOOT=%u ARM_READY=%u "
+        "ARM_GROUP=%u ARM_EVENT=0x%02X\r\n",
         mode,
         mission_test_stage_name(g_wireless_test.target),
         mission_test_stage_name(g_wireless_test.expected),
@@ -1794,7 +1810,11 @@ static void mission_test_print_status(const mission_context_t *ctx)
         mission_test_color_name(g_mission_side),
         (unsigned)ctx->manifest.count,
         (unsigned)ctx->storage_slot,
-        (unsigned)ctx->fault_code);
+        (unsigned)ctx->fault_code,
+        (unsigned)ctx->arm_boot_state,
+        (unsigned)g_wireless_test.arm_ready,
+        (unsigned)(ctx->arm_last_action_report & 0xFFU),
+        (unsigned)((ctx->arm_last_action_report >> 8) & 0xFFU));
     mission_test_write(g_wireless_test.text);
 }
 
@@ -1900,7 +1920,7 @@ static bool mission_test_handle_aux_command(
 
     if (strcmp(command, "HELP") == 0) {
         mission_test_write(
-            "PATH: PLATFORM STAIRS DISC DEPOT D1 D2 D3 D4\r\n"
+            "PATH: PLATFORM STAIR DISC DEPOT D1 D2 D3 D4\r\n"
             "DEPOT: HOME HOME_DIRECT\r\n"
             "TARGET: ROUTE PLATFORM|STAIRS|DISC RED|BLUE, ROUTE DEPOT\r\n"
             "QUERY: STATUS BALLS BALL n STOP HELP\r\n");
@@ -2070,7 +2090,10 @@ static bool mission_test_skip_stairs(mission_context_t *ctx)
                 continue;
             }
             if (event.is_ready == 0U) return false;
-            if (event.type == CHASSIS_CMD_STAIR_LOW) {
+            /* 纯路径测试不启动视觉，逐层确认底盘的停车等待。 */
+            if ((event.type == CHASSIS_CMD_STAIR_LOW) ||
+                (event.type == CHASSIS_CMD_STAIR_HIGH) ||
+                (event.type == CHASSIS_CMD_STAIR_MID)) {
                 if (!mission_send_chassis(MISSION_CMD_CAM_READY, request_id)) {
                     return false;
                 }
@@ -2248,7 +2271,6 @@ static void mission_wireless_test_entry(void *argument)
     char command[DEBUG_UART1_RX_BUFFER_SIZE];
     uint32_t flags;
     uint16_t request_id;
-    uint8_t arm_ready = 0U;
     uint8_t chassis_ready = 0U;
     uint8_t depot;
     bool ok;
@@ -2261,22 +2283,18 @@ static void mission_wireless_test_entry(void *argument)
     }
     mission_test_write("MISSION WIRELESS TEST BOOT\r\n");
 
-    /* 0) 动作组10和底盘可并行初始化，双方均完成后再回复握手。 */
-    mission_enter_state(ctx, MISSION_STATE_WAIT_HOME, 0U);
-    while ((arm_ready == 0U) || (chassis_ready == 0U)) {
+    /* [lyx] 测试模式只等底盘握手；动作组10成功才开放抓球ROUTE。 */
+    mission_enter_state(ctx, MISSION_STATE_WAIT_CHASSIS_READY, 0U);
+    while (chassis_ready == 0U) {
         flags = osThreadFlagsWait(
             CHASSIS_MISSION_FLAG_EVENT | MISSION_FLAG_ARM_OK |
                 MISSION_FLAG_ARM_FAIL,
             osFlagsWaitAny,
             osWaitForever);
         if ((flags & MISSION_FLAG_ARM_FAIL) != 0U) {
-            mission_fail(ctx, MISSION_FAULT_ARM);
-            mission_test_write("FAULT ARM HOME\r\n");
-            return;
-        }
-        if ((flags & MISSION_FLAG_ARM_OK) != 0U) {
-            arm_ready = 1U;
-            mission_enter_state(ctx, MISSION_STATE_WAIT_CHASSIS_READY, 0U);
+            g_wireless_test.arm_ready = false;
+        } else if ((flags & MISSION_FLAG_ARM_OK) != 0U) {
+            g_wireless_test.arm_ready = true;
         }
         if ((flags & CHASSIS_MISSION_FLAG_EVENT) != 0U) {
             while (osMessageQueueGet(
@@ -2296,9 +2314,21 @@ static void mission_wireless_test_entry(void *argument)
     }
     mission_enter_state(ctx, MISSION_STATE_READY, 0U);
     g_wireless_test.expected = MISSION_TEST_STAGE_PLATFORM;
-    mission_test_write("READY EXPECT=PLATFORM OR ROUTE\r\n");
+    mission_test_write("READY PLATFORM STAIR DISC DEPOT OR ROUTE\r\n");
 
     for (;;) {
+        /* [lyx] 动作组10可晚于底盘握手完成，空闲时继续接收其结果。 */
+        flags = osThreadFlagsWait(
+            MISSION_FLAG_ARM_OK | MISSION_FLAG_ARM_FAIL,
+            osFlagsWaitAny, 0U);
+        /* 0超时无事件会返回osFlagsErrorResource，不能按事件位解释。 */
+        if ((flags & osFlagsError) == 0U) {
+            if ((flags & MISSION_FLAG_ARM_FAIL) != 0U) {
+                g_wireless_test.arm_ready = false;
+            } else if ((flags & MISSION_FLAG_ARM_OK) != 0U) {
+                g_wireless_test.arm_ready = true;
+            }
+        }
         if (!mission_test_take_command(command, sizeof(command))) {
             osDelay(mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
             continue;
@@ -2331,7 +2361,6 @@ static void mission_wireless_test_entry(void *argument)
                 mission_test_write("ERR RESET REQUIRED\r\n");
                 continue;
             }
-            g_wireless_test.mode = MISSION_TEST_MODE_TARGET;
             if (strncmp(command, "ROUTE PLATFORM", 14U) == 0) {
                 g_wireless_test.target = MISSION_TEST_STAGE_PLATFORM;
             } else if (strncmp(command, "ROUTE STAIRS", 12U) == 0) {
@@ -2341,6 +2370,13 @@ static void mission_wireless_test_entry(void *argument)
             } else {
                 g_wireless_test.target = MISSION_TEST_STAGE_DEPOT;
             }
+            /* [lyx] 抓球ROUTE不能在机械臂未就绪时静默跳过动作组。 */
+            if ((g_wireless_test.target != MISSION_TEST_STAGE_DEPOT) &&
+                !g_wireless_test.arm_ready) {
+                mission_test_write("ERR ARM UNAVAILABLE\r\n");
+                continue;
+            }
+            g_wireless_test.mode = MISSION_TEST_MODE_TARGET;
             g_mission_side = (strstr(command, " BLUE") != NULL)
                 ? MISSION_COLOR_BLUE : MISSION_COLOR_RED;
             if (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT) {
@@ -2388,7 +2424,7 @@ static void mission_wireless_test_entry(void *argument)
             continue;
         }
 
-        /* 2) 纯路径模式由每条短指令逐段放行，不启用任何视觉或抓球。 */
+        /* 2) 纯路径指令直达目标阶段；已完成的前段不重复执行。 */
         if (strcmp(command, "PLATFORM") == 0) {
             if ((g_wireless_test.mode != MISSION_TEST_MODE_IDLE) ||
                 (g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM)) {
@@ -2400,11 +2436,13 @@ static void mission_wireless_test_entry(void *argument)
             ok = mission_test_skip_platform(ctx);
             if (ok) {
                 g_wireless_test.expected = MISSION_TEST_STAGE_STAIRS;
-                mission_test_write("DONE PLATFORM\r\nREADY STAIRS\r\n");
+                mission_test_write("DONE PLATFORM\r\nREADY STAIR DISC DEPOT\r\n");
             }
-        } else if (strcmp(command, "STAIRS") == 0) {
-            if ((g_wireless_test.mode != MISSION_TEST_MODE_PATH) ||
-                (g_wireless_test.expected != MISSION_TEST_STAGE_STAIRS)) {
+        } else if ((strcmp(command, "STAIR") == 0) ||
+                   (strcmp(command, "STAIRS") == 0)) {
+            if ((g_wireless_test.mode == MISSION_TEST_MODE_TARGET) ||
+                ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) &&
+                 (g_wireless_test.expected != MISSION_TEST_STAGE_STAIRS))) {
                 (void)snprintf(
                     g_wireless_test.text,
                     sizeof(g_wireless_test.text),
@@ -2413,15 +2451,21 @@ static void mission_wireless_test_entry(void *argument)
                 mission_test_write(g_wireless_test.text);
                 continue;
             }
-            ok = mission_test_skip_stairs(ctx);
+            g_wireless_test.mode = MISSION_TEST_MODE_PATH;
+            g_mission_side = MISSION_COLOR_NONE;
+            ok = ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) ||
+                  mission_test_skip_platform(ctx)) &&
+                 mission_test_skip_stairs(ctx);
             if (ok) {
                 g_wireless_test.expected = MISSION_TEST_STAGE_SMALL_DISC;
-                mission_test_write("DONE STAIRS\r\nREADY DISC\r\n");
+                mission_test_write("DONE STAIRS\r\nREADY DISC DEPOT\r\n");
             }
         } else if (strcmp(command, "DISC") == 0) {
-            if ((g_wireless_test.mode != MISSION_TEST_MODE_PATH) ||
-                (g_wireless_test.expected !=
-                 MISSION_TEST_STAGE_SMALL_DISC)) {
+            if ((g_wireless_test.mode == MISSION_TEST_MODE_TARGET) ||
+                ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) &&
+                 (g_wireless_test.expected != MISSION_TEST_STAGE_STAIRS) &&
+                 (g_wireless_test.expected !=
+                  MISSION_TEST_STAGE_SMALL_DISC))) {
                 (void)snprintf(
                     g_wireless_test.text,
                     sizeof(g_wireless_test.text),
@@ -2430,14 +2474,23 @@ static void mission_wireless_test_entry(void *argument)
                 mission_test_write(g_wireless_test.text);
                 continue;
             }
-            ok = mission_test_skip_small_disc(ctx);
+            g_wireless_test.mode = MISSION_TEST_MODE_PATH;
+            g_mission_side = MISSION_COLOR_NONE;
+            ok = ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) ||
+                  mission_test_skip_platform(ctx)) &&
+                 ((g_wireless_test.expected == MISSION_TEST_STAGE_SMALL_DISC) ||
+                  mission_test_skip_stairs(ctx)) &&
+                 mission_test_skip_small_disc(ctx);
             if (ok) {
                 g_wireless_test.expected = MISSION_TEST_STAGE_DEPOT;
                 mission_test_write("DONE DISC\r\nREADY DEPOT\r\n");
             }
         } else if (strcmp(command, "DEPOT") == 0) {
-            if ((g_wireless_test.mode != MISSION_TEST_MODE_PATH) ||
-                (g_wireless_test.expected != MISSION_TEST_STAGE_DEPOT)) {
+            if ((g_wireless_test.mode == MISSION_TEST_MODE_TARGET) ||
+                ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) &&
+                 (g_wireless_test.expected != MISSION_TEST_STAGE_STAIRS) &&
+                 (g_wireless_test.expected != MISSION_TEST_STAGE_SMALL_DISC) &&
+                 (g_wireless_test.expected != MISSION_TEST_STAGE_DEPOT))) {
                 (void)snprintf(
                     g_wireless_test.text,
                     sizeof(g_wireless_test.text),
@@ -2446,10 +2499,23 @@ static void mission_wireless_test_entry(void *argument)
                 mission_test_write(g_wireless_test.text);
                 continue;
             }
-            ok = mission_test_send_wait(
-                ctx, MISSION_CMD_GO_DEPOT_1, CHASSIS_CMD_DEPOT_1_READY,
-                MISSION_STATE_WAIT_DEPOT_1);
+            g_wireless_test.mode = MISSION_TEST_MODE_PATH;
+            g_mission_side = MISSION_COLOR_NONE;
+            /* 小圆盘完成后先停车，再沿用原命令进入仓库1号位。 */
+            ok = ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) ||
+                  mission_test_skip_platform(ctx)) &&
+                 ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM &&
+                   g_wireless_test.expected != MISSION_TEST_STAGE_STAIRS) ||
+                  mission_test_skip_stairs(ctx)) &&
+                 ((g_wireless_test.expected == MISSION_TEST_STAGE_DEPOT) ||
+                  mission_test_skip_small_disc(ctx)) &&
+                 mission_test_send_wait(
+                     ctx, MISSION_CMD_GO_DEPOT_1,
+                     CHASSIS_CMD_DEPOT_1_READY,
+                     MISSION_STATE_WAIT_DEPOT_1);
             if (ok && mission_test_pause(ctx)) {
+                /* 直达仓库成功后开放D1~D4和回家指令。 */
+                g_wireless_test.expected = MISSION_TEST_STAGE_DEPOT;
                 g_wireless_test.depot_position = 1U;
                 mission_test_write(
                     "DONE DEPOT\r\n"
@@ -2583,6 +2649,25 @@ mission_app_status_t mission_app_init(void)
     if (!chassis_mission_link_bind_mission_task(ctx->task)) {
         return MISSION_APP_ERR_RESOURCE;
     }
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    /* [lyx] 测试模式尝试动作组10，但缺臂或下发失败不阻塞纯路径。 */
+    ctx->initialized = true;
+    if (arm_on_report(mission_arm_report, ctx) == LSC16_OK) {
+        ctx->active_arm_group = MISSION_HOME_ACTION_GROUP;
+        if (arm_run(
+                MISSION_HOME_ACTION_GROUP,
+                1U,
+                mission_arm_tx_done,
+                ctx) != LSC16_OK) {
+            ctx->active_arm_group = 0U;
+            ctx->arm_boot_state = 2U;
+        } else {
+            ctx->arm_boot_state = 3U;
+        }
+    } else {
+        ctx->arm_boot_state = 1U;
+    }
+#else
     if (arm_on_report(mission_arm_report, ctx) != LSC16_OK) {
         return MISSION_APP_ERR_IO;
     }
@@ -2596,6 +2681,7 @@ mission_app_status_t mission_app_init(void)
             ctx) != LSC16_OK) {
         return MISSION_APP_ERR_IO;
     }
+#endif
     return MISSION_APP_OK;
 }
 

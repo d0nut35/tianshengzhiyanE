@@ -47,11 +47,11 @@
 /* 阶梯末层以 1 号灰度离线停车，该处 y 按实机标定；x 与航向沿用里程计 */
 #define APP_STAIR_END_Y_MM 2144
 
-/* 绕圆柱一圈：定半径画圆跑固定时长后停车，时长以 2πR/v 理论值起步、实机标定 */
+/* [lyx] 绕圆柱1.15圈：定半径画圆跑固定时长后停车，时长以 2πR/v 理论值起步、实机标定 */
 #define APP_CYL_SETTLE_MS 1000U     /* 到绕圈起点后等底盘稳定，ms */
 #define APP_CYL_V_MMS     180.0f    /* [lyx] 绕圈线速度，mm/s */
-#define APP_CYL_R_MM      (-315.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
-#define APP_CYL_ARC_MS    11545U    /* [lyx] 180mm/s、半径315mm理论绕1.05圈 */
+#define APP_CYL_R_MM      (-318.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
+#define APP_CYL_ARC_MS    12765U    /* [lyx] 180mm/s、半径318mm理论绕1.15圈 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
 /* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */
@@ -73,8 +73,8 @@ static const struct {
     chassis_command_type_t rsp;  /* 到位后回执的事件类型 */
 } g_depot_tbl[] = {
     { MISSION_CMD_GO_DEPOT_1, 2208, CHASSIS_CMD_DEPOT_1_READY },
-    { MISSION_CMD_GO_DEPOT_2, 2403, CHASSIS_CMD_DEPOT_2_READY },
-    { MISSION_CMD_GO_DEPOT_3, 2598, CHASSIS_CMD_DEPOT_3_READY },
+    { MISSION_CMD_GO_DEPOT_2, 2407, CHASSIS_CMD_DEPOT_2_READY },
+    { MISSION_CMD_GO_DEPOT_3, 2608, CHASSIS_CMD_DEPOT_3_READY },
     { MISSION_CMD_GO_DEPOT_4, 2793, CHASSIS_CMD_DEPOT_4_READY },
 };
 
@@ -178,7 +178,7 @@ static app_status_t small_disc_exit(small_disc_ctx_t *ctx, uint32_t poll_ticks)
 }
 
 /**
- * @brief  [lyx] 绕小圆盘完整一圈，并允许视觉触发停车和恢复
+ * @brief  [lyx] 绕小圆盘指定圈数，并允许视觉触发停车和恢复
  * @param  req_id 小圆盘阶段请求编号
  * @retval APP_OK / APP_ERR=画圆、停车、恢复或回执失败
  * @note   只累计底盘实际运动时间，抓球暂停后仍会补完剩余圆周。

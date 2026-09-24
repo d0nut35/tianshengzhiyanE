@@ -62,7 +62,7 @@ static const route_pt_t g_route[ROUTE_NUM] = {
     { CSVC_NAV_LINE, {1475, 2595}, 180.0f, 500.0f, 60.0f,
       {   0,    0}, FIX_NONE },
     /* DEPOT：立体仓库 1 号工作位，找线标定后作为 2~4 号位横移基准 */
-    { CSVC_NAV_PATH, { 440, 2208}, 180.0f, 500.0f, 60.0f,
+    { CSVC_NAV_PATH, { 440, 2286}, 180.0f, 500.0f, 60.0f,
       { 403, 2208}, FIX_LINE },
     /* HOME：起点，直线返回不做找线对齐 */
     { CSVC_NAV_LINE, {1270,  350}, 180.0f, 500.0f, 30.0f,

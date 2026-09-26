@@ -29,6 +29,7 @@
 #include "test_config.h"
 #include "chassis_mission_link.h"
 #include "../01_App/mission/mission_app.h"
+#include "../01_App/mission/mission_config.h"
 
 #if MULT_UART_FREERTOS_TEST_ENABLED
 #include "mult_uart_freertos_test.h"
@@ -121,9 +122,12 @@ void MX_FREERTOS_Init(void) {
    * UART8舵控板与UART7复用器物理独立。机械臂Service在此完成装配，
    * 以验证动作组10(安全姿态)、11(识别姿态)和12(抓取放置)的单球闭环。
    */
+  /* [lyx] 无线测试允许机械臂缺席，其他模式仍要求初始化成功。 */
   if (arm_init() != LSC16_OK)
   {
+#if (LICANG_ACTIVE_TEST != LICANG_TEST_NONE) || !MISSION_CHASSIS_ROUTE_TEST_ENABLED
     Error_Handler();
+#endif
   }
 #elif IC_CARD_FREERTOS_TEST_ENABLED
   /* IC卡直连测试独占UART7，因此不能同时初始化复用总线的HAL adapter。 */

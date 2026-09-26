@@ -344,6 +344,15 @@ csvc_status_t csvc_init(void)
     return CSVC_OK;
 }
 
+csvc_status_t csvc_load_field(uint8_t mirror)
+{
+    if (g_inited == 0U) {
+        return CSVC_ERR_INIT;
+    }
+    /* 地图仅被调用方线程的 csvc_plan 读取，不与三个内部线程共享，免锁 */
+    return (map_adp_load_field(mirror) == MAP_OK) ? CSVC_OK : CSVC_ERR;
+}
+
 csvc_status_t csvc_set_pose(map_point_t pos, float yaw_deg)
 {
     chassis_status_t ret = CHASSIS_ERR; /* 重定位结果 */

@@ -49,17 +49,20 @@ map_status_t map_adp_init(void)
         return ret;
     }
 
-    return map_adp_load_field();
+    return map_adp_load_field(0U);
 }
 
 /**
  * @brief  载入本场地障碍布局（设障碍时引擎按车半径膨胀）
+ * @param  mirror 0=默认布局 / 1=关于 x=MAP_X_MAX_MM/2 镜像后的布局
  * @retval MAP_OK / MAP_ERR_INIT / MAP_ERR_PARAM
  */
-map_status_t map_adp_load_field(void)
+map_status_t map_adp_load_field(uint8_t mirror)
 {
     uint16_t i = 0U;                /* 障碍表下标 */
     uint16_t n = 0U;                /* 障碍表元素数 */
+    int16_t x1 = 0;                 /* 本处障碍 x1/圆心 x，已按场地侧换算 */
+    int16_t x2 = 0;                 /* 本处障碍 x2，已按场地侧换算 */
     map_status_t ret = MAP_ERR;      /* 单处障碍写入状态 */
 
     ret = map_clear();               /* 顺带守初始化（未初始化返回 INIT） */
@@ -69,11 +72,17 @@ map_status_t map_adp_load_field(void)
 
     n = (uint16_t)(sizeof(g_field_obs) / sizeof(g_field_obs[0]));
     for (i = 0U; i < n; i++) {
+        x1 = g_field_obs[i].x1_mm;
+        x2 = g_field_obs[i].x2_mm;
+        if (0U != mirror) {          /* 只翻 x；矩形角点顺序由引擎自取 min/max */
+            x1 = (int16_t)((int16_t)MAP_X_MAX_MM - x1);
+            x2 = (int16_t)((int16_t)MAP_X_MAX_MM - x2);
+        }
         if (MAP_OBS_RECT == g_field_obs[i].type) {
-            ret = map_set_obs_rect(g_field_obs[i].x1_mm, g_field_obs[i].y1_mm,
-                                  g_field_obs[i].x2_mm, g_field_obs[i].y2_mm, 1U);
+            ret = map_set_obs_rect(x1, g_field_obs[i].y1_mm,
+                                  x2, g_field_obs[i].y2_mm, 1U);
         } else {
-            ret = map_set_obs_circle(g_field_obs[i].x1_mm, g_field_obs[i].y1_mm,
+            ret = map_set_obs_circle(x1, g_field_obs[i].y1_mm,
                                     g_field_obs[i].r_mm, 1U);
         }
 

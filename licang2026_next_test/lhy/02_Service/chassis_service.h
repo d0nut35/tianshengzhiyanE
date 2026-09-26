@@ -40,6 +40,14 @@ typedef enum {
 csvc_status_t csvc_init(void);
 
 /**
+ * @brief  重载 A* 场地障碍布局（切换场地侧）
+ * @param  mirror 0=默认布局 / 1=关于地图 x 中线镜像的布局
+ * @retval CSVC_OK / CSVC_ERR_INIT / CSVC_ERR
+ * @note   地图只在 csvc_nav 规划时读，需在无导航进行时与其同一任务调用
+ */
+csvc_status_t csvc_load_field(uint8_t mirror);
+
+/**
  * @brief  重定位里程计初始位姿（上电对齐世界系，持位姿锁）
  * @param  pos     世界系坐标，mm
  * @param  yaw_deg 航向，deg

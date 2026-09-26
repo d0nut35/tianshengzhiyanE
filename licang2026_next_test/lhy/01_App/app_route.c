@@ -1,7 +1,8 @@
 /**
  * @file    app_route.c
  * @brief   任务点表与统一执行流程：导航 → 找线 → 位姿标定
- * @note    - g_route 集中全部场地坐标与速度，实机标定只改本文件的表
+ * @note    - g_route 集中全部场地坐标与速度（默认图），实机标定只改本文件的表
+ *          - 镜像侧由 route_go 现场换算：x→RT_FIELD_W_MM-x，航向→180°-θ
  *          - FIX_NONE 只导航；FIX_IMU 按当前 IMU 航向标定；FIX_LINE 扫白线回中
  *          - IMU 帧与世界帧反号（chassis 侧取负对齐地图系）
  */
@@ -12,9 +13,11 @@
 
 #include "cmsis_os2.h"
 
+#include "app_util.h"   /* util_ang_norm：镜像航向归一化 */
 #include "chassis_align.h"
 #include "chassis_service.h"
 #include "map.h"        /* map_point_t：导航与标定坐标 */
+#include "map_cfg.h"    /* MAP_X_MAX_MM：镜像轴取场地 x 量程一半 */
 
 /* ===== 调试日志：0=不编译进固件，1=经 RTT 输出 ===== */
 #ifndef APP_LOG_EN
@@ -28,6 +31,8 @@
 #endif
 
 #define RT_NAV_POLL_MS  10U   /* 等待到点的轮询周期，ms */
+/* 场地 x 量程，与 A* 地图同源；镜像轴为其一半 x=1250，mm */
+#define RT_FIELD_W_MM   ((int16_t)MAP_X_MAX_MM)
 
 /* 到点后的标定方式 */
 typedef enum {
@@ -47,7 +52,8 @@ typedef struct {
     route_fix_t fix;       /* 标定方式 */
 } route_pt_t;
 
-/* 场地坐标待实机标定；表序与 route_id_t 严格一致 */
+/* 场地坐标待实机标定；表序与 route_id_t 严格一致；均为默认图坐标，
+ * 镜像侧由 route_go 关于 x=RT_FIELD_W_MM/2 换算，不另建表 */
 static const route_pt_t g_route[ROUTE_NUM] = {
     /* PLATFORM：圆盘工作位，找线后按 IMU 航向标定 */
     { CSVC_NAV_PATH, { 440, 4300}, 180.0f, 500.0f, 30.0f,
@@ -69,7 +75,8 @@ static const route_pt_t g_route[ROUTE_NUM] = {
       {   0,    0}, FIX_NONE },
 };
 
-static uint8_t g_nav_fin = 1U;  /* 导航完成标志，1=空闲 */
+static uint8_t      g_nav_fin = 1U;  /* 导航完成标志，1=空闲 */
+static route_side_t g_side = ROUTE_SIDE_DEFAULT; /* 场地侧，仅底盘任务读写 */
 
 static app_status_t nav_wait(const route_pt_t *pt);
 static app_status_t pose_fix(const route_pt_t *pt);
@@ -122,19 +129,61 @@ static app_status_t pose_fix(const route_pt_t *pt)
 /** @copydoc route_go */
 app_status_t route_go(route_id_t id)
 {
-    const route_pt_t *pt; /* 当前任务点表项 */
+    route_pt_t pt; /* 当前任务点，已按场地侧换算 */
 
     if (id >= ROUTE_NUM) {
         return APP_ERR;
     }
-    pt = &g_route[id];
-    if (nav_wait(pt) != APP_OK) {
+    pt = g_route[id];
+    pt.nav_pt.x_mm = route_side_x(pt.nav_pt.x_mm);
+    pt.fix_pt.x_mm = route_side_x(pt.fix_pt.x_mm);
+    if (g_side == ROUTE_SIDE_MIRROR) {
+        /* 镜像后左右互换：航向 θ→180°-θ，y 不变 */
+        pt.yaw_deg = util_ang_norm(180.0f - pt.yaw_deg);
+    }
+    if (nav_wait(&pt) != APP_OK) {
         RT_LOGE("route %d nav fail", (int)id);
         return APP_ERR;
     }
-    if (pose_fix(pt) != APP_OK) {
+    if (pose_fix(&pt) != APP_OK) {
         RT_LOGE("route %d fix fail", (int)id);
         return APP_ERR;
     }
     return APP_OK;
+}
+
+/** @copydoc route_set_side */
+app_status_t route_set_side(route_side_t side)
+{
+    if ((side != ROUTE_SIDE_DEFAULT) && (side != ROUTE_SIDE_MIRROR)) {
+        return APP_ERR;
+    }
+    /* 障碍与点表必须同侧：先重载 A* 障碍，成功才切点表侧 */
+    if (csvc_load_field((side == ROUTE_SIDE_MIRROR) ? 1U : 0U) != CSVC_OK) {
+        RT_LOGE("field load fail");
+        return APP_ERR;
+    }
+    g_side = side;
+    return APP_OK;
+}
+
+/** @copydoc route_side */
+route_side_t route_side(void)
+{
+    return g_side;
+}
+
+/** @copydoc route_side_x */
+int16_t route_side_x(int16_t x_mm)
+{
+    if (g_side != ROUTE_SIDE_MIRROR) {
+        return x_mm;
+    }
+    return (int16_t)(RT_FIELD_W_MM - x_mm);
+}
+
+/** @copydoc route_lat_sign */
+float route_lat_sign(void)
+{
+    return (g_side == ROUTE_SIDE_MIRROR) ? -1.0f : 1.0f;
 }

@@ -25,9 +25,11 @@ map_status_t map_adp_init(void);
 
 /**
  * @brief  载入本场地障碍布局（原 map_load_default_obstacles）
+ * @param  mirror 0=默认布局 / 1=关于 x=MAP_X_MAX_MM/2 镜像后的布局
  * @retval MAP_OK / MAP_ERR_INIT / MAP_ERR_PARAM
+ * @note   先清空再重载，切换场地侧时可重复调用
  */
-map_status_t map_adp_load_field(void);
+map_status_t map_adp_load_field(uint8_t mirror);
 
 /**
  * @brief  世界系规划：经 to_map 转地图系跑 A*，再 to_world 回转

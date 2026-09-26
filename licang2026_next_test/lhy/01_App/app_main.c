@@ -3,6 +3,7 @@
  * @brief   应用入口：上电时序 + 底盘任务主流程
  * @note    - 时序：hwt101 上电配置 → system_assembly_init → csvc_init → 位姿
  *          - 主流程经 app_link 收 Mission 阶段命令，到位后原样带回 request_id
+ *          - 握手后按 Mission 红蓝方选场地侧：蓝方走关于 x=1250 的镜像图
  *          - 动作原语在 chassis_align，点表在 app_route，横移在 app_stairs
  */
 
@@ -18,6 +19,8 @@
 #include "chassis_service.h"
 #include "hwt101_adaption.h"
 #include "system_assembly.h"
+/* Mission 红蓝方 g_mission_side；目录不在 include path，同 freertos.c 相对引用 */
+#include "../../01_App/mission/mission_app.h"
 
 /* ===== 调试日志：0=不编译进固件，1=经 RTT 输出 ===== */
 #ifndef APP_LOG_EN
@@ -39,10 +42,15 @@
 #define APP_HOME_WAIT_MS  3000U   /* 回原点后停留，ms（暂定） */
 #define APP_IDLE_MS       1000U   /* 流程结束后的空转周期，ms */
 
-/* 上电初始位姿（世界系，按场地标定） */
+/* 上电初始位姿（世界系，按场地标定，默认图取值）；镜像侧起点 x 对称到 1300，
+ * 机器人按与默认侧相同的绝对朝向摆放（车身不镜像），故航向仍为 0°，无需重标 IMU */
 #define APP_START_X_MM    1200
 #define APP_START_Y_MM    350
 #define APP_START_YAW_DEG 0.0f
+
+/* 走镜像图的 Mission 红蓝方：蓝方场地与默认图关于 x=1250 对称；
+ * NONE/RED 走默认图 */
+#define APP_MIRROR_SIDE   MISSION_COLOR_BLUE
 
 /* 阶梯末层以 1 号灰度离线停车，该处 y 按实机标定；x 与航向沿用里程计 */
 #define APP_STAIR_END_Y_MM 2144
@@ -59,8 +67,9 @@
 #define APP_CYL_EXIT_MS     1800U     /* [lyx] 平移时长，理论位移约180mm */
 
 /* 仓库横移：1 号位找线标定后按里程计 y 在 1~4 号位间开环横移，不再找线；
- * [lyx] 航向 180° 时车体系 vy 为负即沿地图 +y 前进，反向时取相反速度。 */
-#define APP_DEPOT_VY_MMS  (-70.0f)  /* 正向横移速度，车体系 vy，mm/s */
+ * [lyx] 航向 180° 时车体系 vy 为负即沿地图 +y 前进，反向时取相反速度；
+ * 镜像侧航向 0°，经 route_lat_sign 取反后仍沿地图 +y。 */
+#define APP_DEPOT_VY_MMS  (-70.0f)  /* 正向横移速度，车体系 vy，mm/s，默认侧 */
 #define APP_DEPOT_POLL_MS 10U       /* 横移中位姿轮询周期，ms */
 
 static osThreadId_t g_task = NULL;  /* 底盘任务 */
@@ -94,13 +103,48 @@ typedef struct {
 } small_disc_ctx_t;
 
 static void app_task(void *arg);
+static app_status_t side_apply(void);
 /* [lyx] 小圆盘命令钩子和可暂停绕行流程。 */
+static csvc_status_t disc_arc(void);
 static uint8_t small_disc_hook(
     const chassis_mission_command_t *cmd,
     void *ctx);
 static app_status_t small_disc_round(uint16_t req_id);
 static app_status_t depot_shift(int16_t y_mm);
 static uint8_t depot_hook(const chassis_mission_command_t *cmd, void *ctx);
+
+/**
+ * @brief  按 Mission 红蓝方选场地侧，并把上电位姿换到该侧
+ * @retval APP_OK / APP_ERR=障碍重载或位姿写入失败
+ * @note   需在底盘尚未移动时调用；镜像侧只镜像起点 x，航向保持 0°
+ */
+static app_status_t side_apply(void)
+{
+    route_side_t side;  /* 本轮场地侧 */
+    map_point_t  start; /* 本侧上电位姿坐标 */
+
+    side = (g_mission_side == APP_MIRROR_SIDE) ? ROUTE_SIDE_MIRROR
+                                               : ROUTE_SIDE_DEFAULT;
+    if (route_set_side(side) != APP_OK) {
+        return APP_ERR;
+    }
+    start.x_mm = route_side_x((int16_t)APP_START_X_MM);
+    start.y_mm = (int16_t)APP_START_Y_MM;
+    APP_LOGI("side %d start x=%d", (int)side, (int)start.x_mm);
+    return (csvc_set_pose(start, APP_START_YAW_DEG) == CSVC_OK)
+           ? APP_OK : APP_ERR;
+}
+
+/**
+ * @brief  [lyx] 下发绕小圆盘的定半径画圆命令
+ * @retval csvc_arc 的状态
+ * @note   镜像侧为默认轨迹的镜像：线速度取反（倒车、绕向相反），
+ *         半径符号不动使圆心仍在车体 +x（机械臂）一侧
+ */
+static csvc_status_t disc_arc(void)
+{
+    return csvc_arc(route_lat_sign() * APP_CYL_V_MMS, APP_CYL_R_MM, false);
+}
 
 /**
  * @brief  [lyx] 处理小圆盘绕行中的停车和恢复命令
@@ -139,8 +183,7 @@ static uint8_t small_disc_hook(
             ok = 0U;
         }
     } else {
-        if ((disc->paused != 0U) &&
-            (csvc_arc(APP_CYL_V_MMS, APP_CYL_R_MM, false) != CSVC_OK)) {
+        if ((disc->paused != 0U) && (disc_arc() != CSVC_OK)) {
             ok = 0U;
         }
         if (ok != 0U) {
@@ -193,7 +236,7 @@ static app_status_t small_disc_round(uint16_t req_id)
     ctx.req_id = req_id;
     ctx.paused = 0U;
     ctx.failed = 0U;
-    if (csvc_arc(APP_CYL_V_MMS, APP_CYL_R_MM, false) != CSVC_OK) {
+    if (disc_arc() != CSVC_OK) {
         APP_LOGE("small disc arc fail");
         return APP_ERR;
     }
@@ -216,13 +259,15 @@ static app_status_t small_disc_round(uint16_t req_id)
  * @brief  [lyx] 根据当前里程计 y 双向横移到指定仓库位置后停车
  * @param  y_mm 目标 y，mm
  * @retval APP_OK / APP_ERR=命令下发或位姿读取失败（已停车）
- * @note   只按里程计 y 判停，x 与航向不闭环，依赖 1 号位刚标定过的位姿
+ * @note   只按里程计 y 判停，x 与航向不闭环，依赖 1 号位刚标定过的位姿；
+ *         方向按地图 y 判定，车体系 vy 符号由场地侧决定
  */
 static app_status_t depot_shift(int16_t y_mm)
 {
     map_point_t pos = { 0, 0 };  /* 里程计坐标 */
     float       yaw = 0.0f;      /* 里程计航向，附带量 */
-    float       vy_mms;          /* [lyx] 按目标方向选择的车体系横移速度 */
+    float       vy_up;           /* 沿地图 +y 前进的车体系 vy，已按侧取号 */
+    uint8_t     up;              /* 1=目标在地图 +y 方向 */
 
     if (csvc_get_pose(&pos, &yaw) != CSVC_OK) {
         return APP_ERR;
@@ -230,8 +275,9 @@ static app_status_t depot_shift(int16_t y_mm)
     if (pos.y_mm == y_mm) {
         return APP_OK;
     }
-    vy_mms = (pos.y_mm < y_mm) ? APP_DEPOT_VY_MMS : -APP_DEPOT_VY_MMS;
-    if (csvc_free(0.0f, vy_mms, 0.0f) != CSVC_OK) {
+    up = (pos.y_mm < y_mm) ? 1U : 0U;
+    vy_up = route_lat_sign() * APP_DEPOT_VY_MMS;
+    if (csvc_free(0.0f, (up != 0U) ? vy_up : -vy_up, 0.0f) != CSVC_OK) {
         return APP_ERR;
     }
     do {
@@ -240,8 +286,8 @@ static app_status_t depot_shift(int16_t y_mm)
             (void)align_stop();
             return APP_ERR;
         }
-    } while (((vy_mms < 0.0f) && (pos.y_mm < y_mm)) ||
-             ((vy_mms > 0.0f) && (pos.y_mm > y_mm)));
+    } while (((up != 0U) && (pos.y_mm < y_mm)) ||
+             ((up == 0U) && (pos.y_mm > y_mm)));
     return (align_stop() == ALIGN_OK) ? APP_OK : APP_ERR;
 }
 
@@ -292,8 +338,21 @@ static void app_task(void *arg)
     }
     osDelay(APP_CSVC_WAIT_MS);
     link_handshake();
+    /* Mission 在握手完成前确定颜色；底盘仅在此读取并锁定本轮地图。 */
+    ok = (side_apply() == APP_OK) ? 1U : 0U;
+    if (ok == 0U) {
+        APP_LOGE("side apply fail");
+    }
 
     if (link_wait(MISSION_CMD_GO_PLATFORM, &id, osWaitForever) == APP_OK) {
+        if (ok == 0U) {
+            (void)align_stop();
+            (void)link_post(CHASSIS_CMD_PLATFORM_READY, id, 0U);
+            /* 地图或位姿无效时禁止后续阶段，只保留 STOP 命令响应。 */
+            for (;;) {
+                (void)link_poll(NULL, NULL, util_ms_ticks(APP_IDLE_MS));
+            }
+        }
         ok = (route_go(ROUTE_PLATFORM) == APP_OK) ? 1U : 0U;
         (void)link_post(CHASSIS_CMD_PLATFORM_READY, id, ok);
     }
@@ -395,7 +454,7 @@ app_status_t app_init(void)
         return APP_ERR;
     }
     APP_LOGI("chassis service init success");
-    /* 3) 里程计对齐世界系初始位姿 */
+    /* 3) 里程计对齐世界系初始位姿（默认图；红蓝方确定后由 side_apply 换侧） */
     start.x_mm = (int16_t)APP_START_X_MM;
     start.y_mm = (int16_t)APP_START_Y_MM;
     (void)csvc_set_pose(start, APP_START_YAW_DEG);

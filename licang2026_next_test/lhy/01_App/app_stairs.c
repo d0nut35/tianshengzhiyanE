@@ -1,8 +1,9 @@
 /**
  * @file    app_stairs.c
  * @brief   阶梯三层横移状态机：按里程计 y 分层，暂停/恢复与层事件解耦
- * @note    - 沿地图 +y 反向慢速横移，层边界待实机标定
+ * @note    - 沿地图 -y 慢速横移，层边界待实机标定
  *          - 末层不看 y，以 1 号灰度离线（高电平）作为线尾停车条件
+ *          - 镜像侧航向反向：车体系 vy 取反，线尾灰度换到对称位置的 6 号
  *          - 横移中每周期先分发命令再查边界；暂停期间不判边界
  *          - 切层时停车等待视觉就绪，再原地稳定 1 s 后继续横移 [lyx]
  */
@@ -12,6 +13,7 @@
 #include "cmsis_os2.h"
 
 #include "app_link.h"
+#include "app_route.h"  /* route_side / route_lat_sign：场地侧 */
 #include "app_util.h"
 #include "chassis_align.h"
 #include "chassis_service.h"
@@ -30,18 +32,22 @@
 #define ST_LOGE(fmt, ...)  do {} while (0)
 #endif
 
-/* 横移参数：车体系 vy 为负即沿地图 +y 反向前进 */
-#define ST_VY_MMS      (-60.0f) /* 横移速度，车体系 vy，mm/s */
+/* 横移参数：默认侧航向 0°，车体系 vy 为负即沿地图 -y 前进；
+ * 镜像侧航向 180°，经 route_lat_sign 取反后仍沿地图 -y */
+#define ST_VY_MMS      (-60.0f) /* 横移速度，车体系 vy，mm/s（默认侧取值） */
 #define ST_POLL_MS     10U      /* 横移中命令/位姿轮询周期，ms */
 #define ST_SETTLE_MS   500U     /* 切层视觉就绪后的原地稳定时间，ms [lyx] */
 #define ST_HIGH_Y_MM   2750     /* 低层结束、高层起点 y，mm [lyx] */
 #define ST_MID_Y_MM    2400     /* 高层结束、中层起点 y，mm [lyx] */
 #define ST_END_ID      1U       /* 线尾检测灰度板上序号，离线即中层结束 */
+#define ST_END_ID_MIRROR 6U     /* 镜像侧线尾灰度：与 1 号关于车体 x 轴对称 */
 
 /* 运行上下文：暴露给命令钩子，使暂停与层事件互不阻塞 */
 typedef struct {
     uint16_t               req_id;    /* 阶梯阶段请求编号 */
     chassis_command_type_t layer_evt; /* 当前层事件 CHASSIS_CMD_STAIR_xxx */
+    float                  vy_mms;    /* 本侧横移速度，车体系 vy，mm/s */
+    uint8_t                end_id;    /* 本侧线尾检测灰度序号 */
     uint8_t                moving;    /* 1=低层已放行，全程横移不再清零 */
     uint8_t                paused;    /* 1=收到 STAIR_STOP 尚未恢复 */
     uint8_t                cam_ready; /* 1=本层事件已被 CAM_READY 确认 */
@@ -70,7 +76,8 @@ static const stair_layer_t g_layers[] = {
 #define ST_LAYER_NUM  (sizeof(g_layers) / sizeof(g_layers[0]))
 
 static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx);
-static app_status_t layer_done(const stair_layer_t *lay, uint8_t *done);
+static app_status_t layer_done(const stair_layer_t *lay, uint8_t end_id,
+                               uint8_t *done);
 
 /**
  * @brief  阶梯段命令钩子：暂停/恢复/放行非阻塞处理，其余交默认分发
@@ -102,7 +109,7 @@ static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx)
             }
             sc->paused = 0U;
             if ((sc->moving != 0U) && (sc->settling == 0U)) {
-                (void)csvc_free(0.0f, ST_VY_MMS, 0.0f);
+                (void)csvc_free(0.0f, sc->vy_mms, 0.0f);
             }
             (void)link_post(CHASSIS_CMD_STAIR_RESUME, sc->req_id, 1U);
             if (sc->cam_ready == 0U) {
@@ -117,19 +124,21 @@ static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx)
 
 /**
  * @brief  判断当前层是否走到边界
- * @param  lay  当前层表项
- * @param  done 输出 1=已到边界
+ * @param  lay    当前层表项
+ * @param  end_id 本侧线尾检测灰度序号
+ * @param  done   输出 1=已到边界
  * @retval APP_OK / APP_ERR=位姿或灰度读取失败
  * @note   末层以线尾灰度离线为准，不受横移段里程计累计误差影响
  */
-static app_status_t layer_done(const stair_layer_t *lay, uint8_t *done)
+static app_status_t layer_done(const stair_layer_t *lay, uint8_t end_id,
+                               uint8_t *done)
 {
     map_point_t pos = { 0, 0 }; /* 里程计坐标 */
     float       yaw = 0.0f;     /* 里程计航向，附带量 */
     uint8_t     on_line = 0U;   /* 线尾灰度压线标志 */
 
     if (lay->end == END_BY_LINE) {
-        if (align_on_line(ST_END_ID, &on_line) != ALIGN_OK) {
+        if (align_on_line(end_id, &on_line) != ALIGN_OK) {
             return APP_ERR;
         }
         *done = (on_line == 0U) ? 1U : 0U;
@@ -156,6 +165,10 @@ app_status_t stairs_sweep(uint16_t req_id)
     ctx.paused = 0U;
     ctx.moving = 0U;
     ctx.settling = 0U;
+    /* 镜像侧左右互换：vy 取反后仍沿地图 -y，线尾灰度换对称位保持停点 y */
+    ctx.vy_mms = route_lat_sign() * ST_VY_MMS;
+    ctx.end_id = (route_side() == ROUTE_SIDE_MIRROR) ? ST_END_ID_MIRROR
+                                                     : ST_END_ID;
     for (i = 0U; i < ST_LAYER_NUM; i++) {
         if (ctx.moving != 0U) {
             /* [lyx] 高/中层切入前先停车，消除视觉会话切换期间的盲移。 */
@@ -182,7 +195,7 @@ app_status_t stairs_sweep(uint16_t req_id)
             ctx.settling = 0U;
         }
         if ((ctx.paused == 0U) &&
-            (csvc_free(0.0f, ST_VY_MMS, 0.0f) != CSVC_OK)) {
+            (csvc_free(0.0f, ctx.vy_mms, 0.0f) != CSVC_OK)) {
             ST_LOGE("stair move fail");
             return APP_ERR;
         }
@@ -191,7 +204,7 @@ app_status_t stairs_sweep(uint16_t req_id)
             if (ctx.paused != 0U) {
                 continue;
             }
-            if (layer_done(&g_layers[i], &done) != APP_OK) {
+            if (layer_done(&g_layers[i], ctx.end_id, &done) != APP_OK) {
                 (void)align_stop();
                 ST_LOGE("stair layer %u check fail", (unsigned)i);
                 return APP_ERR;

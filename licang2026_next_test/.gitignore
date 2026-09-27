@@ -33,7 +33,7 @@ MDK-ARM/*.lnp
 MDK-ARM/*.bak
 
 # Unused parts of the full CMSIS distribution. The project keeps only the
-# STM32F750 device headers and the generic CMSIS headers required to compile.
+# STM32F7 device headers and the generic CMSIS headers required to compile.
 Drivers/CMSIS/Core/
 Drivers/CMSIS/Core_A/
 Drivers/CMSIS/docs/
@@ -46,6 +46,7 @@ Drivers/CMSIS/Device/ST/STM32F7xx/Source/
 Drivers/CMSIS/Device/ST/STM32F7xx/Include/*
 !Drivers/CMSIS/Device/ST/STM32F7xx/Include/stm32f7xx.h
 !Drivers/CMSIS/Device/ST/STM32F7xx/Include/stm32f750xx.h
+!Drivers/CMSIS/Device/ST/STM32F7xx/Include/stm32f756xx.h
 !Drivers/CMSIS/Device/ST/STM32F7xx/Include/system_stm32f7xx.h
 
 # Generic generated binaries, maps and object/dependency files

@@ -128,7 +128,7 @@ typedef struct {
 mission_app_status_t mission_app_init(void);
 
 /**
- * @brief 向Mission任务提交红方、蓝方或停止命令。
+ * @brief 向Mission任务提交命令；当前仅执行停止，手动启动命令暂不处理。
  * @param command 用户命令。
  * @return 命令入队结果。
  */

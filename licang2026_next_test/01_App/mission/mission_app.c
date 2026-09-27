@@ -248,8 +248,8 @@ static void mission_handle_vision(mission_context_t *ctx);
 static void mission_vision_process(mission_context_t *ctx);
 /** 双方就绪后完成握手并进入READY状态。 */
 static void mission_try_ready(mission_context_t *ctx);
-/** 按指定红蓝方启动一轮正式任务。 */
-static void mission_start_run(mission_context_t *ctx, mission_color_t color);
+/** 按已选定的红蓝方启动一轮正式任务。 */
+static void mission_start_run(mission_context_t *ctx);
 /** 启动当前阶梯层视觉；抓满后只放行底盘。 */
 static void mission_start_stair_layer(mission_context_t *ctx);
 /** 将低、高、中层映射到动作组14、15、16。 */
@@ -1068,12 +1068,13 @@ static void mission_vision_process(mission_context_t *ctx)
 /**
  * @brief 在机械臂和底盘均就绪后完成握手并进入READY。
  * @param ctx Mission上下文。
- * @note READY保持约4秒后自动按红方启动；底盘此时阻塞等待GO_PLATFORM。
+ * @note READY保持约4秒后按已选颜色启动；底盘此时阻塞等待GO_PLATFORM。
  */
 static void mission_try_ready(mission_context_t *ctx)
 {
     if ((ctx->state != MISSION_STATE_WAIT_CHASSIS_READY) ||
-        !ctx->chassis_ready) {
+        !ctx->chassis_ready ||
+        (g_mission_side == MISSION_COLOR_NONE)) {
         return;
     }
     if (!mission_send_chassis(MISSION_CMD_MISSION_READY, ctx->request_id)) {
@@ -1087,16 +1088,14 @@ static void mission_try_ready(mission_context_t *ctx)
 /**
  * @brief 启动一轮正式任务并请求底盘前往圆盘工作位。
  * @param ctx Mission上下文。
- * @param color 本轮目标球颜色。
- * @note 本函数原本即为红蓝方命令共用的启动入口，本次未新增该函数。
+ * @note 颜色已由假按钮选定，启动时不再覆盖；后续可接入实体按钮。
  */
-static void mission_start_run(mission_context_t *ctx, mission_color_t color)
+static void mission_start_run(mission_context_t *ctx)
 {
     /* 0) 新一轮任务使用新的request_id，隔离上一轮底盘回包。 */
     uint16_t request_id = mission_next_request_id(ctx);
 
-    /* 1) 保存红蓝方并清空本轮小球、槽位和故障计数。 */
-    g_mission_side = color;
+    /* 1) 保留已选红蓝方，只清空本轮小球、槽位和故障计数。 */
     ctx->platform_balls = 0U;
     ctx->stair_balls = 0U;
     ctx->small_disc_balls = 0U;
@@ -1176,7 +1175,7 @@ static void mission_start_small_disc_exit(mission_context_t *ctx)
     }
 }
 
-/** 处理用户命令；非READY启动命令被忽略，STOP在运行阶段始终有效。 */
+/** 处理用户命令；手动启动暂不使用，STOP在运行阶段始终有效。 */
 static void mission_handle_command(
     mission_context_t *ctx,
     mission_user_command_t command)
@@ -1199,14 +1198,16 @@ static void mission_handle_command(
             MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
+    /* 手动启动暂不使用；正式流程在READY到期后按已选颜色自动启动。
     if (ctx->state != MISSION_STATE_READY) {
         return;
     }
     if (command == MISSION_USER_COMMAND_START_RED) {
-        mission_start_run(ctx, MISSION_COLOR_RED);
+        mission_start_run(ctx);
     } else if (command == MISSION_USER_COMMAND_START_BLUE) {
-        mission_start_run(ctx, MISSION_COLOR_BLUE);
+        mission_start_run(ctx);
     }
+    */
 }
 
 /** 记录底盘层级通知，并只在状态、请求编号和ready值均匹配时推进。 */
@@ -1661,14 +1662,14 @@ static void mission_handle_storage(mission_context_t *ctx)
 /**
  * @brief 处理当前状态的期限到达事件。
  * @param ctx Mission上下文。
- * @note READY到期时自动启动红方；其他有期限状态到期时进入超时故障。
+ * @note READY到期时按已选颜色自动启动；其他有期限状态到期时进入超时故障。
  */
 static void mission_check_timeout(mission_context_t *ctx)
 {
     if ((ctx->deadline_tick != 0U) &&
         ((int32_t)(osKernelGetTickCount() - ctx->deadline_tick) >= 0)) {
         if (ctx->state == MISSION_STATE_READY) {
-            mission_start_run(ctx, MISSION_COLOR_RED);
+            mission_start_run(ctx);
             return;
         }
         mission_fail(ctx, MISSION_FAULT_TIMEOUT);
@@ -1920,9 +1921,10 @@ static bool mission_test_handle_aux_command(
 
     if (strcmp(command, "HELP") == 0) {
         mission_test_write(
+            "SELECT: RED or BLUE before handshake\r\n"
             "PATH: PLATFORM STAIR DISC DEPOT D1 D2 D3 D4\r\n"
             "DEPOT: HOME HOME_DIRECT\r\n"
-            "TARGET: ROUTE PLATFORM|STAIRS|DISC RED|BLUE, ROUTE DEPOT\r\n"
+            "TARGET: ROUTE PLATFORM|STAIRS|DISC|DEPOT\r\n"
             "QUERY: STATUS BALLS BALL n STOP HELP\r\n");
         return true;
     }
@@ -2281,9 +2283,31 @@ static void mission_wireless_test_entry(void *argument)
         ctx->fault_code = MISSION_FAULT_PROTOCOL;
         return;
     }
-    mission_test_write("MISSION WIRELESS TEST BOOT\r\n");
+    mission_test_write("MISSION WIRELESS TEST BOOT\r\nSELECT RED OR BLUE\r\n");
 
-    /* [lyx] 测试模式只等底盘握手；动作组10成功才开放抓球ROUTE。 */
+    /* 先由无线指令选色，再允许底盘开始握手；本轮颜色此后保持不变。 */
+    while (g_mission_side == MISSION_COLOR_NONE) {
+        if (mission_test_take_command(command, sizeof(command))) {
+            if (strcmp(command, "RED") == 0) {
+                g_mission_side = MISSION_COLOR_RED;
+            } else if (strcmp(command, "BLUE") == 0) {
+                g_mission_side = MISSION_COLOR_BLUE;
+            } else if ((strcmp(command, "HELP") == 0) ||
+                       (strcmp(command, "STATUS") == 0)) {
+                (void)mission_test_handle_aux_command(ctx, command);
+            } else {
+                mission_test_write("ERR SELECT RED OR BLUE\r\n");
+            }
+        }
+        osDelay(mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
+    }
+    (void)snprintf(
+        g_wireless_test.text, sizeof(g_wireless_test.text),
+        "OK COLOR=%s WAIT CHASSIS\r\n",
+        mission_test_color_name(g_mission_side));
+    mission_test_write(g_wireless_test.text);
+
+    /* [lyx] 选色后只等底盘握手；动作组10成功才开放抓球ROUTE。 */
     mission_enter_state(ctx, MISSION_STATE_WAIT_CHASSIS_READY, 0U);
     while (chassis_ready == 0U) {
         flags = osThreadFlagsWait(
@@ -2333,6 +2357,11 @@ static void mission_wireless_test_entry(void *argument)
             osDelay(mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
             continue;
         }
+        if ((strcmp(command, "RED") == 0) ||
+            (strcmp(command, "BLUE") == 0)) {
+            mission_test_write("ERR COLOR LOCKED\r\n");
+            continue;
+        }
         if (mission_test_handle_aux_command(ctx, command)) {
             if (g_wireless_test.stop_requested &&
                 (ctx->state != MISSION_STATE_STOPPED)) {
@@ -2350,12 +2379,9 @@ static void mission_wireless_test_entry(void *argument)
         }
 
         /* 1) ROUTE命令自动跳过前置区域，只在目标区域执行正式业务。 */
-        if ((strcmp(command, "ROUTE PLATFORM RED") == 0) ||
-            (strcmp(command, "ROUTE PLATFORM BLUE") == 0) ||
-            (strcmp(command, "ROUTE STAIRS RED") == 0) ||
-            (strcmp(command, "ROUTE STAIRS BLUE") == 0) ||
-            (strcmp(command, "ROUTE DISC RED") == 0) ||
-            (strcmp(command, "ROUTE DISC BLUE") == 0) ||
+        if ((strcmp(command, "ROUTE PLATFORM") == 0) ||
+            (strcmp(command, "ROUTE STAIRS") == 0) ||
+            (strcmp(command, "ROUTE DISC") == 0) ||
             (strcmp(command, "ROUTE DEPOT") == 0)) {
             if (g_wireless_test.mode != MISSION_TEST_MODE_IDLE) {
                 mission_test_write("ERR RESET REQUIRED\r\n");
@@ -2377,11 +2403,6 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             g_wireless_test.mode = MISSION_TEST_MODE_TARGET;
-            g_mission_side = (strstr(command, " BLUE") != NULL)
-                ? MISSION_COLOR_BLUE : MISSION_COLOR_RED;
-            if (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT) {
-                g_mission_side = MISSION_COLOR_NONE;
-            }
             ctx->platform_balls = 0U;
             ctx->stair_balls = 0U;
             ctx->small_disc_balls = 0U;
@@ -2432,7 +2453,6 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             g_wireless_test.mode = MISSION_TEST_MODE_PATH;
-            g_mission_side = MISSION_COLOR_NONE;
             ok = mission_test_skip_platform(ctx);
             if (ok) {
                 g_wireless_test.expected = MISSION_TEST_STAGE_STAIRS;
@@ -2452,7 +2472,6 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             g_wireless_test.mode = MISSION_TEST_MODE_PATH;
-            g_mission_side = MISSION_COLOR_NONE;
             ok = ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) ||
                   mission_test_skip_platform(ctx)) &&
                  mission_test_skip_stairs(ctx);
@@ -2475,7 +2494,6 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             g_wireless_test.mode = MISSION_TEST_MODE_PATH;
-            g_mission_side = MISSION_COLOR_NONE;
             ok = ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) ||
                   mission_test_skip_platform(ctx)) &&
                  ((g_wireless_test.expected == MISSION_TEST_STAGE_SMALL_DISC) ||
@@ -2500,7 +2518,6 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             g_wireless_test.mode = MISSION_TEST_MODE_PATH;
-            g_mission_side = MISSION_COLOR_NONE;
             /* 小圆盘完成后先停车，再沿用原命令进入仓库1号位。 */
             ok = ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) ||
                   mission_test_skip_platform(ctx)) &&
@@ -2609,7 +2626,12 @@ mission_app_status_t mission_app_init(void)
     }
     /* 1) 清空运行上下文并初始化小球档案。 */
     (void)memset(ctx, 0, sizeof(*ctx));
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     g_mission_side = MISSION_COLOR_NONE;
+#else
+    /* 正式模式以假按钮暂定红方；后续在此接入真实选色开关。 */
+    g_mission_side = MISSION_COLOR_RED;
+#endif
     ball_manifest_init(&ctx->manifest);
     /* 2) 目标区域测试会复用正式读卡和车载转盘服务。 */
     if (ic_init() != IC_CARD_OK) {

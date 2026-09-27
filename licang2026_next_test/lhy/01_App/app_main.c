@@ -337,12 +337,16 @@ static void app_task(void *arg)
         osDelay(APP_BOOT_POLL_MS);
     }
     osDelay(APP_CSVC_WAIT_MS);
-    link_handshake();
-    /* Mission 在握手完成前确定颜色；底盘仅在此读取并锁定本轮地图。 */
+    /* [lyx] 正式和测试模式均须先选定红蓝方，再开始底盘握手。 */
+    while (g_mission_side == MISSION_COLOR_NONE) {
+        osDelay(APP_BOOT_POLL_MS);
+    }
+    /* [lyx] 选色完成后先加载本侧地图并标定起点，再接收出发命令。 */
     ok = (side_apply() == APP_OK) ? 1U : 0U;
     if (ok == 0U) {
         APP_LOGE("side apply fail");
     }
+    link_handshake();
 
     if (link_wait(MISSION_CMD_GO_PLATFORM, &id, osWaitForever) == APP_OK) {
         if (ok == 0U) {

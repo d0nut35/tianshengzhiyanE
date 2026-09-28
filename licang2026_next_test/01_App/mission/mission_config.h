@@ -31,6 +31,12 @@
 #define MISSION_SMALL_DISC_VISION_GROUP  19U /* 小圆盘绕行识别姿态 */
 #define MISSION_SMALL_DISC_GRASP_GROUP   20U /* 小圆盘抓球并放入车载转盘 */
 #define MISSION_SMALL_DISC_EXIT_GROUP    21U /* 小圆盘结束后的撤离过渡姿态 */
+#define MISSION_DEPOT_PICK_GROUP         22U /* 仓库从车载转盘取球 */
+#define MISSION_DEPOT_ROW3_GROUP         23U /* 三层放球 */
+#define MISSION_DEPOT_ROW3_EXIT_GROUP    24U /* 三层放球后撤离 */
+#define MISSION_DEPOT_ROW2_GROUP         25U /* 二层放球及撤离 */
+#define MISSION_DEPOT_ROW1_GROUP         26U /* 一层放球 */
+#define MISSION_TURNTABLE_CLEAR_GROUP    27U /* 转盘运动前的机械臂避让姿态 */
 
 #define MISSION_PLATFORM_BALL_COUNT       5U
 #define MISSION_STAIR_BALL_COUNT          2U
@@ -51,9 +57,11 @@
 #define MISSION_ZDT_IO_TIMEOUT_MS            500U
 #define MISSION_ZDT_EMM_PULSES_PER_REV      3200U
 #define MISSION_ZDT_COARSE_ANGLE_0P1DEG     1400U
+/* 反向粗角独立保留；先与正向相同，实机测得偏差后单独调整。 */
+#define MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG 1400U
 #define MISSION_ZDT_FINE_ANGLE_0P1DEG         10U
-#define MISSION_ZDT_SPEED_RPM                 120U
-#define MISSION_ZDT_FINE_SPEED_RPM             50U
+#define MISSION_ZDT_SPEED_RPM                 240U
+#define MISSION_ZDT_FINE_SPEED_RPM             80U
 #define MISSION_ZDT_ACCEL                      50U
 #define MISSION_ZDT_FINE_MAX_STEPS             35U
 #define MISSION_ZDT_STATUS_POLL_MS             50U

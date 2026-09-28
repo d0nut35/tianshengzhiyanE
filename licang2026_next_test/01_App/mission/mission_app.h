@@ -82,6 +82,7 @@ typedef enum {
     MISSION_STATE_COMPLETE,
     MISSION_STATE_FAULT,
     MISSION_STATE_DEPOT_WAIT_DIGIT,
+    MISSION_STATE_DEPOT_WAIT_ARM, /* 无线放球测试等待动作组回报。 */
 } mission_state_t;
 
 typedef enum {

@@ -157,6 +157,11 @@ volatile mission_color_t g_mission_side = MISSION_COLOR_NONE;
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
 /** USART1无线联调任务的运行状态和文本缓冲区。 */
 typedef struct {
+    ic_ball_t ball;
+    bool placed;
+} mission_test_ball_t;
+
+typedef struct {
     debug_uart1_t debug;                   /* 现有DMA空闲接收封装。 */
     mission_test_mode_t mode;              /* 本轮测试方式。 */
     mission_test_stage_t target;           /* 唯一启用抓取的区域。 */
@@ -166,6 +171,12 @@ typedef struct {
     uint8_t depot_digit;                   /* 当前停车位已确认的底部数字，0表示尚无。 */
     bool arm_ready;                         /* 动作组10完成回报已被测试任务确认。 */
     bool stop_requested;                   /* STOP已下发，等待停车回执。 */
+    bool depot_wait_ball_home;             /* ROUTE DEPOT BALL已在D1停车，等待装球命令。 */
+    bool ball_home;                        /* 人工装球测试已开始。 */
+    bool ball_home_ready;                  /* 9球读完且转盘已停在12槽。 */
+    uint8_t current_slot;                  /* 当前取球工位对应的物理槽号1~12。 */
+    uint8_t manual_count;
+    mission_test_ball_t manual_balls[BALL_MANIFEST_CAPACITY];
     char text[224];                        /* 单条可读回复缓冲区。 */
 } mission_wireless_test_t;
 
@@ -321,6 +332,11 @@ static bool mission_test_run_target(
 static bool mission_test_read_depot_digit(mission_context_t *ctx, uint8_t *digit);
 /** ROUTE DEPOT到D1后自动完成四站数字测试。 */
 static bool mission_test_run_depot_digits(mission_context_t *ctx);
+/** 预装九球后自动逐槽读卡并转到12槽。 */
+static bool mission_test_ball_home_load(mission_context_t *ctx);
+static bool mission_test_run_depot_balls(mission_context_t *ctx);
+/** 等待无线测试动作组完成，STOP或超时不放行后续转盘动作。 */
+static bool mission_test_run_arm_group(mission_context_t *ctx, uint8_t group);
 #endif
 
 /** 把毫秒转换为CMSIS-RTOS tick，非零毫秒至少返回1 tick。 */
@@ -695,12 +711,12 @@ static bool mission_wait_device(uint32_t flag, uint32_t timeout_ms)
 static zdt_turntable_status_t mission_submit_slot_motion(
     mission_context_t *ctx,
     uint32_t angle_0p1deg,
-    uint16_t emm_speed_rpm)
+    uint16_t emm_speed_rpm,
+    zdt_turntable_direction_t direction)
 {
     zdt_turntable_position_command_t command = {0};
 
-    command.direction = MISSION_SLOT_USE_CW ?
-        ZDT_TURNTABLE_DIR_CW : ZDT_TURNTABLE_DIR_CCW;
+    command.direction = direction;
     command.mode = ZDT_TURNTABLE_POS_RELATIVE_LAST_TARGET;
     command.speed = emm_speed_rpm;
     command.angle_0p1deg = angle_0p1deg;
@@ -786,23 +802,39 @@ static bool mission_read_ball(
     return mission_record_ball(ctx, region, read_ok);
 }
 
-/** 转盘走完一格；粗转到位后用PB0确认，未对准时按原参数逐步微调。 */
-static bool mission_advance_slot(mission_context_t *ctx)
+/** 按指定方向走一格；粗转与PB0微调必须同向，超出搜索上限则报错。 */
+static bool mission_advance_slot(
+    mission_context_t *ctx,
+    zdt_turntable_direction_t direction,
+    uint8_t *fine_used)
 {
     const zdt_turntable_response_t *response = &ctx->storage.zdt_response;
     uint32_t started_tick = osKernelGetTickCount();
     uint8_t fine_steps = 0U;
     bool coarse = true;
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    char command[DEBUG_UART1_RX_BUFFER_SIZE];
+#endif
 
     for (;;) {
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        if (mission_test_take_command(command, sizeof(command)) &&
+            !mission_test_handle_aux_command(ctx, command)) {
+            mission_test_write("BUSY\r\n");
+        }
+        if (g_wireless_test.stop_requested) return false;
+#endif
         (void)osThreadFlagsClear(MISSION_FLAG_ZDT_DONE);
         ctx->storage.zdt_has_response = false;
         if ((mission_submit_slot_motion(
                  ctx,
-                 coarse ? MISSION_ZDT_COARSE_ANGLE_0P1DEG :
+                 coarse ? ((direction == ZDT_TURNTABLE_DIR_CCW) ?
+                     MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG :
+                     MISSION_ZDT_COARSE_ANGLE_0P1DEG) :
                           MISSION_ZDT_FINE_ANGLE_0P1DEG,
                  coarse ? MISSION_ZDT_SPEED_RPM :
-                          MISSION_ZDT_FINE_SPEED_RPM) !=
+                          MISSION_ZDT_FINE_SPEED_RPM,
+                 direction) !=
              ZDT_TURNTABLE_OK) ||
             !mission_wait_zdt(ctx) ||
             ((response->kind != ZDT_TURNTABLE_REPLY_ACK) &&
@@ -812,6 +844,13 @@ static bool mission_advance_slot(mission_context_t *ctx)
         coarse = false;
 
         do {
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            if (mission_test_take_command(command, sizeof(command)) &&
+                !mission_test_handle_aux_command(ctx, command)) {
+                mission_test_write("BUSY\r\n");
+            }
+            if (g_wireless_test.stop_requested) return false;
+#endif
             if ((osKernelGetTickCount() - started_tick) >=
                 mission_ms_to_ticks(MISSION_ZDT_SLOT_TIMEOUT_MS)) {
                 return false;
@@ -831,10 +870,11 @@ static bool mission_advance_slot(mission_context_t *ctx)
             }
         } while (!response->data.motor_status.reached);
 
-        if (mission_gate_is_stably_high() ||
-            (fine_steps >= MISSION_ZDT_FINE_MAX_STEPS)) {
+        if (mission_gate_is_stably_high()) {
+            if (fine_used != NULL) *fine_used = fine_steps;
             return true;
         }
+        if (fine_steps >= MISSION_ZDT_FINE_MAX_STEPS) return false;
         ++fine_steps;
     }
 }
@@ -844,7 +884,10 @@ static bool mission_store_ball(
     mission_context_t *ctx,
     mission_storage_region_t region)
 {
-    return mission_read_ball(ctx, region) && mission_advance_slot(ctx);
+    return mission_read_ball(ctx, region) &&
+        mission_advance_slot(ctx,
+            MISSION_SLOT_USE_CW ? ZDT_TURNTABLE_DIR_CW :
+                                  ZDT_TURNTABLE_DIR_CCW, NULL);
 }
 
 /** 上电只查询一次转盘固件和闭环配置，后续存球直接使用缓存结果。 */
@@ -1858,8 +1901,10 @@ static void mission_test_print_status(const mission_context_t *ctx)
         mission_test_stage_name(g_wireless_test.expected),
         (unsigned)ctx->state,
         mission_test_color_name(g_mission_side),
-        (unsigned)ctx->manifest.count,
-        (unsigned)ctx->storage_slot,
+        (unsigned)(g_wireless_test.ball_home ? g_wireless_test.manual_count :
+                   ctx->manifest.count),
+        (unsigned)(g_wireless_test.ball_home ? g_wireless_test.current_slot :
+                   ctx->storage_slot),
         (unsigned)ctx->fault_code,
         (unsigned)ctx->arm_boot_state,
         (unsigned)g_wireless_test.arm_ready,
@@ -1874,6 +1919,27 @@ static void mission_test_print_ball(
     uint8_t sequence)
 {
     ball_manifest_record_t record;
+
+    if (g_wireless_test.ball_home) {
+        const mission_test_ball_t *manual;
+
+        if (sequence >= g_wireless_test.manual_count) {
+            mission_test_write("ERR BALL\r\n");
+            return;
+        }
+        manual = &g_wireless_test.manual_balls[sequence];
+        (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                       "BALL N=%u REGION=MANUAL IC=0x%02X ROW=%u COL=%u "
+                       "SLOT=%u STATE=%s\r\n",
+                       (unsigned)sequence + 1U,
+                       (unsigned)manual->ball.code,
+                       (unsigned)manual->ball.row,
+                       (unsigned)manual->ball.column,
+                       (unsigned)sequence + 1U,
+                       manual->placed ? "PLACED" : "STORED");
+        mission_test_write(g_wireless_test.text);
+        return;
+    }
 
     if (ball_manifest_get(&ctx->manifest, sequence, &record) !=
         BALL_MANIFEST_OK) {
@@ -1906,9 +1972,11 @@ static void mission_test_print_balls(const mission_context_t *ctx)
         g_wireless_test.text,
         sizeof(g_wireless_test.text),
         "BALL COUNT=%u\r\n",
-        (unsigned)ctx->manifest.count);
+        (unsigned)(g_wireless_test.ball_home ? g_wireless_test.manual_count :
+                   ctx->manifest.count));
     mission_test_write(g_wireless_test.text);
-    for (i = 0U; i < ctx->manifest.count; ++i) {
+    for (i = 0U; i < (g_wireless_test.ball_home ?
+                      g_wireless_test.manual_count : ctx->manifest.count); ++i) {
         mission_test_print_ball(ctx, i);
     }
 }
@@ -1975,6 +2043,9 @@ static bool mission_test_handle_aux_command(
             "DEPOT: HOME HOME_DIRECT\r\n"
             "TARGET: ROUTE PLATFORM|STAIRS|DISC|DEPOT\r\n"
             "ROUTE DEPOT: AUTO D1-D4 DIGIT\r\n"
+            "BALL HOME: AT D1 AFTER ROUTE DEPOT BALL\r\n"
+            "TURN CW|CCW: TEST ONE SLOT BEFORE BALL HOME\r\n"
+            "ROUTE DEPOT BALL: D1 THEN BALL HOME THEN AUTO PLACE\r\n"
             "QUERY: STATUS BALLS BALL n STOP HELP\r\n");
         return true;
     }
@@ -1988,11 +2059,13 @@ static bool mission_test_handle_aux_command(
     }
     if ((sscanf(command, "BALL %u", &ball_number) == 1) &&
         (ball_number >= 1U) &&
-        (ball_number <= ctx->manifest.count)) {
+        (ball_number <= (g_wireless_test.ball_home ?
+                         g_wireless_test.manual_count : ctx->manifest.count))) {
         mission_test_print_ball(ctx, (uint8_t)(ball_number - 1U));
         return true;
     }
-    if (strncmp(command, "BALL ", 5U) == 0) {
+    if ((strncmp(command, "BALL ", 5U) == 0) &&
+        (strcmp(command, "BALL HOME") != 0)) {
         mission_test_write("ERR BALL\r\n");
         return true;
     }
@@ -2370,6 +2443,237 @@ static bool mission_test_read_depot_digit(mission_context_t *ctx, uint8_t *digit
     }
 }
 
+/** 九球预装完毕后自动读卡、逐槽转动；任一槽失败即停止，不跳过球。 */
+static bool mission_test_ball_home_load(mission_context_t *ctx)
+{
+    uint8_t attempt;
+    uint8_t moves;
+    mission_test_ball_t *record;
+    char command[DEBUG_UART1_RX_BUFFER_SIZE];
+
+    if (!g_wireless_test.ball_home || g_wireless_test.ball_home_ready) {
+        return false;
+    }
+    while (g_wireless_test.manual_count < BALL_MANIFEST_CAPACITY) {
+        for (attempt = 0U; attempt < MISSION_IC_MAX_ATTEMPTS; ++attempt) {
+            if (mission_test_take_command(command, sizeof(command)) &&
+                !mission_test_handle_aux_command(ctx, command)) {
+                mission_test_write("BUSY\r\n");
+            }
+            if (g_wireless_test.stop_requested) return false;
+            (void)osThreadFlagsClear(MISSION_FLAG_IC_DONE);
+            ctx->storage.ic_status = IC_CARD_ERR_BUSY;
+            if ((ic_read(MISSION_IC_OPERATION_PROMPT != 0U,
+                         mission_ic_done, ctx) == IC_CARD_OK) &&
+                mission_wait_device(MISSION_FLAG_IC_DONE,
+                                    IC_READ_TIMEOUT_MS + 100U) &&
+                (ctx->storage.ic_status == IC_CARD_OK) &&
+                (ctx->storage.ic_ball.kind == IC_BALL_TARGET) &&
+                (ctx->storage.ic_ball.row >= 1U) &&
+                (ctx->storage.ic_ball.row <= 3U) &&
+                (ctx->storage.ic_ball.column >= 1U) &&
+                (ctx->storage.ic_ball.column <= 4U)) break;
+            if ((attempt + 1U) < MISSION_IC_MAX_ATTEMPTS) {
+                (void)osDelay(mission_ms_to_ticks(MISSION_IC_RETRY_MS));
+            }
+        }
+        if (attempt == MISSION_IC_MAX_ATTEMPTS) {
+            (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                           "FAULT IC SLOT=%u RESET REQUIRED\r\n",
+                           (unsigned)g_wireless_test.current_slot);
+            mission_test_write(g_wireless_test.text);
+            mission_fail(ctx, MISSION_FAULT_STORAGE);
+            return false;
+        }
+        record = &g_wireless_test.manual_balls[g_wireless_test.manual_count];
+        record->ball = ctx->storage.ic_ball;
+        record->placed = false;
+        ++g_wireless_test.manual_count;
+        mission_test_print_ball(ctx,
+                                (uint8_t)(g_wireless_test.manual_count - 1U));
+        moves = (g_wireless_test.manual_count == BALL_MANIFEST_CAPACITY) ?
+            3U : 1U;
+        while (moves-- > 0U) {
+            if (!mission_advance_slot(ctx,
+                    MISSION_SLOT_USE_CW ? ZDT_TURNTABLE_DIR_CW :
+                                          ZDT_TURNTABLE_DIR_CCW, NULL)) {
+                (void)turn_stop(NULL, NULL);
+                if (!g_wireless_test.stop_requested) {
+                    mission_fail(ctx, MISSION_FAULT_STORAGE);
+                }
+                mission_test_write("SLOT POSITION UNKNOWN RESET REQUIRED\r\n");
+                return false;
+            }
+            g_wireless_test.current_slot =
+                (g_wireless_test.current_slot == 12U) ? 1U :
+                (uint8_t)(g_wireless_test.current_slot + 1U);
+            (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                           "SLOT=%u\r\n",
+                           (unsigned)g_wireless_test.current_slot);
+            mission_test_write(g_wireless_test.text);
+        }
+    }
+    if (mission_test_take_command(command, sizeof(command)) &&
+        !mission_test_handle_aux_command(ctx, command)) {
+        mission_test_write("BUSY\r\n");
+    }
+    if (g_wireless_test.stop_requested) return false;
+    /* 装球期间27只执行一次；12槽对准后才回动作组10。 */
+    if (!mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP)) {
+        if (!g_wireless_test.stop_requested) {
+            mission_fail(ctx, MISSION_FAULT_ARM);
+        }
+        mission_test_write("FAULT BALL HOME ARM 10\r\n");
+        return false;
+    }
+    g_wireless_test.ball_home_ready = true;
+    mission_test_write("BALL HOME READY SLOT=12\r\n");
+    return true;
+}
+
+/** 等动作组完成回报；STOP会同时请求机械臂停止，不能视作放置成功。 */
+static bool mission_test_run_arm_group(mission_context_t *ctx, uint8_t group)
+{
+    char command[DEBUG_UART1_RX_BUFFER_SIZE];
+    uint32_t flags;
+
+    (void)osThreadFlagsClear(MISSION_FLAG_ARM_OK | MISSION_FLAG_ARM_FAIL);
+    if (!mission_start_arm(ctx, group, MISSION_STATE_DEPOT_WAIT_ARM)) return false;
+    for (;;) {
+        flags = osThreadFlagsWait(MISSION_FLAG_ARM_OK | MISSION_FLAG_ARM_FAIL,
+                                  osFlagsWaitAny,
+                                  mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
+        if (mission_test_take_command(command, sizeof(command)) &&
+            !mission_test_handle_aux_command(ctx, command)) {
+            mission_test_write("BUSY\r\n");
+        }
+        if (g_wireless_test.stop_requested ||
+            ((int32_t)(osKernelGetTickCount() - ctx->deadline_tick) >= 0)) {
+            (void)arm_stop(NULL, NULL);
+            ctx->active_arm_group = 0U;
+            return false;
+        }
+        if ((flags & osFlagsError) == 0U) {
+            ctx->active_arm_group = 0U;
+            mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1, 0U);
+            return ((flags & MISSION_FLAG_ARM_OK) != 0U) &&
+                   ((flags & MISSION_FLAG_ARM_FAIL) == 0U);
+        }
+    }
+}
+
+/** 卸球从12槽开始逆向逐格定位；每步均用PB0同向微调确认。 */
+static bool mission_test_seek_ball_slot(mission_context_t *ctx, uint8_t slot)
+{
+    uint8_t fine_used;
+
+    while (g_wireless_test.current_slot != slot) {
+        fine_used = 0U;
+        if (g_wireless_test.stop_requested ||
+            !mission_advance_slot(ctx, ZDT_TURNTABLE_DIR_CCW, &fine_used)) {
+            (void)turn_stop(NULL, NULL);
+            return false;
+        }
+        g_wireless_test.current_slot =
+            (g_wireless_test.current_slot == 1U) ? 12U :
+            (uint8_t)(g_wireless_test.current_slot - 1U);
+        (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                       "CCW SLOT=%u PB0=1 FINE=%u\r\n",
+                       (unsigned)g_wireless_test.current_slot,
+                       (unsigned)fine_used);
+        mission_test_write(g_wireless_test.text);
+    }
+    return true;
+}
+
+/** 每个实际停车位确认列号，按3/2/1层执行对应球的完整放置动作。 */
+static bool mission_test_run_depot_balls(mission_context_t *ctx)
+{
+    static const mission_command_type_t commands[] = {
+        MISSION_CMD_GO_DEPOT_2, MISSION_CMD_GO_DEPOT_3,
+        MISSION_CMD_GO_DEPOT_4,
+    };
+    static const chassis_command_type_t events[] = {
+        CHASSIS_CMD_DEPOT_2_READY, CHASSIS_CMD_DEPOT_3_READY,
+        CHASSIS_CMD_DEPOT_4_READY,
+    };
+    uint8_t depot, digit, confirmation, row, i, used_columns = 0U;
+
+    /* 相同目标格不应出现；出发前拦截可避免放到一半才发现冲突。 */
+    for (i = 0U; i < BALL_MANIFEST_CAPACITY; ++i) {
+        uint8_t j;
+        for (j = 0U; j < i; ++j) {
+            if ((g_wireless_test.manual_balls[i].ball.row ==
+                 g_wireless_test.manual_balls[j].ball.row) &&
+                (g_wireless_test.manual_balls[i].ball.column ==
+                 g_wireless_test.manual_balls[j].ball.column)) {
+                mission_test_write("FAULT DUPLICATE BALL TARGET\r\n");
+                return false;
+            }
+        }
+    }
+    for (depot = 1U; depot <= 4U; ++depot) {
+        if ((depot > 1U) &&
+            !mission_test_send_wait(ctx, commands[depot - 2U],
+                                    events[depot - 2U],
+                                    MISSION_STATE_WAIT_DEPOT_1)) return false;
+        g_wireless_test.depot_position = depot;
+        digit = 4U; /* 物理D4固定为逻辑第4列。 */
+        if (depot < 4U) {
+            if (!mission_test_read_depot_digit(ctx, &digit) ||
+                (digit == 0U) ||
+                !mission_test_read_depot_digit(ctx, &confirmation) ||
+                (digit != confirmation)) {
+                mission_test_write("FAULT DEPOT DIGIT\r\n");
+                return false;
+            }
+        }
+        if ((used_columns & (1U << digit)) != 0U) {
+            mission_test_write("FAULT DUPLICATE DEPOT COLUMN\r\n");
+            return false;
+        }
+        used_columns |= (uint8_t)(1U << digit);
+        mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1, 0U);
+        (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                       "DIGIT D%u=%u\r\n", (unsigned)depot, (unsigned)digit);
+        mission_test_write(g_wireless_test.text);
+        for (row = 3U; row >= 1U; --row) {
+            for (i = 0U; i < BALL_MANIFEST_CAPACITY; ++i) {
+                mission_test_ball_t *ball = &g_wireless_test.manual_balls[i];
+
+                if (ball->placed || (ball->ball.row != row) ||
+                    (ball->ball.column != digit)) continue;
+                /* 27保持到目标球槽PB0确认完成；回10后才允许动作22取球。 */
+                if (!mission_test_run_arm_group(
+                        ctx, MISSION_TURNTABLE_CLEAR_GROUP) ||
+                    !mission_test_seek_ball_slot(ctx, (uint8_t)(i + 1U)) ||
+                    !mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP) ||
+                    !mission_test_run_arm_group(ctx, MISSION_DEPOT_PICK_GROUP) ||
+                    !mission_test_run_arm_group(ctx,
+                        (row == 3U) ? MISSION_DEPOT_ROW3_GROUP :
+                        ((row == 2U) ? MISSION_DEPOT_ROW2_GROUP :
+                                         MISSION_DEPOT_ROW1_GROUP)) ||
+                    ((row == 3U) &&
+                     !mission_test_run_arm_group(ctx,
+                                                 MISSION_DEPOT_ROW3_EXIT_GROUP)) ||
+                    !mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP)) {
+                    mission_test_write("FAULT DEPOT PLACE\r\n");
+                    return false;
+                }
+                ball->placed = true;
+                mission_test_print_ball(ctx, i);
+            }
+        }
+    }
+    for (i = 0U; i < BALL_MANIFEST_CAPACITY; ++i) {
+        if (!g_wireless_test.manual_balls[i].placed) {
+            mission_test_write("FAULT UNPLACED BALL\r\n");
+            return false;
+        }
+    }
+    return true;
+}
+
 /** ROUTE DEPOT复用现有底盘点位命令，逐站输出最终数字后才横移。 */
 static bool mission_test_run_depot_digits(mission_context_t *ctx)
 {
@@ -2433,7 +2737,9 @@ static void mission_wireless_test_entry(void *argument)
     uint16_t request_id;
     uint8_t chassis_ready = 0U;
     uint8_t depot;
+    uint8_t fine_used;
     bool ok;
+    bool place_balls;
 
     (void)memset(&g_wireless_test, 0, sizeof(g_wireless_test));
     if (!debug_uart1_init(&g_wireless_test.debug)) {
@@ -2530,9 +2836,102 @@ static void mission_wireless_test_entry(void *argument)
         }
         if (g_wireless_test.stop_requested ||
             (ctx->state == MISSION_STATE_STOPPED) ||
+            (ctx->state == MISSION_STATE_FAULT) ||
             ((ctx->state == MISSION_STATE_COMPLETE) &&
              (g_wireless_test.target != MISSION_TEST_STAGE_DEPOT))) {
             mission_test_write("ERR RESET REQUIRED\r\n");
+            continue;
+        }
+
+        if (strcmp(command, "BALL HOME") == 0) {
+            if (!g_wireless_test.depot_wait_ball_home ||
+                (g_wireless_test.depot_position != 1U) ||
+                g_wireless_test.ball_home) {
+                mission_test_write("ERR WAIT ROUTE DEPOT BALL D1\r\n");
+                continue;
+            }
+            if (!g_wireless_test.arm_ready) {
+                mission_test_write("ERR ARM UNAVAILABLE\r\n");
+                continue;
+            }
+            if (!mission_prepare_zdt(ctx)) {
+                mission_fail(ctx, MISSION_FAULT_STORAGE);
+                mission_test_write("FAULT STORAGE INIT\r\n");
+                continue;
+            }
+            if (!mission_test_run_arm_group(
+                    ctx, MISSION_TURNTABLE_CLEAR_GROUP)) {
+                if (!g_wireless_test.stop_requested) {
+                    mission_fail(ctx, MISSION_FAULT_ARM);
+                }
+                mission_test_write("FAULT BALL HOME ARM 27\r\n");
+                continue;
+            }
+            /* 人工先将1号槽对准取球工位；本指令不执行绝对归零。 */
+            g_wireless_test.depot_wait_ball_home = false;
+            g_wireless_test.ball_home = true;
+            g_wireless_test.current_slot = 1U;
+            mission_test_write(
+                "BALL HOME AUTO START ASSUME SLOT=1\r\n");
+            ok = mission_test_ball_home_load(ctx);
+            if (ok) ok = mission_test_run_depot_balls(ctx);
+            if (ok) {
+                g_wireless_test.expected = MISSION_TEST_STAGE_DEPOT;
+                mission_test_write(
+                    "DONE DEPOT BALL\r\nREADY HOME HOME_DIRECT\r\n");
+            } else if (!g_wireless_test.stop_requested) {
+                mission_fail(ctx, MISSION_FAULT_STORAGE);
+                mission_test_write("FAULT ROUTE\r\n");
+            }
+            continue;
+        }
+        if ((strcmp(command, "TURN CW") == 0) ||
+            (strcmp(command, "TURN CCW") == 0)) {
+            if ((g_wireless_test.mode != MISSION_TEST_MODE_IDLE) ||
+                g_wireless_test.ball_home || !g_wireless_test.arm_ready) {
+                mission_test_write("ERR TURN REQUIRES IDLE ARM READY\r\n");
+                continue;
+            }
+            if (!mission_prepare_zdt(ctx)) {
+                mission_fail(ctx, MISSION_FAULT_STORAGE);
+                mission_test_write("FAULT STORAGE INIT\r\n");
+                continue;
+            }
+            if (!mission_test_run_arm_group(
+                    ctx, MISSION_TURNTABLE_CLEAR_GROUP)) {
+                if (!g_wireless_test.stop_requested) {
+                    mission_fail(ctx, MISSION_FAULT_ARM);
+                }
+                mission_test_write("FAULT TURN ARM 27\r\n");
+                continue;
+            }
+            fine_used = 0U;
+            /* 独立逐槽测试不更新装球槽号；反转时粗调、微调均为CCW。 */
+            ok = mission_advance_slot(ctx,
+                (strcmp(command, "TURN CW") == 0) ?
+                    ZDT_TURNTABLE_DIR_CW : ZDT_TURNTABLE_DIR_CCW,
+                &fine_used);
+            if (!ok) {
+                (void)turn_stop(NULL, NULL);
+                if (!g_wireless_test.stop_requested) {
+                    mission_fail(ctx, MISSION_FAULT_STORAGE);
+                }
+                mission_test_write("FAULT TURN SLOT UNKNOWN\r\n");
+            } else {
+                if (!mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP)) {
+                    if (!g_wireless_test.stop_requested) {
+                        mission_fail(ctx, MISSION_FAULT_ARM);
+                    }
+                    mission_test_write("FAULT TURN ARM 10\r\n");
+                    continue;
+                }
+                (void)snprintf(g_wireless_test.text,
+                               sizeof(g_wireless_test.text),
+                               "TURN %s REACHED PB0=1 FINE=%u\r\n",
+                               (strcmp(command, "TURN CW") == 0) ? "CW" : "CCW",
+                               (unsigned)fine_used);
+                mission_test_write(g_wireless_test.text);
+            }
             continue;
         }
 
@@ -2540,9 +2939,15 @@ static void mission_wireless_test_entry(void *argument)
         if ((strcmp(command, "ROUTE PLATFORM") == 0) ||
             (strcmp(command, "ROUTE STAIRS") == 0) ||
             (strcmp(command, "ROUTE DISC") == 0) ||
-            (strcmp(command, "ROUTE DEPOT") == 0)) {
+            (strcmp(command, "ROUTE DEPOT") == 0) ||
+            (strcmp(command, "ROUTE DEPOT BALL") == 0)) {
+            place_balls = (strcmp(command, "ROUTE DEPOT BALL") == 0);
             if (g_wireless_test.mode != MISSION_TEST_MODE_IDLE) {
                 mission_test_write("ERR RESET REQUIRED\r\n");
+                continue;
+            }
+            if (place_balls && !g_wireless_test.arm_ready) {
+                mission_test_write("ERR ARM UNAVAILABLE\r\n");
                 continue;
             }
             if (strncmp(command, "ROUTE PLATFORM", 14U) == 0) {
@@ -2582,6 +2987,12 @@ static void mission_wireless_test_entry(void *argument)
                 mission_test_color_name(g_mission_side));
             mission_test_write(g_wireless_test.text);
             ok = mission_test_run_target(ctx, g_wireless_test.target);
+            if (ok && place_balls) {
+                /* [lyx] D1停车后等待人工确认BALL HOME，避免出发前转盘改变车体姿态。 */
+                g_wireless_test.depot_wait_ball_home = true;
+                mission_test_write("READY D1 SEND BALL HOME\r\n");
+                continue;
+            }
             if (ok && (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT)) {
                 ok = mission_test_run_depot_digits(ctx);
             }
@@ -2592,15 +3003,17 @@ static void mission_wireless_test_entry(void *argument)
                 (void)snprintf(
                     g_wireless_test.text,
                     sizeof(g_wireless_test.text),
-                    "DONE %s\r\n",
-                    mission_test_stage_name(g_wireless_test.target));
+                    "DONE %s%s\r\n",
+                    mission_test_stage_name(g_wireless_test.target),
+                    place_balls ? " BALL" : "");
                 mission_test_write(g_wireless_test.text);
                 if (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT) {
                     mission_test_write(
                         "READY HOME HOME_DIRECT\r\n");
                 }
             } else if (!g_wireless_test.stop_requested) {
-                mission_fail(ctx, MISSION_FAULT_CHASSIS);
+                mission_fail(ctx, place_balls ? MISSION_FAULT_STORAGE :
+                                                MISSION_FAULT_CHASSIS);
                 mission_test_write("FAULT ROUTE\r\n");
             }
             continue;

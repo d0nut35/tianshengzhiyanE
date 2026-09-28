@@ -46,6 +46,7 @@ typedef enum {
     MISSION_VISION_SCENE_PLATFORM = 1,
     MISSION_VISION_SCENE_STAIR,
     MISSION_VISION_SCENE_SMALL_DISC,
+    MISSION_VISION_SCENE_DEPOT_DIGIT,
 } mission_vision_scene_t;
 
 typedef enum {
@@ -162,6 +163,7 @@ typedef struct {
     mission_test_stage_t expected;         /* 下一个未完成的纯路径阶段。 */
     uint8_t depot_position;                /* 0=未进仓库，1~4=当前位置。 */
     uint8_t reported_ball_count;           /* 已自动打印的球记录数。 */
+    uint8_t depot_digit;                   /* 当前停车位已确认的底部数字，0表示尚无。 */
     bool arm_ready;                         /* 动作组10完成回报已被测试任务确认。 */
     bool stop_requested;                   /* STOP已下发，等待停车回执。 */
     char text[224];                        /* 单条可读回复缓冲区。 */
@@ -315,6 +317,10 @@ static bool mission_test_skip_small_disc(mission_context_t *ctx);
 static bool mission_test_run_target(
     mission_context_t *ctx,
     mission_test_stage_t target);
+/** 在仓库单个停车位读取数字，NONE最多等待3秒。 */
+static bool mission_test_read_depot_digit(mission_context_t *ctx, uint8_t *digit);
+/** ROUTE DEPOT到D1后自动完成四站数字测试。 */
+static bool mission_test_run_depot_digits(mission_context_t *ctx);
 #endif
 
 /** 把毫秒转换为CMSIS-RTOS tick，非零毫秒至少返回1 tick。 */
@@ -594,6 +600,8 @@ static bool mission_start_vision(
         ctx->vision.scene = NANO_VISION_SCENE_TURNTABLE;
     } else if (scene == MISSION_VISION_SCENE_SMALL_DISC) {
         ctx->vision.scene = NANO_VISION_SCENE_SMALL_DISC;
+    } else if (scene == MISSION_VISION_SCENE_DEPOT_DIGIT) {
+        ctx->vision.scene = NANO_VISION_SCENE_WAREHOUSE_DIGIT;
     } else if (layer == MISSION_STAIR_LOW) {
         ctx->vision.scene = NANO_VISION_SCENE_STAIR_LOW;
     } else if (layer == MISSION_STAIR_HIGH) {
@@ -606,8 +614,10 @@ static bool mission_start_vision(
     }
     session.session_id = ctx->vision.session_id;
     session.scene = ctx->vision.scene;
-    session.target_color = (g_mission_side == MISSION_COLOR_RED) ?
-        NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE;
+    session.target_color = (scene == MISSION_VISION_SCENE_DEPOT_DIGIT) ?
+        NANO_VISION_COLOR_ANY :
+        ((g_mission_side == MISSION_COLOR_RED) ?
+         NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE);
     status = nano_vision_build_session_start_frame(
         mission_next_vision_sequence(&ctx->vision),
         &session,
@@ -864,6 +874,9 @@ static void mission_handle_vision(mission_context_t *ctx)
     nano_vision_status_t status;
     nano_vision_session_t session;
     nano_vision_event_t event;
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    nano_vision_digit_event_t digit_event;
+#endif
     nano_vision_event_ack_t ack;
     size_t tx_len = 0U;
 
@@ -917,12 +930,17 @@ static void mission_handle_vision(mission_context_t *ctx)
         if ((status != NANO_VISION_OK) ||
             (session.session_id != ctx->vision.session_id) ||
             (session.scene != ctx->vision.scene) ||
-            (session.target_color != ((g_mission_side == MISSION_COLOR_RED) ?
-                NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE))) {
+            (session.target_color !=
+             ((ctx->vision.scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT) ?
+              NANO_VISION_COLOR_ANY :
+              ((g_mission_side == MISSION_COLOR_RED) ?
+               NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE)))) {
             mission_fail(ctx, MISSION_FAULT_VISION);
             return;
         }
         ctx->vision.phase = MISSION_VISION_LISTENING;
+        /* 仓库位已停车，不需要向底盘发送扫描放行命令。 */
+        if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) return;
         /* 4) 圆盘开始监听；阶梯恢复等回报，首次进入本层则发CAM_READY。 */
         if (ctx->state == MISSION_STATE_PLATFORM_WAIT_VISION) {
             mission_enter_state(ctx, MISSION_STATE_PLATFORM_WAIT_TARGET,
@@ -963,13 +981,44 @@ static void mission_handle_vision(mission_context_t *ctx)
         }
         return;
     }
-    /* 5) 只在底盘实际进入对应扫描状态后接收小球事件。 */
+    /* 5) 小球只在对应扫描状态接收；仓库数字只在停车位接收。 */
     if ((ctx->vision.phase != MISSION_VISION_LISTENING) ||
         ((ctx->state != MISSION_STATE_PLATFORM_WAIT_TARGET) &&
          (ctx->state != MISSION_STATE_STAIR_SCANNING) &&
-         (ctx->state != MISSION_STATE_SMALL_DISC_RUNNING))) {
+         (ctx->state != MISSION_STATE_SMALL_DISC_RUNNING) &&
+         (ctx->state != MISSION_STATE_DEPOT_WAIT_DIGIT))) {
         return;
     }
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
+        /* 数字只接受本次会话的新鲜1~3事件，确认后Nano自动关闭会话。 */
+        status = nano_vision_decode_digit_event(
+            ctx->vision.mail_data, ctx->vision.mail_len, &digit_event);
+        if ((status != NANO_VISION_OK) ||
+            (digit_event.session_id != ctx->vision.session_id) ||
+            (digit_event.age_ms > MISSION_VISION_EVENT_MAX_AGE_MS)) {
+            return;
+        }
+        ack.session_id = ctx->vision.session_id;
+        ack.frame_id = digit_event.frame_id;
+        status = nano_vision_build_event_ack_frame(
+            mission_next_vision_sequence(&ctx->vision), &ack,
+            ctx->vision.tx, sizeof(ctx->vision.tx), &tx_len);
+        if (status != NANO_VISION_OK) {
+            mission_fail(ctx, MISSION_FAULT_VISION);
+            return;
+        }
+        ctx->vision.phase = MISSION_VISION_ACKING;
+        if (mission_submit_vision_transfer(
+                ctx, MULT_UART_OP_WRITE, tx_len,
+                MISSION_VISION_TIMEOUT_MS) != NANO_VISION_OK) {
+            mission_fail(ctx, MISSION_FAULT_VISION);
+            return;
+        }
+        g_wireless_test.depot_digit = digit_event.digit;
+        return;
+    }
+#endif
     status = nano_vision_decode_event(
         ctx->vision.mail_data, ctx->vision.mail_len, &event);
     if ((status != NANO_VISION_OK) ||
@@ -1925,6 +1974,7 @@ static bool mission_test_handle_aux_command(
             "PATH: PLATFORM STAIR DISC DEPOT D1 D2 D3 D4\r\n"
             "DEPOT: HOME HOME_DIRECT\r\n"
             "TARGET: ROUTE PLATFORM|STAIRS|DISC|DEPOT\r\n"
+            "ROUTE DEPOT: AUTO D1-D4 DIGIT\r\n"
             "QUERY: STATUS BALLS BALL n STOP HELP\r\n");
         return true;
     }
@@ -2249,6 +2299,114 @@ static bool mission_test_run_target(
     }
 }
 
+/** 每站单独建立场景5会话；有效数字立即通过，持续无数字约3秒才报NONE。 */
+static bool mission_test_read_depot_digit(mission_context_t *ctx, uint8_t *digit)
+{
+    char command[DEBUG_UART1_RX_BUFFER_SIZE];
+    uint32_t flags;
+    uint32_t deadline = 0U;
+    bool none_pending = false;
+    bool aborting = false;
+
+    g_wireless_test.depot_digit = 0U;
+    if (!mission_start_vision(ctx, MISSION_VISION_SCENE_DEPOT_DIGIT,
+                              MISSION_STAIR_NONE,
+                              MISSION_STATE_DEPOT_WAIT_DIGIT)) {
+        mission_fail(ctx, MISSION_FAULT_VISION);
+        return false;
+    }
+    for (;;) {
+        flags = osThreadFlagsWait(MISSION_FLAG_VISION_DONE,
+                                  osFlagsWaitAny,
+                                  mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
+        if (((flags & osFlagsError) == 0U) &&
+            ((flags & MISSION_FLAG_VISION_DONE) != 0U)) {
+            mission_handle_vision(ctx);
+        }
+        if (mission_test_take_command(command, sizeof(command)) &&
+            !mission_test_handle_aux_command(ctx, command)) {
+            mission_test_write("BUSY\r\n");
+        }
+        if (g_wireless_test.stop_requested && !aborting) {
+            aborting = true;
+            if (ctx->vision.phase != MISSION_VISION_IDLE) {
+                (void)mission_stop_vision(ctx);
+            }
+        }
+        if (ctx->state == MISSION_STATE_FAULT) return false;
+        if (aborting) {
+            if (ctx->vision.phase == MISSION_VISION_IDLE) {
+                (void)mission_test_wait_chassis_event(
+                    ctx, CHASSIS_CMD_STOPPED, ctx->request_id);
+                return false;
+            }
+            mission_vision_process(ctx);
+            continue;
+        }
+        if ((ctx->vision.phase == MISSION_VISION_LISTENING) &&
+            (deadline == 0U)) {
+            deadline = osKernelGetTickCount() +
+                mission_ms_to_ticks(MISSION_DEPOT_DIGIT_WAIT_MS);
+        }
+        if ((g_wireless_test.depot_digit != 0U) &&
+            (ctx->vision.phase == MISSION_VISION_IDLE)) {
+            *digit = g_wireless_test.depot_digit;
+            return true;
+        }
+        if (!none_pending && (deadline != 0U) &&
+            ((int32_t)(osKernelGetTickCount() - deadline) >= 0)) {
+            none_pending = true;
+            if (!mission_stop_vision(ctx)) {
+                mission_fail(ctx, MISSION_FAULT_VISION);
+                return false;
+            }
+        }
+        if (none_pending && (ctx->vision.phase == MISSION_VISION_IDLE)) {
+            *digit = 0U;
+            return true;
+        }
+        mission_vision_process(ctx);
+        mission_check_timeout(ctx);
+    }
+}
+
+/** ROUTE DEPOT复用现有底盘点位命令，逐站输出最终数字后才横移。 */
+static bool mission_test_run_depot_digits(mission_context_t *ctx)
+{
+    static const mission_command_type_t commands[] = {
+        MISSION_CMD_GO_DEPOT_2, MISSION_CMD_GO_DEPOT_3,
+        MISSION_CMD_GO_DEPOT_4,
+    };
+    static const chassis_command_type_t events[] = {
+        CHASSIS_CMD_DEPOT_2_READY, CHASSIS_CMD_DEPOT_3_READY,
+        CHASSIS_CMD_DEPOT_4_READY,
+    };
+    uint8_t depot;
+    uint8_t digit;
+
+    for (depot = 1U; depot <= 4U; ++depot) {
+        if ((depot > 1U) &&
+            !mission_test_send_wait(ctx, commands[depot - 2U],
+                                    events[depot - 2U],
+                                    MISSION_STATE_WAIT_DEPOT_1)) {
+            return false;
+        }
+        g_wireless_test.depot_position = depot;
+        if (!mission_test_read_depot_digit(ctx, &digit)) return false;
+        mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1, 0U);
+        if (digit == 0U) {
+            (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                           "DIGIT D%u=NONE\r\n", (unsigned)depot);
+        } else {
+            (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                           "DIGIT D%u=%u\r\n",
+                           (unsigned)depot, (unsigned)digit);
+        }
+        mission_test_write(g_wireless_test.text);
+    }
+    return true;
+}
+
 /**
  * @brief USART1无线联调任务：运行纯路径分段测试或单目标视觉抓取测试
  * @param argument 指向全局Mission上下文
@@ -2424,6 +2582,9 @@ static void mission_wireless_test_entry(void *argument)
                 mission_test_color_name(g_mission_side));
             mission_test_write(g_wireless_test.text);
             ok = mission_test_run_target(ctx, g_wireless_test.target);
+            if (ok && (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT)) {
+                ok = mission_test_run_depot_digits(ctx);
+            }
             if (ok) {
                 g_wireless_test.expected =
                     (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT)
@@ -2436,7 +2597,7 @@ static void mission_wireless_test_entry(void *argument)
                 mission_test_write(g_wireless_test.text);
                 if (g_wireless_test.target == MISSION_TEST_STAGE_DEPOT) {
                     mission_test_write(
-                        "READY D1 D2 D3 D4 HOME HOME_DIRECT\r\n");
+                        "READY HOME HOME_DIRECT\r\n");
                 }
             } else if (!g_wireless_test.stop_requested) {
                 mission_fail(ctx, MISSION_FAULT_CHASSIS);

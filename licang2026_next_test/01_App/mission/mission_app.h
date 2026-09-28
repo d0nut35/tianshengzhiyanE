@@ -74,13 +74,14 @@ typedef enum {
     MISSION_STATE_SMALL_DISC_WAIT_EXIT,
     MISSION_STATE_SMALL_DISC_WAIT_SAFE,
 
-    /* 仓库回执和业务流程待下一阶段补齐；当前只发GO_DEPOT_1后停在此状态。 */
+    /* 正式业务仍只到D1；无线测试可复用该状态等待D1~D4到位。 */
     MISSION_STATE_WAIT_DEPOT_1,
     
     MISSION_STATE_STOPPING,
     MISSION_STATE_STOPPED,
     MISSION_STATE_COMPLETE,
     MISSION_STATE_FAULT,
+    MISSION_STATE_DEPOT_WAIT_DIGIT,
 } mission_state_t;
 
 typedef enum {

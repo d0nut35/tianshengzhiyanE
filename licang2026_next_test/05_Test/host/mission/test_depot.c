@@ -7,6 +7,8 @@
 #include "ball_manifest_core.h"
 #undef MISSION_CHASSIS_ROUTE_TEST_ENABLED
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED 0
+/* 主机测试不接USART1，诊断打印不改变状态转换断言。 */
+#define DEPOT_TRACE(...) ((void)0)
 
 typedef uint8_t mission_command_type_t;
 enum { MISSION_CMD_GO_DEPOT_1 = 12, MISSION_CMD_DEPOT_OK = 16 };

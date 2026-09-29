@@ -26,6 +26,19 @@
 #include "gate.h"
 #include "zdt_turntable_service.h"
 
+/* [lyx] 复用无线测试的USART1封装；仅Mission任务格式化，禁止回调中打印。 */
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+#include "debug_uart1.h"
+static debug_uart1_t g_depot_debug;
+static char g_depot_trace_text[128];
+#define DEPOT_TRACE(...) do { \
+    (void)snprintf(g_depot_trace_text, sizeof(g_depot_trace_text), __VA_ARGS__); \
+    (void)debug_uart1_write_text(&g_depot_debug, g_depot_trace_text); \
+} while (0)
+#else
+#define DEPOT_TRACE(...) ((void)0)
+#endif
+
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
 #include "debug_uart1.h"
 #endif
@@ -96,7 +109,8 @@ typedef enum {
 
 typedef struct {
     mission_vision_phase_t phase;
-    bool inflight;
+    volatile bool inflight;
+    volatile bool completion_pending; /* 回调已到但Mission尚未检查，不能复用mail/tx。 */
     bool stop_requested;
     uint8_t next_sequence;
     uint16_t next_session_id;
@@ -158,6 +172,8 @@ typedef struct {
     uint8_t active_arm_group;
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     uint8_t arm_boot_state;                 /* 0=未尝试，1=注册失败，2=下发失败，3=已入队。 */
+#endif
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED || MISSION_DEPOT_TRACE_ENABLED
     volatile uint32_t arm_last_action_report; /* 高位为事件，低8位为动作组。 */
 #endif
 } mission_context_t;
@@ -401,8 +417,8 @@ static void mission_arm_report(
     mission_context_t *ctx = (mission_context_t *)user_ctx;
     uint32_t flag = 0U;
 
-#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
-    /* 诊断保留原始组号，便于发现完成回报未匹配当前动作组。 */
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED || MISSION_DEPOT_TRACE_ENABLED
+    /* 诊断保留原始组号；回调只保存，任务中打印，避免阻塞设备回报。 */
     if ((ctx != NULL) && (report != NULL) &&
         ((report_events & (LSC16_REPORT_EVENT_ACTION_STARTED |
                            LSC16_REPORT_EVENT_ACTION_STOPPED |
@@ -445,8 +461,10 @@ static void mission_vision_done(
         (void)memcpy(ctx->vision.mail_data, completion->rx_data, copy_len);
     }
     ctx->vision.mail_len = (uint16_t)copy_len;
-    ctx->vision.inflight = false;
+    /* [lyx] 先发布结果待处理标记，再释放在途标记；空闲不等于事务成功。 */
     __DMB();
+    ctx->vision.completion_pending = true;
+    ctx->vision.inflight = false;
     (void)osThreadFlagsSet(ctx->task, MISSION_FLAG_VISION_DONE);
 }
 
@@ -509,6 +527,10 @@ static void mission_enter_state(
 {
     /* 0) 记录唯一顶层状态，后续事件只由该状态对应的分支处理。 */
     ctx->state = state;
+    DEPOT_TRACE("[M] STATE=%u D=%u SLOT=%u ARM=%u V=%u\r\n",
+                (unsigned)state, (unsigned)ctx->depot_position,
+                (unsigned)(ctx->current_slot + 1U),
+                (unsigned)ctx->active_arm_group, (unsigned)ctx->vision.phase);
     /* 1) 0表示永久等待；非0转换成绝对截止tick供主任务统一检查。 */
     ctx->deadline_tick = (timeout_ms == 0U)
         ? 0U
@@ -525,6 +547,10 @@ static void mission_fail(mission_context_t *ctx, mission_fault_t fault)
         return;
     }
     ctx->fault_code = (uint8_t)fault;
+    DEPOT_TRACE("[M] FAULT=%u STATE=%u ARM_LAST=%lu V=%u IO=%u\r\n",
+                (unsigned)fault, (unsigned)ctx->state,
+                (unsigned long)ctx->arm_last_action_report,
+                (unsigned)ctx->vision.phase, (unsigned)ctx->vision.mail_status);
     /* [lyx] 保留在途缓冲区，事务结束后尝试关闭视觉；故障时同时停车。 */
     (void)mission_stop_vision(ctx);
     (void)turn_stop(NULL, NULL);
@@ -563,6 +589,8 @@ static bool mission_start_arm(
     mission_state_t wait_state)
 {
     ctx->active_arm_group = action_group;
+    DEPOT_TRACE("[M] ARM SEND=%u WAIT=%u\r\n",
+                (unsigned)action_group, (unsigned)wait_state);
     if (arm_run(
             action_group,
             1U,
@@ -593,7 +621,9 @@ static nano_vision_status_t mission_submit_vision_transfer(
     mux_transfer_t transfer;
     mult_uart_status_t status;
 
-    if (ctx->vision.inflight) return NANO_VISION_ERR_BUSY;
+    if (ctx->vision.inflight || ctx->vision.completion_pending) {
+        return NANO_VISION_ERR_BUSY;
+    }
     (void)memset(&transfer, 0, sizeof(transfer));
     transfer.device = MISSION_VISION_DEVICE_ID;
     transfer.operation = operation;
@@ -634,6 +664,8 @@ static bool mission_start_vision(
     ++ctx->vision.next_session_id;
     if (ctx->vision.next_session_id == 0U) ++ctx->vision.next_session_id;
     ctx->vision.session_id = ctx->vision.next_session_id;
+    DEPOT_TRACE("[M] VISION START SID=%u KIND=%u\r\n",
+                (unsigned)ctx->vision.session_id, (unsigned)scene);
     if (scene == MISSION_VISION_SCENE_PLATFORM) {
         ctx->vision.scene = NANO_VISION_SCENE_TURNTABLE;
     } else if (scene == MISSION_VISION_SCENE_SMALL_DISC) {
@@ -674,6 +706,10 @@ static bool mission_start_vision(
         mission_reset_vision(ctx);
         return false;
     }
+    /* 仓库切相机不设总期限；START只发一次，后续短读轮询等待同一会话READY。 */
+    if (scene == MISSION_VISION_SCENE_DEPOT_DIGIT) {
+        ctx->deadline_tick = 0U;
+    }
     return true;
 }
 
@@ -687,7 +723,7 @@ static bool mission_stop_vision(mission_context_t *ctx)
         (ctx->vision.session_id == 0U)) {
         return true;
     }
-    if (ctx->vision.inflight) {
+    if (ctx->vision.inflight || ctx->vision.completion_pending) {
         ctx->vision.stop_requested = true;
         return true;
     }
@@ -968,7 +1004,24 @@ static void mission_handle_vision(mission_context_t *ctx)
     size_t tx_len = 0U;
 
     /* 0) 先处理等待当前串口事务结束后才能执行的停止请求。 */
+    if (!ctx->vision.completion_pending) return;
+    ctx->vision.completion_pending = false;
     status = mission_map_vision_status(ctx->vision.mail_status);
+    if ((ctx->vision.phase == MISSION_VISION_STARTING) &&
+        (ctx->vision.scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT) &&
+        !ctx->vision.stop_requested &&
+        (status == NANO_VISION_ERR_TIMEOUT)) {
+        /* 切换C100可能耗时较长；超时仅释放本笔总线事务，不重发START。 */
+        return;
+    }
+    /* 正常监听超时不刷屏；保留会话应答、数字帧和通信错误。 */
+    if ((ctx->depot_position != 0U) &&
+        !((ctx->vision.phase == MISSION_VISION_LISTENING) &&
+          (status == NANO_VISION_ERR_TIMEOUT))) {
+        DEPOT_TRACE("[M] VISION RX PH=%u STATUS=%u LEN=%u SID=%u\r\n",
+                    (unsigned)ctx->vision.phase, (unsigned)status,
+                    (unsigned)ctx->vision.mail_len, (unsigned)ctx->vision.session_id);
+    }
     if (ctx->vision.stop_requested &&
         (ctx->vision.phase != MISSION_VISION_STOPPING)) {
         ctx->vision.stop_requested = false;
@@ -1030,6 +1083,8 @@ static void mission_handle_vision(mission_context_t *ctx)
             return;
         }
         ctx->vision.phase = MISSION_VISION_LISTENING;
+        DEPOT_TRACE("[M] VISION READY SID=%u SCENE=%u\r\n",
+                    (unsigned)ctx->vision.session_id, (unsigned)ctx->vision.scene);
         /* 仓库位已停车，不需要向底盘发送扫描放行命令。 */
         if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
@@ -1093,8 +1148,12 @@ static void mission_handle_vision(mission_context_t *ctx)
         if ((status != NANO_VISION_OK) ||
             (digit_event.session_id != ctx->vision.session_id) ||
             (digit_event.age_ms > MISSION_VISION_EVENT_MAX_AGE_MS)) {
+            DEPOT_TRACE("[M] DIGIT REJECT DECODE=%u\r\n", (unsigned)status);
             return;
         }
+        DEPOT_TRACE("[M] DIGIT RX=%u SID=%u AGE=%u\r\n",
+                    (unsigned)digit_event.digit, (unsigned)digit_event.session_id,
+                    (unsigned)digit_event.age_ms);
         ack.session_id = ctx->vision.session_id;
         ack.frame_id = digit_event.frame_id;
         status = nano_vision_build_event_ack_frame(
@@ -1183,16 +1242,20 @@ static void mission_vision_process(mission_context_t *ctx)
     uint8_t grasp_group;
 
     if ((ctx->vision.phase == MISSION_VISION_IDLE) ||
-        ctx->vision.inflight) {
+        ctx->vision.inflight || ctx->vision.completion_pending) {
         return;
     }
-    if (ctx->vision.phase == MISSION_VISION_LISTENING) {
+    if ((ctx->vision.phase == MISSION_VISION_LISTENING) ||
+        ((ctx->vision.phase == MISSION_VISION_STARTING) &&
+         (ctx->vision.scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT))) {
         if (mission_submit_vision_transfer(
                 ctx, MULT_UART_OP_READ, 0U,
                 MISSION_VISION_READ_TIMEOUT_MS) != NANO_VISION_OK) {
             return;
         }
     } else if (ctx->vision.phase == MISSION_VISION_ACKING) {
+        DEPOT_TRACE("[M] ACK DONE STATE=%u DIGIT=%u\r\n",
+                    (unsigned)ctx->state, (unsigned)ctx->depot_digit);
         mission_reset_vision(ctx);
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
         if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
@@ -1377,6 +1440,9 @@ static void mission_handle_chassis(
 {
     mission_stair_layer_t layer;
     uint8_t grasp_group;
+    DEPOT_TRACE("[M] CHASSIS RX=%u ID=%u EXPECT=%u READY=%u\r\n",
+                (unsigned)event->type, (unsigned)event->request_id,
+                (unsigned)ctx->request_id, (unsigned)event->is_ready);
 
     /* 0) 握手事件允许底盘先于机械臂完成初始化。 */
     if (event->type == CHASSIS_CMD_MISSION_READY) {
@@ -1575,6 +1641,9 @@ static void mission_handle_chassis(
 /** 处理唯一在途动作组结果，并按圆盘、阶梯或小圆盘子流程继续。 */
 static void mission_handle_arm(mission_context_t *ctx, bool success)
 {
+    DEPOT_TRACE("[M] ARM DONE=%u OK=%u STATE=%u LAST=%lu\r\n",
+                (unsigned)ctx->active_arm_group, (unsigned)success,
+                (unsigned)ctx->state, (unsigned long)ctx->arm_last_action_report);
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
     if ((ctx->state == MISSION_STATE_DEPOT_PREPARE) ||
         (ctx->state == MISSION_STATE_DEPOT_SAFE) ||
@@ -1901,6 +1970,9 @@ static void mission_depot_prepare(mission_context_t *ctx)
     ctx->depot_first_digit = 0U;
     ctx->depot_preparing = true;
     ctx->depot_target_slot = 11U; /* 物理12槽；必须实际移动，不能伪造当前位置。 */
+    DEPOT_TRACE("[M] DEPOT BEGIN BALLS=%u SKIP=0x%X SLOT=%u TARGET=12\r\n",
+                (unsigned)ctx->manifest.count, (unsigned)ctx->depot_abnormal_mask,
+                (unsigned)(ctx->current_slot + 1U));
     if (!mission_start_arm(ctx, MISSION_TURNTABLE_CLEAR_GROUP,
                            MISSION_STATE_DEPOT_PREPARE)) {
         mission_fail(ctx, MISSION_FAULT_ARM);
@@ -1911,6 +1983,9 @@ static void mission_depot_prepare(mission_context_t *ctx)
 static void mission_depot_start_digit(mission_context_t *ctx)
 {
     ctx->depot_digit = 0U;
+    DEPOT_TRACE("[M] DIGIT START D=%u PASS=%u\r\n",
+                (unsigned)ctx->depot_position,
+                (ctx->depot_first_digit == 0U) ? 1U : 2U);
     if (!mission_start_vision(ctx, MISSION_VISION_SCENE_DEPOT_DIGIT,
                               MISSION_STAIR_NONE,
                               MISSION_STATE_DEPOT_WAIT_DIGIT)) {
@@ -1922,6 +1997,9 @@ static void mission_depot_start_digit(mission_context_t *ctx)
 static void mission_depot_digit_done(mission_context_t *ctx)
 {
     uint8_t digit = ctx->depot_digit;
+    DEPOT_TRACE("[M] DIGIT CHECK=%u FIRST=%u USED=0x%X\r\n",
+                (unsigned)digit, (unsigned)ctx->depot_first_digit,
+                (unsigned)ctx->depot_columns_used);
     if ((digit < 1U) || (digit > 3U)) {
         mission_fail(ctx, MISSION_FAULT_VISION);
     } else if (ctx->depot_first_digit == 0U) {
@@ -1956,6 +2034,9 @@ static void mission_depot_next_ball(mission_context_t *ctx)
             ctx->depot_sequence = i;
             ctx->depot_row = row;
             ctx->depot_target_slot = record.storage_slot;
+            DEPOT_TRACE("[M] BALL SEQ=%u ROW=%u COL=%u SLOT=%u\r\n",
+                        (unsigned)i, (unsigned)row, (unsigned)ctx->depot_column,
+                        (unsigned)(record.storage_slot + 1U));
             if (!mission_start_arm(ctx, MISSION_TURNTABLE_CLEAR_GROUP,
                                    MISSION_STATE_DEPOT_AVOID)) {
                 mission_fail(ctx, MISSION_FAULT_ARM);
@@ -2061,6 +2142,8 @@ static void mission_check_timeout(mission_context_t *ctx)
                     ((direction == ZDT_TURNTABLE_DIR_CW) ? 1U : 11U)) % 12U);
             }
             if (ctx->current_slot == ctx->depot_target_slot) {
+                DEPOT_TRACE("[M] SLOT REACHED=%u -> ARM10\r\n",
+                            (unsigned)(ctx->current_slot + 1U));
                 if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
                                        MISSION_STATE_DEPOT_SAFE)) {
                     mission_fail(ctx, MISSION_FAULT_ARM);
@@ -2072,6 +2155,8 @@ static void mission_check_timeout(mission_context_t *ctx)
         }
         if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
             /* NONE先关闭会话并等STOPPED；不沿用无线巡检的继续横移策略。 */
+            DEPOT_TRACE("[M] DIGIT TIMEOUT D=%u V=%u -> STOP SESSION\r\n",
+                        (unsigned)ctx->depot_position, (unsigned)ctx->vision.phase);
             mission_enter_state(ctx, MISSION_STATE_DEPOT_DIGIT_STOP,
                                 MISSION_OPERATION_TIMEOUT_MS);
             if (!mission_stop_vision(ctx)) mission_fail(ctx, MISSION_FAULT_VISION);
@@ -2088,6 +2173,9 @@ static void mission_check_timeout(mission_context_t *ctx)
             return;
         }
 #endif
+        DEPOT_TRACE("[M] TIMEOUT STATE=%u ARM=%u LAST=%lu\r\n",
+                    (unsigned)ctx->state, (unsigned)ctx->active_arm_group,
+                    (unsigned long)ctx->arm_last_action_report);
         mission_fail(ctx, MISSION_FAULT_TIMEOUT);
     }
 }
@@ -2105,6 +2193,11 @@ static void mission_task_entry(void *argument)
     uint32_t flags;
 
     /* 0) 上电先等待动作组10完成，不设置超时。 */
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    /* 只启用诊断输出，不解析无线测试命令；关闭开关即不占用该调试实例。 */
+    (void)debug_uart1_init(&g_depot_debug);
+#endif
+    DEPOT_TRACE("[M] FORMAL DEPOT TRACE ON\r\n");
     mission_enter_state(ctx, MISSION_STATE_WAIT_HOME, 0U);
     for (;;) {
         /* 1) 等待任一事件；等待时长由当前状态的截止时间决定。 */

@@ -9,12 +9,13 @@
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED 0
 /* 主机测试不接USART1，诊断打印不改变状态转换断言。 */
 #define DEPOT_TRACE(...) ((void)0)
+#define PLATFORM_TRACE(...) ((void)0)
 
 typedef uint8_t mission_command_type_t;
 enum { MISSION_CMD_GO_DEPOT_1 = 12, MISSION_CMD_DEPOT_OK = 16 };
 enum { MISSION_FAULT_STORAGE = 5, MISSION_FAULT_ARM = 3,
        MISSION_FAULT_VISION = 4, MISSION_FAULT_QUEUE = 6, MISSION_FAULT_TIMEOUT = 1 };
-enum { MISSION_VISION_SCENE_DEPOT_DIGIT = 4 };
+enum { MISSION_VISION_SCENE_PLATFORM = 1, MISSION_VISION_SCENE_DEPOT_DIGIT = 4 };
 typedef enum { ZDT_TURNTABLE_DIR_CW, ZDT_TURNTABLE_DIR_CCW } zdt_turntable_direction_t;
 typedef struct {
     mission_state_t state;
@@ -80,6 +81,10 @@ static void digit(mission_context_t *c, uint8_t value)
 int main(void)
 {
     mission_context_t c;
+    /* 阶段1稳定期间不启动视觉；200ms到期只启动一次。 */
+    reset(&c); mission_enter_state(&c, MISSION_STATE_PLATFORM_SETTLE, MISSION_PLATFORM_SETTLE_MS);
+    now += 199; mission_check_timeout(&c); assert(sessions == 0);
+    ++now; mission_check_timeout(&c); assert(sessions == 1 && c.state == MISSION_STATE_PLATFORM_WAIT_VISION);
     /* 抓取数不能推定为9；空盘、部分抓取、九球和已在12槽均实际走到12槽。 */
     const uint8_t starts[] = {0, 3, 9, 11};
     for (unsigned i = 0; i < sizeof(starts); ++i) {

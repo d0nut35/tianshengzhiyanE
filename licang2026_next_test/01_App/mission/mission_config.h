@@ -16,7 +16,7 @@
  */
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED  0U
 /* 临时正式仓库诊断：USART1输出；现场定位后改0即可关闭。 */
-#define MISSION_DEPOT_TRACE_ENABLED          1U
+#define MISSION_DEPOT_TRACE_ENABLED          0U
 #define MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS 2000U
 #define MISSION_DEPOT_DIGIT_WAIT_MS        3000U
 #define MISSION_WIRELESS_POLL_MS               10U
@@ -41,6 +41,8 @@
 #define MISSION_TURNTABLE_CLEAR_GROUP    27U /* 转盘运动前的机械臂避让姿态 */
 
 #define MISSION_PLATFORM_BALL_COUNT       5U
+#define MISSION_PLATFORM_MAX_ATTEMPTS     7U /* 仅圆盘：读卡失败不占槽，允许再抓。 */
+#define MISSION_PLATFORM_SETTLE_MS      200U /* 仅圆盘，开视觉前等待机械晃动消退。 */
 #define MISSION_STAIR_BALL_COUNT          2U
 #define MISSION_SMALL_DISC_BALL_COUNT     2U
 

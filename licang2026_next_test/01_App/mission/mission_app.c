@@ -143,6 +143,8 @@ typedef struct {
 
     /* 比赛流程数据由mission_task_entry唯一写入。 */
     uint8_t platform_balls;
+    uint8_t platform_attempts; /* 动作12成功入队计一次，最多7次；成功收球仍最多5个。 */
+    bool platform_read_ok;
     uint8_t stair_balls;
     uint8_t small_disc_balls;
     uint8_t storage_slot;
@@ -210,6 +212,14 @@ typedef struct {
 } mission_wireless_test_t;
 
 static mission_wireless_test_t g_wireless_test;
+#define PLATFORM_TRACE(...) do { \
+    if (g_wireless_test.target == MISSION_TEST_STAGE_PLATFORM) { \
+        (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text), __VA_ARGS__); \
+        (void)debug_uart1_write_text(&g_wireless_test.debug, g_wireless_test.text); \
+    } \
+} while (0)
+#else
+#define PLATFORM_TRACE(...) ((void)0)
 #endif
 
 static const osThreadAttr_t g_mission_task_attr = {
@@ -600,6 +610,12 @@ static bool mission_start_arm(
         return false;
     }
     mission_enter_state(ctx, wait_state, MISSION_OPERATION_TIMEOUT_MS);
+    if (action_group == MISSION_PLATFORM_GRASP_GROUP) {
+        ++ctx->platform_attempts;
+        PLATFORM_TRACE("[P] T=%lu ARM12 SEND TRY=%u OK=%u\r\n",
+            (unsigned long)osKernelGetTickCount(), (unsigned)ctx->platform_attempts,
+            (unsigned)ctx->platform_balls);
+    }
     return true;
 }
 
@@ -830,7 +846,7 @@ static bool mission_record_ball(
 }
 
 /**
- * 读取一次球并写入档案。IC失败最多重试五次；耗尽后记录READ_FAILED继续存球。
+ * IC最多读五次；圆盘读失败不建档，阶梯/小圆盘仍记录READ_FAILED继续存球。
  */
 static bool mission_read_ball(
     mission_context_t *ctx,
@@ -856,6 +872,15 @@ static bool mission_read_ball(
         if ((attempt + 1U) < MISSION_IC_MAX_ATTEMPTS) {
             (void)osDelay(mission_ms_to_ticks(MISSION_IC_RETRY_MS));
         }
+    }
+    if (region == MISSION_STORAGE_REGION_PLATFORM) {
+        ctx->platform_read_ok = read_ok;
+        PLATFORM_TRACE("[P] T=%lu IC=%s TRY=%u READS=%u SLOT=%u TURN=%u\r\n",
+            (unsigned long)osKernelGetTickCount(), read_ok ? "OK" : "FAIL",
+            (unsigned)ctx->platform_attempts,
+            (unsigned)(read_ok ? attempt + 1U : MISSION_IC_MAX_ATTEMPTS),
+            (unsigned)(ctx->storage_slot + 1U), (unsigned)read_ok);
+        if (!read_ok) return true; /* 可重试的夹空/未读卡，不是设备存储故障。 */
     }
     return mission_record_ball(ctx, region, read_ok);
 }
@@ -961,8 +986,11 @@ static bool mission_store_ball(
     mission_context_t *ctx,
     mission_storage_region_t region)
 {
-    if (!mission_read_ball(ctx, region) ||
-        !mission_advance_slot(ctx,
+    if (!mission_read_ball(ctx, region)) return false;
+    if ((region == MISSION_STORAGE_REGION_PLATFORM) && !ctx->platform_read_ok) {
+        return true; /* 仅圆盘保留同一空槽，其他区域行为不变。 */
+    }
+    if (!mission_advance_slot(ctx,
             MISSION_SLOT_USE_CW ? ZDT_TURNTABLE_DIR_CW :
                                   ZDT_TURNTABLE_DIR_CCW, NULL)) return false;
     /* [lyx] 初始物理1槽对应0；只有PB0确认成功才更新当前位置。 */
@@ -1083,6 +1111,11 @@ static void mission_handle_vision(mission_context_t *ctx)
             return;
         }
         ctx->vision.phase = MISSION_VISION_LISTENING;
+        if (ctx->state == MISSION_STATE_PLATFORM_WAIT_VISION) {
+            PLATFORM_TRACE("[P] T=%lu READY SID=%u TRY=%u OK=%u\r\n",
+                (unsigned long)osKernelGetTickCount(), (unsigned)ctx->vision.session_id,
+                (unsigned)ctx->platform_attempts, (unsigned)ctx->platform_balls);
+        }
         DEPOT_TRACE("[M] VISION READY SID=%u SCENE=%u\r\n",
                     (unsigned)ctx->vision.session_id, (unsigned)ctx->vision.scene);
         /* 仓库位已停车，不需要向底盘发送扫描放行命令。 */
@@ -1192,6 +1225,12 @@ static void mission_handle_vision(mission_context_t *ctx)
         return;
     }
     /* 6) 先确认该视觉帧；运动中的阶梯和小圆盘还要请求底盘停车。 */
+    if (ctx->state == MISSION_STATE_PLATFORM_WAIT_TARGET) {
+        PLATFORM_TRACE("[P] T=%lu EVENT SID=%u FRAME=%u AGE=%u DX=%d DY=%d\r\n",
+            (unsigned long)osKernelGetTickCount(), (unsigned)event.session_id,
+            (unsigned)event.observation.frame_id, (unsigned)event.observation.age_ms,
+            (int)event.observation.offset_x_px, (int)event.observation.offset_y_px);
+    }
     ack.session_id = ctx->vision.session_id;
     ack.frame_id = event.observation.frame_id;
     status = nano_vision_build_event_ack_frame(
@@ -1317,6 +1356,8 @@ static void mission_start_run(mission_context_t *ctx)
 
     /* 1) 保留已选红蓝方，只清空本轮小球、槽位和故障计数。 */
     ctx->platform_balls = 0U;
+    ctx->platform_attempts = 0U;
+    ctx->platform_read_ok = false;
     ctx->stair_balls = 0U;
     ctx->small_disc_balls = 0U;
     ctx->storage_slot = 0U;
@@ -1692,19 +1733,17 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         mission_try_ready(ctx);
         return;
     }
-    /* 3) 动作组11到位后启动圆盘视觉。 */
+    /* 3) 首次11到位或17后重试回11，先稳定再启动圆盘视觉。 */
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_POSE) {
-        if (!mission_start_vision(
-                ctx,
-                MISSION_VISION_SCENE_PLATFORM,
-                MISSION_STAIR_NONE,
-                MISSION_STATE_PLATFORM_WAIT_VISION)) {
-            mission_fail(ctx, MISSION_FAULT_VISION);
-        }
+        mission_enter_state(ctx, MISSION_STATE_PLATFORM_SETTLE,
+                            MISSION_PLATFORM_SETTLE_MS);
         return;
     }
     /* 4) 动作组12完成后，前四球回11，第五球执行17避让。 */
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_GRASP) {
+        PLATFORM_TRACE("[P] T=%lu ARM12 DONE TRY=%u OK=%u\r\n",
+            (unsigned long)osKernelGetTickCount(), (unsigned)ctx->platform_attempts,
+            (unsigned)ctx->platform_balls);
         if ((uint8_t)(ctx->platform_balls + 1U) >=
             MISSION_PLATFORM_BALL_COUNT) {
             if (!mission_start_arm(
@@ -1863,23 +1902,32 @@ static void mission_handle_storage(mission_context_t *ctx)
         return;
     }
     /* 1) 每次读卡和转盘推进成功后占用一个新槽位。 */
-    ++ctx->storage_slot;
+    if ((completed_state != MISSION_STATE_PLATFORM_WAIT_STORAGE) ||
+        ctx->platform_read_ok) ++ctx->storage_slot;
     if (completed_state == MISSION_STATE_PLATFORM_WAIT_STORAGE) {
-        /* 2) 圆盘满5球后执行动作组10，否则继续下一球视觉。 */
-        ++ctx->platform_balls;
-        if (ctx->platform_balls >= MISSION_PLATFORM_BALL_COUNT) {
+        /* 2) 圆盘读卡成功才计球；满5球或已尝试7次均收臂结束，不再重试。 */
+        if (ctx->platform_read_ok) ++ctx->platform_balls;
+        PLATFORM_TRACE("[P] T=%lu RESULT TRY=%u OK=%u NEXT_SLOT=%u\r\n",
+            (unsigned long)osKernelGetTickCount(), (unsigned)ctx->platform_attempts,
+            (unsigned)ctx->platform_balls, (unsigned)(ctx->storage_slot + 1U));
+        if ((ctx->platform_balls >= MISSION_PLATFORM_BALL_COUNT) ||
+            (ctx->platform_attempts >= MISSION_PLATFORM_MAX_ATTEMPTS)) {
             if (!mission_start_arm(
                     ctx,
                     MISSION_HOME_ACTION_GROUP,
                     MISSION_STATE_PLATFORM_WAIT_DEPARTURE_POSE)) {
                 mission_fail(ctx, MISSION_FAULT_ARM);
             }
-        } else if (!mission_start_vision(
-                       ctx,
-                       MISSION_VISION_SCENE_PLATFORM,
-                       MISSION_STAIR_NONE,
-                       MISSION_STATE_PLATFORM_WAIT_VISION)) {
-            mission_fail(ctx, MISSION_FAULT_VISION);
+        } else if (ctx->active_arm_group == MISSION_PLATFORM_AVOID_GROUP) {
+            /* 第5球候选曾执行17；读卡失败后必须先回11，才能重新识别。 */
+            if (!mission_start_arm(ctx, MISSION_PLATFORM_VISION_GROUP,
+                                   MISSION_STATE_PLATFORM_WAIT_POSE)) {
+                mission_fail(ctx, MISSION_FAULT_ARM);
+            }
+        } else {
+            /* 成功转槽或读卡失败处理结束后计时，不让转盘运动覆盖稳定等待。 */
+            mission_enter_state(ctx, MISSION_STATE_PLATFORM_SETTLE,
+                                MISSION_PLATFORM_SETTLE_MS);
         }
         return;
     }
@@ -2123,6 +2171,17 @@ static void mission_check_timeout(mission_context_t *ctx)
         ((int32_t)(osKernelGetTickCount() - ctx->deadline_tick) >= 0)) {
         if (ctx->state == MISSION_STATE_READY) {
             mission_start_run(ctx);
+            return;
+        }
+        if (ctx->state == MISSION_STATE_PLATFORM_SETTLE) {
+            /* 非阻塞等待，期间主循环仍可处理STOP；正式与无线共用。 */
+            PLATFORM_TRACE("[P] T=%lu SETTLE DONE MS=%u -> VISION\r\n",
+                (unsigned long)osKernelGetTickCount(), (unsigned)MISSION_PLATFORM_SETTLE_MS);
+            if (!mission_start_vision(ctx, MISSION_VISION_SCENE_PLATFORM,
+                                      MISSION_STAIR_NONE,
+                                      MISSION_STATE_PLATFORM_WAIT_VISION)) {
+                mission_fail(ctx, MISSION_FAULT_VISION);
+            }
             return;
         }
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
@@ -3383,7 +3442,12 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             g_wireless_test.mode = MISSION_TEST_MODE_TARGET;
+            PLATFORM_TRACE("[P] DIAG ON TICK_HZ=%lu MAX_BALLS=5 MAX_TRIES=7\r\n",
+                           (unsigned long)osKernelGetTickFreq());
             ctx->platform_balls = 0U;
+            ctx->platform_attempts = 0U;
+            ctx->platform_read_ok = false;
+            ctx->current_slot = 0U;
             ctx->stair_balls = 0U;
             ctx->small_disc_balls = 0U;
             ctx->storage_slot = 0U;

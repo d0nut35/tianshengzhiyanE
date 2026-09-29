@@ -95,6 +95,7 @@ typedef enum {
     MISSION_STATE_DEPOT_DIGIT_STOP,
     MISSION_STATE_DEPOT_DWELL,
     MISSION_STATE_DEPOT_WAIT_HOME,
+    MISSION_STATE_PLATFORM_SETTLE, /* 仅阶段1：最后运动结束后稳定200ms再开视觉。 */
 } mission_state_t;
 
 typedef enum {

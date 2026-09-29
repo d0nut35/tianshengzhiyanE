@@ -14,7 +14,7 @@
  * Mission无线联调开关：1=USART1指令测试任务，0=正式比赛流程。
  * 测试任务支持纯路径分段控制，以及只在指定区域启用完整视觉抓取。
  */
-#define MISSION_CHASSIS_ROUTE_TEST_ENABLED  1U
+#define MISSION_CHASSIS_ROUTE_TEST_ENABLED  0U
 #define MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS 2000U
 #define MISSION_DEPOT_DIGIT_WAIT_MS        3000U
 #define MISSION_WIRELESS_POLL_MS               10U
@@ -60,7 +60,7 @@
 /* 反向粗角独立保留；先与正向相同，实机测得偏差后单独调整。 */
 #define MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG 1400U
 #define MISSION_ZDT_FINE_ANGLE_0P1DEG         10U
-#define MISSION_ZDT_SPEED_RPM                 240U
+#define MISSION_ZDT_SPEED_RPM                 260U
 #define MISSION_ZDT_FINE_SPEED_RPM             80U
 #define MISSION_ZDT_ACCEL                      50U
 #define MISSION_ZDT_FINE_MAX_STEPS             35U

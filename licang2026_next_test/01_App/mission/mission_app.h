@@ -74,7 +74,7 @@ typedef enum {
     MISSION_STATE_SMALL_DISC_WAIT_EXIT,
     MISSION_STATE_SMALL_DISC_WAIT_SAFE,
 
-    /* 正式业务仍只到D1；无线测试可复用该状态等待D1~D4到位。 */
+    /* 首次D1到位；无线测试也复用此状态。 */
     MISSION_STATE_WAIT_DEPOT_1,
     
     MISSION_STATE_STOPPING,
@@ -83,6 +83,18 @@ typedef enum {
     MISSION_STATE_FAULT,
     MISSION_STATE_DEPOT_WAIT_DIGIT,
     MISSION_STATE_DEPOT_WAIT_ARM, /* 无线放球测试等待动作组回报。 */
+    MISSION_STATE_DEPOT_PREPARE,
+    MISSION_STATE_DEPOT_SEEK,
+    MISSION_STATE_DEPOT_SAFE,
+    MISSION_STATE_DEPOT_AVOID,
+    MISSION_STATE_DEPOT_PICK,
+    MISSION_STATE_DEPOT_PLACE,
+    MISSION_STATE_DEPOT_EXIT,
+    MISSION_STATE_DEPOT_RETURN,
+    MISSION_STATE_DEPOT_WAIT_POSITION,
+    MISSION_STATE_DEPOT_DIGIT_STOP,
+    MISSION_STATE_DEPOT_DWELL,
+    MISSION_STATE_DEPOT_WAIT_HOME,
 } mission_state_t;
 
 typedef enum {
@@ -121,6 +133,8 @@ typedef struct {
     uint8_t small_disc_balls;
     uint8_t storage_slot;
     uint8_t fault_code;
+    uint8_t current_slot;       /* 正式流程实际0基槽号，物理槽号为此值+1。 */
+    uint16_t abnormal_ball_mask; /* 位n置1表示档案序号n异常，留车跳过。 */
 } mission_app_snapshot_t;
 
 /**

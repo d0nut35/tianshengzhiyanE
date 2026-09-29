@@ -134,6 +134,19 @@ typedef struct {
     uint8_t storage_slot;
     uint8_t fault_code;
 
+    /* 正式仓库使用真实0基槽位；异常标记按档案序号保存，不删除原始记录。 */
+    uint8_t current_slot;
+    uint8_t depot_target_slot;
+    uint8_t depot_position;
+    uint8_t depot_column;
+    uint8_t depot_first_digit;
+    uint8_t depot_digit;
+    uint8_t depot_columns_used;
+    uint8_t depot_sequence;
+    uint8_t depot_row;
+    uint16_t depot_abnormal_mask;
+    bool depot_preparing;
+
     /* 设备协议细节收在子对象中，顶层流程仍只使用一个state。 */
     mission_vision_t vision;
     mission_storage_t storage;
@@ -285,6 +298,13 @@ static void mission_handle_arm(mission_context_t *ctx, bool success);
 static void mission_handle_storage(mission_context_t *ctx);
 /** 检查当前状态是否到期并触发自动启动或故障。 */
 static void mission_check_timeout(mission_context_t *ctx);
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+static void mission_depot_next_ball(mission_context_t *ctx);
+static void mission_depot_start_digit(mission_context_t *ctx);
+static void mission_depot_digit_done(mission_context_t *ctx);
+static void mission_depot_arm_done(mission_context_t *ctx);
+static void mission_depot_prepare(mission_context_t *ctx);
+#endif
 
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
 /** 输出无线测试文本。 */
@@ -505,7 +525,9 @@ static void mission_fail(mission_context_t *ctx, mission_fault_t fault)
         return;
     }
     ctx->fault_code = (uint8_t)fault;
-    mission_reset_vision(ctx);
+    /* [lyx] 保留在途缓冲区，事务结束后尝试关闭视觉；故障时同时停车。 */
+    (void)mission_stop_vision(ctx);
+    (void)turn_stop(NULL, NULL);
     request_id = mission_next_request_id(ctx);
     (void)mission_send_chassis(MISSION_CMD_STOP, request_id);
     mission_enter_state(ctx, MISSION_STATE_FAULT, 0U);
@@ -814,9 +836,20 @@ static bool mission_advance_slot(
     bool coarse = true;
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     char command[DEBUG_UART1_RX_BUFFER_SIZE];
+#else
+    mission_user_command_t command;
 #endif
 
     for (;;) {
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        /* [lyx] 同步单槽事务间仍响应正式STOP，不依赖无线命令轮询。 */
+        while (osMessageQueueGet(ctx->command_queue, &command, NULL, 0U) == osOK) {
+            mission_handle_command(ctx, command);
+        }
+        if ((ctx->state == MISSION_STATE_STOPPING) ||
+            (ctx->state == MISSION_STATE_STOPPED) ||
+            (ctx->state == MISSION_STATE_FAULT)) return false;
+#endif
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
         if (mission_test_take_command(command, sizeof(command)) &&
             !mission_test_handle_aux_command(ctx, command)) {
@@ -844,6 +877,14 @@ static bool mission_advance_slot(
         coarse = false;
 
         do {
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            while (osMessageQueueGet(ctx->command_queue, &command, NULL, 0U) == osOK) {
+                mission_handle_command(ctx, command);
+            }
+            if ((ctx->state == MISSION_STATE_STOPPING) ||
+                (ctx->state == MISSION_STATE_STOPPED) ||
+                (ctx->state == MISSION_STATE_FAULT)) return false;
+#endif
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
             if (mission_test_take_command(command, sizeof(command)) &&
                 !mission_test_handle_aux_command(ctx, command)) {
@@ -884,10 +925,15 @@ static bool mission_store_ball(
     mission_context_t *ctx,
     mission_storage_region_t region)
 {
-    return mission_read_ball(ctx, region) &&
-        mission_advance_slot(ctx,
+    if (!mission_read_ball(ctx, region) ||
+        !mission_advance_slot(ctx,
             MISSION_SLOT_USE_CW ? ZDT_TURNTABLE_DIR_CW :
-                                  ZDT_TURNTABLE_DIR_CCW, NULL);
+                                  ZDT_TURNTABLE_DIR_CCW, NULL)) return false;
+    /* [lyx] 初始物理1槽对应0；只有PB0确认成功才更新当前位置。 */
+    ctx->current_slot = MISSION_SLOT_USE_CW ?
+        (uint8_t)((ctx->current_slot + 1U) % 12U) :
+        (uint8_t)((ctx->current_slot + 11U) % 12U);
+    return true;
 }
 
 /** 上电只查询一次转盘固件和闭环配置，后续存球直接使用缓存结果。 */
@@ -917,9 +963,7 @@ static void mission_handle_vision(mission_context_t *ctx)
     nano_vision_status_t status;
     nano_vision_session_t session;
     nano_vision_event_t event;
-#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     nano_vision_digit_event_t digit_event;
-#endif
     nano_vision_event_ack_t ack;
     size_t tx_len = 0U;
 
@@ -957,6 +1001,10 @@ static void mission_handle_vision(mission_context_t *ctx)
             return;
         }
         mission_reset_vision(ctx);
+        if (ctx->state == MISSION_STATE_DEPOT_DIGIT_STOP) {
+            mission_fail(ctx, MISSION_FAULT_VISION);
+            return;
+        }
         if (ctx->state == MISSION_STATE_STAIR_WAIT_LAYER) {
             mission_start_stair_layer(ctx);
         } else if (ctx->state == MISSION_STATE_STAIR_WAIT_VISION_END) {
@@ -983,7 +1031,13 @@ static void mission_handle_vision(mission_context_t *ctx)
         }
         ctx->vision.phase = MISSION_VISION_LISTENING;
         /* 仓库位已停车，不需要向底盘发送扫描放行命令。 */
-        if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) return;
+        if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            mission_enter_state(ctx, MISSION_STATE_DEPOT_WAIT_DIGIT,
+                                MISSION_DEPOT_DIGIT_WAIT_MS);
+#endif
+            return;
+        }
         /* 4) 圆盘开始监听；阶梯恢复等回报，首次进入本层则发CAM_READY。 */
         if (ctx->state == MISSION_STATE_PLATFORM_WAIT_VISION) {
             mission_enter_state(ctx, MISSION_STATE_PLATFORM_WAIT_TARGET,
@@ -1032,7 +1086,6 @@ static void mission_handle_vision(mission_context_t *ctx)
          (ctx->state != MISSION_STATE_DEPOT_WAIT_DIGIT))) {
         return;
     }
-#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
         /* 数字只接受本次会话的新鲜1~3事件，确认后Nano自动关闭会话。 */
         status = nano_vision_decode_digit_event(
@@ -1058,10 +1111,16 @@ static void mission_handle_vision(mission_context_t *ctx)
             mission_fail(ctx, MISSION_FAULT_VISION);
             return;
         }
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
         g_wireless_test.depot_digit = digit_event.digit;
+#else
+        ctx->depot_digit = digit_event.digit;
+        /* [lyx] 数字已收到，继续等待ACK事务成功，不能提前开始下一会话。 */
+        mission_enter_state(ctx, MISSION_STATE_DEPOT_WAIT_DIGIT,
+                            MISSION_OPERATION_TIMEOUT_MS);
+#endif
         return;
     }
-#endif
     status = nano_vision_decode_event(
         ctx->vision.mail_data, ctx->vision.mail_len, &event);
     if ((status != NANO_VISION_OK) ||
@@ -1135,6 +1194,12 @@ static void mission_vision_process(mission_context_t *ctx)
         }
     } else if (ctx->vision.phase == MISSION_VISION_ACKING) {
         mission_reset_vision(ctx);
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
+            mission_depot_digit_done(ctx);
+            return;
+        }
+#endif
         if (ctx->state == MISSION_STATE_PLATFORM_WAIT_GRASP) {
             if (!mission_start_arm(ctx, MISSION_PLATFORM_GRASP_GROUP,
                                    MISSION_STATE_PLATFORM_WAIT_GRASP)) {
@@ -1192,6 +1257,7 @@ static void mission_start_run(mission_context_t *ctx)
     ctx->stair_balls = 0U;
     ctx->small_disc_balls = 0U;
     ctx->storage_slot = 0U;
+    ctx->current_slot = 0U; /* 初始物理1槽须在开赛前人工对准，不是机械归零。 */
     ctx->fault_code = MISSION_FAULT_NONE;
     /* 2) 请求底盘去圆盘工作位。 */
     if (!mission_send_chassis(MISSION_CMD_GO_PLATFORM, request_id)) {
@@ -1279,6 +1345,8 @@ static void mission_handle_command(
             (ctx->state == MISSION_STATE_BOOT)) {
             return;
         }
+        (void)turn_stop(NULL, NULL);
+        (void)mission_stop_vision(ctx);
         request_id = mission_next_request_id(ctx);
         if (!mission_send_chassis(MISSION_CMD_STOP, request_id)) {
             mission_fail(ctx, MISSION_FAULT_QUEUE);
@@ -1341,6 +1409,30 @@ static void mission_handle_chassis(
         return;
     }
     /* 3) 圆盘到位后先执行动作组11，再开启圆盘视觉。 */
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    if ((ctx->state == MISSION_STATE_WAIT_DEPOT_1) &&
+        (event->type == CHASSIS_CMD_DEPOT_1_READY)) {
+        mission_depot_prepare(ctx);
+        return;
+    }
+    if ((ctx->state == MISSION_STATE_DEPOT_WAIT_POSITION) &&
+        (event->type == (uint8_t)(CHASSIS_CMD_DEPOT_1_READY +
+                                  ctx->depot_position - 1U))) {
+        if (ctx->depot_position == 4U) {
+            ctx->depot_column = 4U;
+            mission_depot_next_ball(ctx);
+        } else {
+            ctx->depot_first_digit = 0U;
+            mission_depot_start_digit(ctx);
+        }
+        return;
+    }
+    if ((ctx->state == MISSION_STATE_DEPOT_WAIT_HOME) &&
+        (event->type == CHASSIS_CMD_HOME_READY)) {
+        mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
+        return;
+    }
+#endif
     if ((ctx->state == MISSION_STATE_WAIT_PLATFORM) &&
         (event->type == CHASSIS_CMD_PLATFORM_READY)) {
         if (!mission_start_arm(
@@ -1483,6 +1575,19 @@ static void mission_handle_chassis(
 /** 处理唯一在途动作组结果，并按圆盘、阶梯或小圆盘子流程继续。 */
 static void mission_handle_arm(mission_context_t *ctx, bool success)
 {
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    if ((ctx->state == MISSION_STATE_DEPOT_PREPARE) ||
+        (ctx->state == MISSION_STATE_DEPOT_SAFE) ||
+        (ctx->state == MISSION_STATE_DEPOT_AVOID) ||
+        (ctx->state == MISSION_STATE_DEPOT_PICK) ||
+        (ctx->state == MISSION_STATE_DEPOT_PLACE) ||
+        (ctx->state == MISSION_STATE_DEPOT_EXIT) ||
+        (ctx->state == MISSION_STATE_DEPOT_RETURN)) {
+        if (!success) mission_fail(ctx, MISSION_FAULT_ARM);
+        else mission_depot_arm_done(ctx);
+        return;
+    }
+#endif
     /* 0) 只处理当前状态正在等待的动作组回报。 */
     if ((ctx->state != MISSION_STATE_WAIT_HOME) &&
         (ctx->state != MISSION_STATE_PLATFORM_WAIT_POSE) &&
@@ -1671,8 +1776,9 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
             mission_fail(ctx, MISSION_FAULT_QUEUE);
             return;
         }
-        /* 仓库到位回执尚未定义，先无超时等待后续仓库流程接入。 */
-        mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1, 0U);
+        /* 等待匹配请求编号的D1实际到位回执，再准备转盘和仓库视觉。 */
+        mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1,
+                            MISSION_OPERATION_TIMEOUT_MS);
     }
 }
 
@@ -1751,6 +1857,180 @@ static void mission_handle_storage(mission_context_t *ctx)
     }
 }
 
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+/** D1预检只标记异常球；未知目标、重复格、无效槽位不阻断其余正常球。 */
+static void mission_depot_prepare(mission_context_t *ctx)
+{
+    ball_manifest_record_t record;
+    uint16_t targets = 0U;
+    uint16_t slots = 0U;
+    uint8_t i;
+
+    if ((ctx->manifest.count > BALL_MANIFEST_CAPACITY) ||
+        (ctx->current_slot >= 12U)) {
+        mission_fail(ctx, MISSION_FAULT_STORAGE);
+        return;
+    }
+    ctx->depot_abnormal_mask = 0U;
+    for (i = 0U; i < ctx->manifest.count; ++i) {
+        uint16_t target_bit;
+        uint16_t slot_bit;
+        if ((ball_manifest_get(&ctx->manifest, i, &record) != BALL_MANIFEST_OK) ||
+            (record.state != BALL_MANIFEST_STATE_STORED) ||
+            (record.storage_slot >= 12U) ||
+            (record.target_row < 1U) || (record.target_row > 3U) ||
+            (record.target_column < 1U) || (record.target_column > 4U) ||
+            (record.ic_code != (uint8_t)((record.target_row << 4) |
+                                         record.target_column))) {
+            ctx->depot_abnormal_mask |= (uint16_t)(1U << i);
+            continue;
+        }
+        target_bit = (uint16_t)(1U << ((record.target_row - 1U) * 4U +
+                                       record.target_column - 1U));
+        slot_bit = (uint16_t)(1U << record.storage_slot);
+        /* 同一目标只保留第一颗有效球；不修改manifest允许重复追加的契约。 */
+        if (((targets & target_bit) != 0U) || ((slots & slot_bit) != 0U)) {
+            ctx->depot_abnormal_mask |= (uint16_t)(1U << i);
+            continue;
+        }
+        targets |= target_bit;
+        slots |= slot_bit;
+    }
+    ctx->depot_position = 1U;
+    ctx->depot_columns_used = 0U;
+    ctx->depot_first_digit = 0U;
+    ctx->depot_preparing = true;
+    ctx->depot_target_slot = 11U; /* 物理12槽；必须实际移动，不能伪造当前位置。 */
+    if (!mission_start_arm(ctx, MISSION_TURNTABLE_CLEAR_GROUP,
+                           MISSION_STATE_DEPOT_PREPARE)) {
+        mission_fail(ctx, MISSION_FAULT_ARM);
+    }
+}
+
+/** 每次确认都建立独立场景5会话；3秒计时从READY开始。 */
+static void mission_depot_start_digit(mission_context_t *ctx)
+{
+    ctx->depot_digit = 0U;
+    if (!mission_start_vision(ctx, MISSION_VISION_SCENE_DEPOT_DIGIT,
+                              MISSION_STAIR_NONE,
+                              MISSION_STATE_DEPOT_WAIT_DIGIT)) {
+        mission_fail(ctx, MISSION_FAULT_VISION);
+    }
+}
+
+/** ACK成功后才消费数字；前三站须两次一致，且逻辑列不得重复。 */
+static void mission_depot_digit_done(mission_context_t *ctx)
+{
+    uint8_t digit = ctx->depot_digit;
+    if ((digit < 1U) || (digit > 3U)) {
+        mission_fail(ctx, MISSION_FAULT_VISION);
+    } else if (ctx->depot_first_digit == 0U) {
+        ctx->depot_first_digit = digit;
+        mission_depot_start_digit(ctx);
+    } else if ((digit != ctx->depot_first_digit) ||
+               ((ctx->depot_columns_used & (1U << digit)) != 0U)) {
+        mission_fail(ctx, MISSION_FAULT_VISION);
+    } else {
+        ctx->depot_columns_used |= (uint8_t)(1U << digit);
+        ctx->depot_column = digit;
+        mission_depot_next_ball(ctx);
+    }
+}
+
+/** 每颗完成后重新按3→2→1筛选实际档案；异常球留在车上并跳过。 */
+static void mission_depot_next_ball(mission_context_t *ctx)
+{
+    ball_manifest_record_t record;
+    uint8_t row;
+    uint8_t i;
+    for (row = 3U; row > 0U; --row) {
+        for (i = 0U; i < ctx->manifest.count; ++i) {
+            if ((ctx->depot_abnormal_mask & (1U << i)) != 0U) continue;
+            if (ball_manifest_get(&ctx->manifest, i, &record) != BALL_MANIFEST_OK) {
+                mission_fail(ctx, MISSION_FAULT_STORAGE);
+                return;
+            }
+            if ((record.state != BALL_MANIFEST_STATE_STORED) ||
+                (record.target_column != ctx->depot_column) ||
+                (record.target_row != row)) continue;
+            ctx->depot_sequence = i;
+            ctx->depot_row = row;
+            ctx->depot_target_slot = record.storage_slot;
+            if (!mission_start_arm(ctx, MISSION_TURNTABLE_CLEAR_GROUP,
+                                   MISSION_STATE_DEPOT_AVOID)) {
+                mission_fail(ctx, MISSION_FAULT_ARM);
+            }
+            return;
+        }
+    }
+    if (ctx->depot_position == 4U) {
+        /* D4最后一次收臂完成（无球则到位）后停1秒，直接走既有回家路线。 */
+        mission_enter_state(ctx, MISSION_STATE_DEPOT_DWELL, 1000U);
+        return;
+    }
+    ++ctx->depot_position;
+    if (!mission_send_chassis(
+            (mission_command_type_t)(MISSION_CMD_GO_DEPOT_1 +
+                                      ctx->depot_position - 1U),
+            mission_next_request_id(ctx))) {
+        mission_fail(ctx, MISSION_FAULT_QUEUE);
+        return;
+    }
+    mission_enter_state(ctx, MISSION_STATE_DEPOT_WAIT_POSITION,
+                        MISSION_OPERATION_TIMEOUT_MS);
+}
+
+/** 每个动作组都等控制器完成回报；第三层必须先24撤离，再回10。 */
+static void mission_depot_arm_done(mission_context_t *ctx)
+{
+    uint8_t group;
+    mission_state_t next;
+    switch (ctx->state) {
+    case MISSION_STATE_DEPOT_PREPARE:
+    case MISSION_STATE_DEPOT_AVOID:
+        /* 逐槽工作由主循环驱动，保持27姿态直到目标槽到位。 */
+        mission_enter_state(ctx, MISSION_STATE_DEPOT_SEEK, 1U);
+        return;
+    case MISSION_STATE_DEPOT_SAFE:
+        if (ctx->depot_preparing) {
+            ctx->depot_preparing = false;
+            mission_depot_start_digit(ctx);
+            return;
+        }
+        group = MISSION_DEPOT_PICK_GROUP;
+        next = MISSION_STATE_DEPOT_PICK;
+        break;
+    case MISSION_STATE_DEPOT_PICK:
+        group = (ctx->depot_row == 3U) ? MISSION_DEPOT_ROW3_GROUP :
+            ((ctx->depot_row == 2U) ? MISSION_DEPOT_ROW2_GROUP :
+                                     MISSION_DEPOT_ROW1_GROUP);
+        next = MISSION_STATE_DEPOT_PLACE;
+        break;
+    case MISSION_STATE_DEPOT_PLACE:
+        group = (ctx->depot_row == 3U) ? MISSION_DEPOT_ROW3_EXIT_GROUP :
+                                       MISSION_HOME_ACTION_GROUP;
+        next = (ctx->depot_row == 3U) ? MISSION_STATE_DEPOT_EXIT :
+                                      MISSION_STATE_DEPOT_RETURN;
+        break;
+    case MISSION_STATE_DEPOT_EXIT:
+        group = MISSION_HOME_ACTION_GROUP;
+        next = MISSION_STATE_DEPOT_RETURN;
+        break;
+    case MISSION_STATE_DEPOT_RETURN:
+        if (ball_manifest_mark_placed(&ctx->manifest, ctx->depot_sequence) !=
+            BALL_MANIFEST_OK) {
+            mission_fail(ctx, MISSION_FAULT_STORAGE);
+            return;
+        }
+        mission_depot_next_ball(ctx);
+        return;
+    default:
+        return;
+    }
+    if (!mission_start_arm(ctx, group, next)) mission_fail(ctx, MISSION_FAULT_ARM);
+}
+#endif
+
 /**
  * @brief 处理当前状态的期限到达事件。
  * @param ctx Mission上下文。
@@ -1764,6 +2044,50 @@ static void mission_check_timeout(mission_context_t *ctx)
             mission_start_run(ctx);
             return;
         }
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        if (ctx->state == MISSION_STATE_DEPOT_SEEK) {
+            /* 复用正式单槽粗转/微调及堵转、超时检测；每完成一槽回到事件循环。 */
+            if (ctx->current_slot != ctx->depot_target_slot) {
+                zdt_turntable_direction_t direction = ctx->depot_preparing ?
+                    ZDT_TURNTABLE_DIR_CW : ZDT_TURNTABLE_DIR_CCW;
+                if (!mission_advance_slot(ctx, direction, NULL)) {
+                    if ((ctx->state != MISSION_STATE_STOPPING) &&
+                        (ctx->state != MISSION_STATE_STOPPED)) {
+                        mission_fail(ctx, MISSION_FAULT_STORAGE);
+                    }
+                    return;
+                }
+                ctx->current_slot = (uint8_t)((ctx->current_slot +
+                    ((direction == ZDT_TURNTABLE_DIR_CW) ? 1U : 11U)) % 12U);
+            }
+            if (ctx->current_slot == ctx->depot_target_slot) {
+                if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
+                                       MISSION_STATE_DEPOT_SAFE)) {
+                    mission_fail(ctx, MISSION_FAULT_ARM);
+                }
+            } else {
+                mission_enter_state(ctx, MISSION_STATE_DEPOT_SEEK, 1U);
+            }
+            return;
+        }
+        if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
+            /* NONE先关闭会话并等STOPPED；不沿用无线巡检的继续横移策略。 */
+            mission_enter_state(ctx, MISSION_STATE_DEPOT_DIGIT_STOP,
+                                MISSION_OPERATION_TIMEOUT_MS);
+            if (!mission_stop_vision(ctx)) mission_fail(ctx, MISSION_FAULT_VISION);
+            return;
+        }
+        if (ctx->state == MISSION_STATE_DEPOT_DWELL) {
+            if (!mission_send_chassis(MISSION_CMD_DEPOT_OK,
+                                      mission_next_request_id(ctx))) {
+                mission_fail(ctx, MISSION_FAULT_QUEUE);
+                return;
+            }
+            mission_enter_state(ctx, MISSION_STATE_DEPOT_WAIT_HOME,
+                                MISSION_OPERATION_TIMEOUT_MS);
+            return;
+        }
+#endif
         mission_fail(ctx, MISSION_FAULT_TIMEOUT);
     }
 }
@@ -3330,6 +3654,8 @@ mission_app_status_t mission_app_get_snapshot(mission_app_snapshot_t *snapshot)
     snapshot->small_disc_balls = ctx->small_disc_balls;
     snapshot->storage_slot = ctx->storage_slot;
     snapshot->fault_code = ctx->fault_code;
+    snapshot->current_slot = ctx->current_slot;
+    snapshot->abnormal_ball_mask = ctx->depot_abnormal_mask;
     taskEXIT_CRITICAL();
     return MISSION_APP_OK;
 }

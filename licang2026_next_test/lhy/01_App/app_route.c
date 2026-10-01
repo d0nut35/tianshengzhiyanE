@@ -56,7 +56,7 @@ typedef struct {
  * 镜像侧由 route_go 关于 x=RT_FIELD_W_MM/2 换算，不另建表 */
 static const route_pt_t g_route[ROUTE_NUM] = {
     /* PLATFORM：圆盘工作位，找线后按 IMU 航向标定 */
-    { CSVC_NAV_PATH, { 440, 4300}, 180.0f, 500.0f, 30.0f,
+    { CSVC_NAV_PATH, { 445, 4300}, 180.0f, 500.0f, 30.0f,
       { 473, 4300}, FIX_IMU  },
     /* STAIRS：阶梯起始工作位，即低层起点 */
     { CSVC_NAV_PATH, {2100, 2920},   0.0f, 500.0f, 60.0f,

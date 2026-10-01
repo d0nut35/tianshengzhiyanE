@@ -1974,6 +1974,12 @@ static void mission_handle_storage(mission_context_t *ctx)
     }
 }
 
+/** 0基槽号的CCW步数，正式与无线共用；当前槽即目标槽时无需转动。 */
+static uint8_t mission_depot_ccw_steps(uint8_t current_slot, uint8_t target_slot)
+{
+    return (uint8_t)((current_slot + 12U - target_slot) % 12U);
+}
+
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
 /** D1预检只标记异常球；未知目标、重复格、无效槽位不阻断其余正常球。 */
 static void mission_depot_prepare(mission_context_t *ctx)
@@ -2063,34 +2069,44 @@ static void mission_depot_digit_done(mission_context_t *ctx)
     }
 }
 
-/** 每颗完成后重新按3→2→1筛选实际档案；异常球留在车上并跳过。 */
+/** 每颗完成后按实际当前位置选本列CCW最近球；层高只决定放置动作。 */
 static void mission_depot_next_ball(mission_context_t *ctx)
 {
     ball_manifest_record_t record;
-    uint8_t row;
+    uint8_t best_sequence = BALL_MANIFEST_CAPACITY;
+    uint8_t best_steps = 12U;
+    uint8_t best_row = 0U;
+    uint8_t best_slot = 0U;
     uint8_t i;
-    for (row = 3U; row > 0U; --row) {
-        for (i = 0U; i < ctx->manifest.count; ++i) {
-            if ((ctx->depot_abnormal_mask & (1U << i)) != 0U) continue;
-            if (ball_manifest_get(&ctx->manifest, i, &record) != BALL_MANIFEST_OK) {
-                mission_fail(ctx, MISSION_FAULT_STORAGE);
-                return;
-            }
-            if ((record.state != BALL_MANIFEST_STATE_STORED) ||
-                (record.target_column != ctx->depot_column) ||
-                (record.target_row != row)) continue;
-            ctx->depot_sequence = i;
-            ctx->depot_row = row;
-            ctx->depot_target_slot = record.storage_slot;
-            DEPOT_TRACE("[M] BALL SEQ=%u ROW=%u COL=%u SLOT=%u\r\n",
-                        (unsigned)i, (unsigned)row, (unsigned)ctx->depot_column,
-                        (unsigned)(record.storage_slot + 1U));
-            if (!mission_start_arm(ctx, MISSION_TURNTABLE_CLEAR_GROUP,
-                                   MISSION_STATE_DEPOT_AVOID)) {
-                mission_fail(ctx, MISSION_FAULT_ARM);
-            }
+    for (i = 0U; i < ctx->manifest.count; ++i) {
+        uint8_t steps;
+        if ((ctx->depot_abnormal_mask & (1U << i)) != 0U) continue;
+        if (ball_manifest_get(&ctx->manifest, i, &record) != BALL_MANIFEST_OK) {
+            mission_fail(ctx, MISSION_FAULT_STORAGE);
             return;
         }
+        if ((record.state != BALL_MANIFEST_STATE_STORED) ||
+            (record.target_column != ctx->depot_column)) continue;
+        steps = mission_depot_ccw_steps(ctx->current_slot, record.storage_slot);
+        if (steps < best_steps) {
+            best_steps = steps;
+            best_sequence = i;
+            best_row = record.target_row;
+            best_slot = record.storage_slot;
+        }
+    }
+    if (best_sequence != BALL_MANIFEST_CAPACITY) {
+        ctx->depot_sequence = best_sequence;
+        ctx->depot_row = best_row;
+        ctx->depot_target_slot = best_slot;
+        DEPOT_TRACE("[M] BALL SEQ=%u ROW=%u COL=%u SLOT=%u\r\n",
+                    (unsigned)best_sequence, (unsigned)best_row,
+                    (unsigned)ctx->depot_column, (unsigned)(best_slot + 1U));
+        if (!mission_start_arm(ctx, MISSION_TURNTABLE_CLEAR_GROUP,
+                               MISSION_STATE_DEPOT_AVOID)) {
+            mission_fail(ctx, MISSION_FAULT_ARM);
+        }
+        return;
     }
     if (ctx->depot_position == 4U) {
         /* D4最后一次收臂完成（无球则到位）后停1秒，直接走既有回家路线。 */
@@ -3062,7 +3078,7 @@ static bool mission_test_seek_ball_slot(mission_context_t *ctx, uint8_t slot)
     return true;
 }
 
-/** 每个实际停车位确认列号，按3/2/1层执行对应球的完整放置动作。 */
+/** 每站确认列号，按实际当前槽选本列CCW最近球，层高决定完整放置动作。 */
 static bool mission_test_run_depot_balls(mission_context_t *ctx)
 {
     static const mission_command_type_t commands[] = {
@@ -3113,32 +3129,45 @@ static bool mission_test_run_depot_balls(mission_context_t *ctx)
         (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
                        "DIGIT D%u=%u\r\n", (unsigned)depot, (unsigned)digit);
         mission_test_write(g_wireless_test.text);
-        for (row = 3U; row >= 1U; --row) {
+        for (;;) {
+            uint8_t best_sequence = BALL_MANIFEST_CAPACITY;
+            uint8_t best_steps = 12U;
+            mission_test_ball_t *ball;
             for (i = 0U; i < BALL_MANIFEST_CAPACITY; ++i) {
-                mission_test_ball_t *ball = &g_wireless_test.manual_balls[i];
-
-                if (ball->placed || (ball->ball.row != row) ||
-                    (ball->ball.column != digit)) continue;
-                /* 27保持到目标球槽PB0确认完成；回10后才允许动作22取球。 */
-                if (!mission_test_run_arm_group(
-                        ctx, MISSION_TURNTABLE_CLEAR_GROUP) ||
-                    !mission_test_seek_ball_slot(ctx, (uint8_t)(i + 1U)) ||
-                    !mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP) ||
-                    !mission_test_run_arm_group(ctx, MISSION_DEPOT_PICK_GROUP) ||
-                    !mission_test_run_arm_group(ctx,
-                        (row == 3U) ? MISSION_DEPOT_ROW3_GROUP :
-                        ((row == 2U) ? MISSION_DEPOT_ROW2_GROUP :
-                                         MISSION_DEPOT_ROW1_GROUP)) ||
-                    ((row == 3U) &&
-                     !mission_test_run_arm_group(ctx,
-                                                 MISSION_DEPOT_ROW3_EXIT_GROUP)) ||
-                    !mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP)) {
-                    mission_test_write("FAULT DEPOT PLACE\r\n");
-                    return false;
+                uint8_t steps;
+                ball = &g_wireless_test.manual_balls[i];
+                if (ball->placed || (ball->ball.column != digit)) continue;
+                /* 无线槽号为1基，转换后共用CCW距离；不退回12槽重新排序。 */
+                steps = mission_depot_ccw_steps(
+                    (uint8_t)(g_wireless_test.current_slot - 1U), i);
+                if (steps < best_steps) {
+                    best_steps = steps;
+                    best_sequence = i;
                 }
-                ball->placed = true;
-                mission_test_print_ball(ctx, i);
             }
+            if (best_sequence == BALL_MANIFEST_CAPACITY) break;
+            i = best_sequence;
+            ball = &g_wireless_test.manual_balls[i];
+            row = ball->ball.row;
+            /* 27保持到目标球槽PB0确认完成；回10后才允许动作22取球。 */
+            if (!mission_test_run_arm_group(
+                    ctx, MISSION_TURNTABLE_CLEAR_GROUP) ||
+                !mission_test_seek_ball_slot(ctx, (uint8_t)(i + 1U)) ||
+                !mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP) ||
+                !mission_test_run_arm_group(ctx, MISSION_DEPOT_PICK_GROUP) ||
+                !mission_test_run_arm_group(ctx,
+                    (row == 3U) ? MISSION_DEPOT_ROW3_GROUP :
+                    ((row == 2U) ? MISSION_DEPOT_ROW2_GROUP :
+                                     MISSION_DEPOT_ROW1_GROUP)) ||
+                ((row == 3U) &&
+                 !mission_test_run_arm_group(ctx,
+                                             MISSION_DEPOT_ROW3_EXIT_GROUP)) ||
+                !mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP)) {
+                mission_test_write("FAULT DEPOT PLACE\r\n");
+                return false;
+            }
+            ball->placed = true;
+            mission_test_print_ball(ctx, i);
         }
     }
     for (i = 0U; i < BALL_MANIFEST_CAPACITY; ++i) {

@@ -81,6 +81,32 @@ static void digit(mission_context_t *c, uint8_t value)
 int main(void)
 {
     mission_context_t c;
+    /* 按当前位置而非固定12槽排序：12→9→6→3，层序为2→1→3。 */
+    reset(&c); c.current_slot = 11; c.depot_column = 2; c.depot_position = 1;
+    add_ball(&c, 3, 2, 2); add_ball(&c, 2, 2, 8); add_ball(&c, 1, 2, 5);
+    const uint8_t nearest[] = {1, 2, 0};
+    unsigned total_steps = 0;
+    for (unsigned i = 0; i < sizeof(nearest); ++i) {
+        mission_depot_next_ball(&c);
+        assert(c.depot_sequence == nearest[i]);
+        total_steps += mission_depot_ccw_steps(c.current_slot, c.depot_target_slot);
+        mission_depot_arm_done(&c); seek(&c);
+        while (c.state != MISSION_STATE_DEPOT_RETURN) mission_depot_arm_done(&c);
+        assert(c.manifest.records[nearest[i]].state == BALL_MANIFEST_STATE_STORED);
+        mission_depot_arm_done(&c);
+        assert(c.manifest.records[nearest[i]].state == BALL_MANIFEST_STATE_PLACED);
+    }
+    assert(total_steps == 9 && moves == 9 && c.depot_position == 2);
+    /* 后续列保留真实槽号；当前槽零步优先，CCW可跨1→12且不改方向。 */
+    reset(&c); c.current_slot = 0; c.depot_column = 1;
+    add_ball(&c, 3, 1, 10); add_ball(&c, 1, 1, 0); add_ball(&c, 2, 1, 11);
+    mission_depot_next_ball(&c); assert(c.depot_sequence == 1);
+    assert(mission_depot_ccw_steps(0, 0) == 0);
+    assert(mission_depot_ccw_steps(0, 11) == 1);
+    assert(ball_manifest_mark_placed(&c.manifest, 1) == BALL_MANIFEST_OK);
+    mission_depot_next_ball(&c); assert(c.depot_sequence == 2);
+    c.depot_abnormal_mask = 1U << 2;
+    mission_depot_next_ball(&c); assert(c.depot_sequence == 0);
     /* 阶段1稳定期间不启动视觉；200ms到期只启动一次。 */
     reset(&c); mission_enter_state(&c, MISSION_STATE_PLATFORM_SETTLE, MISSION_PLATFORM_SETTLE_MS);
     now += 199; mission_check_timeout(&c); assert(sessions == 0);
@@ -95,7 +121,7 @@ int main(void)
         assert(groups[1] == 10 && sessions == 0);
         mission_depot_arm_done(&c); assert(sessions == 1);
     }
-    /* 重复目标与读卡失败留车，正常球按层降序；回10之前档案不能提前PLACED。 */
+    /* 重复目标与读卡失败留车，正常球按CCW距离；回10前不能提前PLACED。 */
     reset(&c); c.current_slot = 4;
     add_ball(&c, 1, 2, 0); add_ball(&c, 3, 2, 1); add_ball(&c, 3, 2, 2);
     assert(ball_manifest_append_read_failed(&c.manifest, BALL_MANIFEST_REGION_TURNTABLE,

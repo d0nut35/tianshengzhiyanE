@@ -64,8 +64,8 @@
 /* 反向粗角独立保留；先与正向相同，实机测得偏差后单独调整。 */
 #define MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG 1400U
 #define MISSION_ZDT_FINE_ANGLE_0P1DEG         10U
-#define MISSION_ZDT_SPEED_RPM                 360U
-#define MISSION_ZDT_FINE_SPEED_RPM             180U
+#define MISSION_ZDT_SPEED_RPM                 400U
+#define MISSION_ZDT_FINE_SPEED_RPM             200U
 #define MISSION_ZDT_ACCEL                      50U
 #define MISSION_ZDT_FINE_MAX_STEPS             35U
 #define MISSION_ZDT_STATUS_POLL_MS             50U

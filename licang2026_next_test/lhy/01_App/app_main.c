@@ -36,7 +36,7 @@
 #endif
 
 #ifndef APP_TEST_MODE
-#define APP_TEST_MODE     1U      /* 0=正常任务模式，1=测试模式 */
+#define APP_TEST_MODE     0U      /* 0=正常任务模式，1=测试模式 */
 #endif
 
 #define APP_TASK_STACK    2048U   /* 底盘任务栈字节 */
@@ -62,12 +62,16 @@
 /* [lyx] 绕圆柱1.15圈：定半径画圆跑固定时长后停车，时长以 2πR/v 理论值起步、实机标定 */
 #define APP_CYL_SETTLE_MS 1000U     /* 到绕圈起点后等底盘稳定，ms */
 #define APP_CYL_V_MMS     180.0f    /* [lyx] 绕圈线速度，mm/s */
-#define APP_CYL_R_MM      (-318.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
-#define APP_CYL_ARC_MS    12765U    /* [lyx] 180mm/s、半径318mm理论绕1.15圈 */
+#define APP_CYL_R_MM      (-300.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
+#define APP_CYL_ARC_MS    12043U    /* [lyx] 180mm/s、半径300mm理论绕1.15圈 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
+#define APP_CYL_FIX_VY    (-60.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
+#define APP_CYL_FIX_VX    60.0f    /* 找线第二段车体系 x 速度，mm/s */
+#define APP_CYL_EXTRA_MM  20U      /* 第一段末传感器低电平后追加距离，mm */
+#define APP_CYL_FIX_WAIT  1000U    /* 两段找线之间停车等待，ms */
 /* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */
-#define APP_CYL_EXIT_VX_MMS (-100.0f) /* [lyx] 车体 -x 平移速度，mm/s */
+#define APP_CYL_EXIT_VX_MMS (-200.0f) /* [lyx] 车体 -x 平移速度，mm/s */
 #define APP_CYL_EXIT_MS     1800U     /* [lyx] 平移时长，理论位移约180mm */
 
 /* 仓库横移：1 号位找线标定后按里程计 y 在 1~4 号位间开环横移，不再找线；
@@ -111,6 +115,7 @@ static void app_task_test(void *arg);
 static app_status_t side_apply(void);
 /* [lyx] 小圆盘命令钩子和可暂停绕行流程。 */
 static csvc_status_t disc_arc(void);
+static app_status_t disc_locate(uint8_t formal);
 static uint8_t small_disc_hook(
     const chassis_mission_command_t *cmd,
     void *ctx);
@@ -149,6 +154,116 @@ static app_status_t side_apply(void)
 static csvc_status_t disc_arc(void)
 {
     return csvc_arc(route_lat_sign() * APP_CYL_V_MMS, APP_CYL_R_MM, false);
+}
+
+/** @brief 找线阶段锁存全局 STOP，由链路默认处理停车与回执。 */
+static uint8_t disc_loc_hook(const chassis_mission_command_t *cmd, void *ctx)
+{
+    uint8_t *aborted = (uint8_t *)ctx; /* 本次定位的中止标志 */
+
+    if (cmd->type == MISSION_CMD_STOP) {
+        *aborted = 1U;
+    }
+    return 0U;
+}
+
+/**
+ * @brief 定位等待期间响应 STOP；测试模式只延时，不消费 Mission 命令
+ * @param ms 等待时间，0=仅检查当前命令
+ * @param formal 1=正式流程，0=独立测试
+ * @retval APP_OK / APP_ERR=收到 STOP
+ */
+static app_status_t disc_loc_wait(uint32_t ms, uint8_t formal)
+{
+    uint32_t start = osKernelGetTickCount(); /* 等待起点 */
+    uint32_t ticks = util_ms_ticks(ms);      /* 等待时长 */
+    uint8_t aborted = 0U;                   /* STOP 锁存标志 */
+
+    do {
+        if (formal != 0U) {
+            (void)link_poll(disc_loc_hook, &aborted, 0U);
+            if (aborted != 0U) {
+                return APP_ERR;
+            }
+        }
+        if ((ms == 0U) || ((osKernelGetTickCount() - start) >= ticks)) {
+            return APP_OK;
+        }
+        osDelay(1U);
+    } while (1);
+}
+
+/**
+ * @brief 绕桩前两段找线：6→1 后追加距离，停稳后寻找 3/4 号
+ * @param formal 1=正式流程含 STOP 处理，0=独立测试
+ * @retval APP_OK / APP_ERR=读线、运动、停车失败或被中止
+ * @note 镜像侧第一段反向并交换 1/6 号；第二段仍沿车体 +x
+ */
+static app_status_t disc_locate(uint8_t formal)
+{
+    float vy = route_lat_sign() * APP_CYL_FIX_VY; /* 本侧第一段速度 */
+    float speed = (vy < 0.0f) ? -vy : vy;         /* 追加距离使用速率绝对值 */
+    uint8_t mirror = (route_side() == ROUTE_SIDE_MIRROR); /* 镜像侧标志 */
+    uint8_t sensor = (mirror != 0U) ? 1U : 6U;  /* 第一段当前检测序号 */
+    uint8_t last = (mirror != 0U) ? 6U : 1U;    /* 第一段结束检测序号 */
+    uint8_t on_line = 0U;                      /* 1=低电平 */
+    uint32_t extra_ms;                         /* 追加距离对应延时 */
+
+    if ((speed <= 0.0f) || (disc_loc_wait(0U, formal) != APP_OK) ||
+        (csvc_free(0.0f, vy, 0.0f) != CSVC_OK)) {
+        goto fail;
+    }
+    for (;;) {
+        if ((disc_loc_wait(0U, formal) != APP_OK) ||
+            (align_on_line(sensor, &on_line) != ALIGN_OK)) {
+            goto fail;
+        }
+        if (on_line != 0U) {
+            if (sensor == last) {
+                break;
+            }
+            sensor = last;
+            continue;
+        }
+        if (disc_loc_wait(APP_CYL_POLL_MS, formal) != APP_OK) {
+            goto fail;
+        }
+    }
+    extra_ms = (uint32_t)(APP_CYL_EXTRA_MM * 1000.0f / speed + 0.5f);
+    if ((disc_loc_wait(extra_ms, formal) != APP_OK) ||
+        (align_stop() != ALIGN_OK) ||
+        (disc_loc_wait(APP_CYL_FIX_WAIT, formal) != APP_OK) ||
+        (csvc_free(APP_CYL_FIX_VX, 0.0f, 0.0f) != CSVC_OK)) {
+        goto fail;
+    }
+    for (;;) {
+        if ((disc_loc_wait(0U, formal) != APP_OK) ||
+            (align_on_line(3U, &on_line) != ALIGN_OK)) {
+            goto fail;
+        }
+        if (on_line != 0U) {
+            break;
+        }
+        if (align_on_line(4U, &on_line) != ALIGN_OK) {
+            goto fail;
+        }
+        if (on_line != 0U) {
+            break;
+        }
+        if (disc_loc_wait(APP_CYL_POLL_MS, formal) != APP_OK) {
+            goto fail;
+        }
+    }
+    if (align_stop() == ALIGN_OK) {
+        return APP_OK;
+    }
+fail:
+    /* 任一步失败均中止定位，禁止进入后续绕圈。 */
+    APP_LOGE("disc locate fail");
+    if (align_stop() != ALIGN_OK) {
+        APP_LOGE("disc locate stop fail");
+    }
+    return APP_ERR;
 }
 
 /**
@@ -381,9 +496,10 @@ static void app_task(void *arg)
     /* [lyx] 阶梯结束后等待上层放行，再进入小圆盘识别和可暂停绕行流程。 */
     if (link_wait(MISSION_CMD_GO_SMALL_DISC, &id, osWaitForever) == APP_OK) {
         ok = ((route_go(ROUTE_CYL_PRE) == APP_OK) &&
-              (route_go(ROUTE_CYL) == APP_OK)) ? 1U : 0U;
+              (route_go(ROUTE_CYL) == APP_OK) &&
+              (disc_locate(1U) == APP_OK)) ? 1U : 0U;
         if (ok != 0U) {
-            osDelay(APP_CYL_SETTLE_MS);
+            osDelay(util_ms_ticks(APP_CYL_SETTLE_MS));
         }
         (void)link_post(CHASSIS_CMD_SMALL_DISC_READY, id, ok);
         if ((ok != 0U) &&
@@ -458,90 +574,12 @@ static void app_task_test(void *arg)
     }
     osDelay(util_ms_ticks(APP_CSVC_WAIT_MS));
 /*                          AI写的测试代码begin                 */
-#define APP_TEST_EXTRA_MM 20U /* 1 号低电平后额外横移距离，mm；0=立即停车 */
-#define APP_TEST_VX_MMS   60.0f /* 第二段左右横移速度，车体系 x，mm/s；改符号反向 */
-#define APP_TEST_WAIT_MS  1000U /* 两段运动之间的停车等待时间，ms */
-#define APP_TEST_ARC_R_MM (-300.0f) /* 绕圈半径300mm，负号沿用正式绕桩转向约定 */
-    {
-        const float vy_mms = -60.0f; /* 车体系横移速度，mm/s；反向时改正号 */
-        const float speed_mms = (vy_mms < 0.0f) ? -vy_mms : vy_mms; /* 横移速率绝对值 */
-        const uint32_t poll_ms = 10U; /* 传感器检测周期，ms */
-        uint32_t extra_ms = 0U;       /* 按额外距离和速率计算的延时，ms */
-        uint8_t sensor_id = 6U;       /* 先检测 6 号，触发后锁定检测 1 号 */
-        uint8_t on_line = 0U;         /* 1=传感器低电平，0=高电平 */
-        uint8_t first_done = 0U;      /* 1=第一段正常完成，允许第二段运动 */
-        uint8_t second_done = 0U;     /* 1=第二段检测到线，停车成功后允许绕圈 */
-
-        if (csvc_free(0.0f, vy_mms, 0.0f) == CSVC_OK) {
-            for (;;) {
-                if (align_on_line(sensor_id, &on_line) != ALIGN_OK) {
-                    APP_LOGE("test sensor %u read fail", (unsigned)sensor_id);
-                    break;
-                }
-                if (on_line != 0U) {
-                    if (sensor_id == 1U) {
-                        /* 按命令速度估算额外行程，反向横移也使用正延时。 */
-                        if ((APP_TEST_EXTRA_MM > 0U) && (speed_mms > 0.0f)) {
-                            extra_ms = (uint32_t)(APP_TEST_EXTRA_MM * 1000.0f /
-                                                  speed_mms + 0.5f);
-                            osDelay(util_ms_ticks(extra_ms));
-                        }
-                        first_done = 1U;
-                        break;
-                    }
-                    /* 6 号触发后立即检查 1 号，不要求两路同时为低。 */
-                    sensor_id = 1U;
-                    continue;
-                }
-                osDelay(util_ms_ticks(poll_ms));
-            }
-        } else {
-            APP_LOGE("test move fail");
-        }
-        /* 第一段异常或停车失败时，不启动第二段。 */
-        if (align_stop() != ALIGN_OK) {
-            APP_LOGE("test stop fail");
-            first_done = 0U;
-        }
-        if (first_done != 0U) {
-            osDelay(util_ms_ticks(APP_TEST_WAIT_MS));
-            if (csvc_free(APP_TEST_VX_MMS, 0.0f, 0.0f) == CSVC_OK) {
-                for (;;) {
-                    if (align_on_line(3U, &on_line) != ALIGN_OK) {
-                        APP_LOGE("test sensor 3 read fail");
-                        break;
-                    }
-                    if (on_line != 0U) {
-                        second_done = 1U;
-                        break;
-                    }
-                    if (align_on_line(4U, &on_line) != ALIGN_OK) {
-                        APP_LOGE("test sensor 4 read fail");
-                        break;
-                    }
-                    if (on_line != 0U) {
-                        second_done = 1U;
-                        break;
-                    }
-                    osDelay(util_ms_ticks(poll_ms));
-                }
-            } else {
-                APP_LOGE("test lateral move fail");
-            }
-            /* 3、4 号任一路低电平即停车，第二段不追加额外距离。 */
+    if (disc_locate(0U) == APP_OK) {
+        /* 测试入口定位后持续绕圈；正式入口仍由 Mission 控制开始和结束。 */
+        if (disc_arc() != CSVC_OK) {
+            APP_LOGE("test arc fail");
             if (align_stop() != ALIGN_OK) {
-                APP_LOGE("test lateral stop fail");
-                second_done = 0U;
-            }
-            if (second_done != 0U) {
-                /* 沿用 disc_arc 的速度和转向计算，持续绕圈，不自动退出。 */
-                if (csvc_arc(route_lat_sign() * APP_CYL_V_MMS,
-                             APP_TEST_ARC_R_MM, false) != CSVC_OK) {
-                    APP_LOGE("test arc fail");
-                    if (align_stop() != ALIGN_OK) {
-                        APP_LOGE("test arc stop fail");
-                    }
-                }
+                APP_LOGE("test arc stop fail");
             }
         }
     }

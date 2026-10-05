@@ -27,7 +27,7 @@
 #define MEC_CUR_DIST_MM     100.0f     /* 路径当前点判定距离，mm */
 #define MEC_FINAL_DIST_MM   1000.0f    /* 终点减速段长度，mm */
 #define MEC_REACH_MM        10.0f      /* 路径终点到达阈值，mm */
-#define MEC_YAW_KP          10.0f      /* 路径航向 PID 比例增益 */
+#define MEC_YAW_KP          5.0f      /* 路径航向 PID 比例增益 */
 #define MEC_YAW_KI          0.0f        /* 路径航向 PID 积分增益 */
 #define MEC_YAW_KD          0.00f      /* 路径航向 PID 微分增益 */
 #define MEC_YAW_I_LIM       0.10f      /* 路径航向积分限幅，rad*s */

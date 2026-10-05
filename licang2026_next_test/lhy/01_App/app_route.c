@@ -56,16 +56,16 @@ typedef struct {
  * 镜像侧由 route_go 关于 x=RT_FIELD_W_MM/2 换算，不另建表 */
 static const route_pt_t g_route[ROUTE_NUM] = {
     /* PLATFORM：圆盘工作位，找线后按 IMU 航向标定 */
-    { CSVC_NAV_PATH, { 450, 4300}, 180.0f, 500.0f, 30.0f,
+    { CSVC_NAV_PATH, { 470, 4300}, 180.0f, 500.0f, 30.0f,
       { 473, 4300}, FIX_IMU  },
     /* STAIRS：阶梯起始工作位，即低层起点 */
     { CSVC_NAV_PATH, {2100, 2920},   0.0f, 500.0f, 60.0f,
       {2107, 2950}, FIX_LINE },
     /* [lyx] CYL_PRE：圆柱前置点，先直线到此再平推入位，避免斜穿 */
-    { CSVC_NAV_LINE, {1700, 2595}, 180.0f, 500.0f, 60.0f,
+    { CSVC_NAV_LINE, {1500, 2163}, 180.0f, 500.0f, 60.0f,
       {   0,    0}, FIX_NONE },
-    /* [lyx] CYL：圆柱绕圈起点，到点后由 app_main 定半径绕一圈 */
-    { CSVC_NAV_LINE, {1475, 2595}, 180.0f, 500.0f, 60.0f,
+    /* [lyx] CYL：绕桩预定位点，到点后由 app_main 两段找线，再按300mm半径绕行 */
+    { CSVC_NAV_LINE, {1500, 2163}, 180.0f, 500.0f, 60.0f,
       {   0,    0}, FIX_NONE },
     /* DEPOT：立体仓库 1 号工作位，找线标定后作为 2~4 号位横移基准 */
     /* [lyx] 当前入口预停点Y为2276 mm；后续找线基准点保持不变。 */

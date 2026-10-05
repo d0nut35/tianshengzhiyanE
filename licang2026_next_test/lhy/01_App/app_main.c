@@ -35,6 +35,10 @@
 #define APP_LOGE(fmt, ...)  do {} while (0)
 #endif
 
+#ifndef APP_TEST_MODE
+#define APP_TEST_MODE     1U      /* 0=正常任务模式，1=测试模式 */
+#endif
+
 #define APP_TASK_STACK    2048U   /* 底盘任务栈字节 */
 #define APP_BOOT_POLL_MS  10U     /* 等应用启动标志的轮询周期，ms */
 #define APP_CSVC_WAIT_MS  1000U   /* 等底盘服务稳定，ms */
@@ -103,6 +107,7 @@ typedef struct {
 } small_disc_ctx_t;
 
 static void app_task(void *arg);
+static void app_task_test(void *arg);
 static app_status_t side_apply(void);
 /* [lyx] 小圆盘命令钩子和可暂停绕行流程。 */
 static csvc_status_t disc_arc(void);
@@ -438,6 +443,115 @@ static void app_task(void *arg)
     }
 }
 
+
+
+/**
+ * @brief  独立测试入口：初始化就绪后周期等待，供添加测试逻辑
+ * @param  arg 未用
+ * @note   默认不执行路线、不参与 Mission 握手；测试代码放在此任务内
+ */
+static void app_task_test(void *arg)
+{
+    (void)arg;
+    while (g_app_up == 0U) {
+        osDelay(util_ms_ticks(APP_BOOT_POLL_MS));
+    }
+    osDelay(util_ms_ticks(APP_CSVC_WAIT_MS));
+/*                          AI写的测试代码begin                 */
+#define APP_TEST_EXTRA_MM 20U /* 1 号低电平后额外横移距离，mm；0=立即停车 */
+#define APP_TEST_VX_MMS   60.0f /* 第二段左右横移速度，车体系 x，mm/s；改符号反向 */
+#define APP_TEST_WAIT_MS  1000U /* 两段运动之间的停车等待时间，ms */
+#define APP_TEST_ARC_R_MM (-300.0f) /* 绕圈半径300mm，负号沿用正式绕桩转向约定 */
+    {
+        const float vy_mms = -60.0f; /* 车体系横移速度，mm/s；反向时改正号 */
+        const float speed_mms = (vy_mms < 0.0f) ? -vy_mms : vy_mms; /* 横移速率绝对值 */
+        const uint32_t poll_ms = 10U; /* 传感器检测周期，ms */
+        uint32_t extra_ms = 0U;       /* 按额外距离和速率计算的延时，ms */
+        uint8_t sensor_id = 6U;       /* 先检测 6 号，触发后锁定检测 1 号 */
+        uint8_t on_line = 0U;         /* 1=传感器低电平，0=高电平 */
+        uint8_t first_done = 0U;      /* 1=第一段正常完成，允许第二段运动 */
+        uint8_t second_done = 0U;     /* 1=第二段检测到线，停车成功后允许绕圈 */
+
+        if (csvc_free(0.0f, vy_mms, 0.0f) == CSVC_OK) {
+            for (;;) {
+                if (align_on_line(sensor_id, &on_line) != ALIGN_OK) {
+                    APP_LOGE("test sensor %u read fail", (unsigned)sensor_id);
+                    break;
+                }
+                if (on_line != 0U) {
+                    if (sensor_id == 1U) {
+                        /* 按命令速度估算额外行程，反向横移也使用正延时。 */
+                        if ((APP_TEST_EXTRA_MM > 0U) && (speed_mms > 0.0f)) {
+                            extra_ms = (uint32_t)(APP_TEST_EXTRA_MM * 1000.0f /
+                                                  speed_mms + 0.5f);
+                            osDelay(util_ms_ticks(extra_ms));
+                        }
+                        first_done = 1U;
+                        break;
+                    }
+                    /* 6 号触发后立即检查 1 号，不要求两路同时为低。 */
+                    sensor_id = 1U;
+                    continue;
+                }
+                osDelay(util_ms_ticks(poll_ms));
+            }
+        } else {
+            APP_LOGE("test move fail");
+        }
+        /* 第一段异常或停车失败时，不启动第二段。 */
+        if (align_stop() != ALIGN_OK) {
+            APP_LOGE("test stop fail");
+            first_done = 0U;
+        }
+        if (first_done != 0U) {
+            osDelay(util_ms_ticks(APP_TEST_WAIT_MS));
+            if (csvc_free(APP_TEST_VX_MMS, 0.0f, 0.0f) == CSVC_OK) {
+                for (;;) {
+                    if (align_on_line(3U, &on_line) != ALIGN_OK) {
+                        APP_LOGE("test sensor 3 read fail");
+                        break;
+                    }
+                    if (on_line != 0U) {
+                        second_done = 1U;
+                        break;
+                    }
+                    if (align_on_line(4U, &on_line) != ALIGN_OK) {
+                        APP_LOGE("test sensor 4 read fail");
+                        break;
+                    }
+                    if (on_line != 0U) {
+                        second_done = 1U;
+                        break;
+                    }
+                    osDelay(util_ms_ticks(poll_ms));
+                }
+            } else {
+                APP_LOGE("test lateral move fail");
+            }
+            /* 3、4 号任一路低电平即停车，第二段不追加额外距离。 */
+            if (align_stop() != ALIGN_OK) {
+                APP_LOGE("test lateral stop fail");
+                second_done = 0U;
+            }
+            if (second_done != 0U) {
+                /* 沿用 disc_arc 的速度和转向计算，持续绕圈，不自动退出。 */
+                if (csvc_arc(route_lat_sign() * APP_CYL_V_MMS,
+                             APP_TEST_ARC_R_MM, false) != CSVC_OK) {
+                    APP_LOGE("test arc fail");
+                    if (align_stop() != ALIGN_OK) {
+                        APP_LOGE("test arc stop fail");
+                    }
+                }
+            }
+        }
+    }
+/*                          AI写的测试代码end                   */
+    /* 测试模式保留周期等待，避免空转占满 CPU。 */
+    for (;;) {
+        osDelay(util_ms_ticks(APP_IDLE_MS));
+    }
+}
+
 app_status_t app_init(void)
 {
     map_point_t start; /* 上电初始位姿坐标 */
@@ -462,8 +576,9 @@ app_status_t app_init(void)
     start.x_mm = (int16_t)APP_START_X_MM;
     start.y_mm = (int16_t)APP_START_Y_MM;
     (void)csvc_set_pose(start, APP_START_YAW_DEG);
-    /* 4) 起底盘任务 */
-    g_task = osThreadNew(app_task, NULL, &g_task_attr);
+    /* 4) 按编译宏选择底盘入口，两种模式共用任务资源。 */
+    g_task = osThreadNew(APP_TEST_MODE ? app_task_test : app_task,
+                         NULL, &g_task_attr);
     if (g_task == NULL) {
         APP_LOGE("app task fail");
         return APP_ERR;

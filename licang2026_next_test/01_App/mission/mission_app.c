@@ -202,6 +202,7 @@ typedef struct {
     uint8_t depot_digit;                   /* 当前停车位已确认的底部数字，0表示尚无。 */
     bool arm_ready;                         /* 动作组10完成回报已被测试任务确认。 */
     bool stop_requested;                   /* STOP已下发，等待停车回执。 */
+    bool small_disc_at_start;              /* DISC_READY已停车，只允许DISC_RUN启动绕行。 */
     bool depot_wait_ball_home;             /* ROUTE DEPOT BALL已在D1停车，等待装球命令。 */
     bool ball_home;                        /* 人工装球测试已开始。 */
     bool ball_home_ready;                  /* 9球读完且转盘已停在12槽。 */
@@ -2532,6 +2533,8 @@ static bool mission_test_handle_aux_command(
         mission_test_write(
             "SELECT: RED or BLUE before handshake\r\n"
             "PATH: PLATFORM STAIR DISC DEPOT D1 D2 D3 D4\r\n"
+            "DISC_READY: GO TO DISC START AND WAIT\r\n"
+            "DISC_RUN: RUN FROM DISC_READY THEN STOP\r\n"
             "DEPOT: HOME HOME_DIRECT\r\n"
             "TARGET: ROUTE PLATFORM|STAIRS|DISC|DEPOT\r\n"
             "ROUTE DEPOT: AUTO D1-D4 DIGIT\r\n"
@@ -2743,6 +2746,65 @@ static bool mission_test_skip_small_disc(mission_context_t *ctx)
         return false;
     }
     return mission_test_pause(ctx);
+}
+
+/** 纯路径分两步：先到绕行起点等待人工摆臂，再放行既有底盘绕行。 */
+static bool mission_test_disc_path_command(mission_context_t *ctx, const char *command)
+{
+    bool ok;
+    if ((strcmp(command, "DISC_READY") != 0) &&
+        (strcmp(command, "DISC_RUN") != 0)) return false;
+    if (strcmp(command, "DISC_READY") == 0) {
+        if (g_wireless_test.small_disc_at_start) {
+            mission_test_write("READY DISC_RUN\r\n");
+            return true;
+        }
+        if ((g_wireless_test.mode == MISSION_TEST_MODE_TARGET) ||
+            ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) &&
+             (g_wireless_test.expected != MISSION_TEST_STAGE_STAIRS) &&
+             (g_wireless_test.expected != MISSION_TEST_STAGE_SMALL_DISC))) {
+            mission_test_write("ERR DISC_READY ORDER\r\n");
+            return true;
+        }
+        g_wireless_test.mode = MISSION_TEST_MODE_PATH;
+        ok = ((g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM) ||
+              mission_test_skip_platform(ctx)) &&
+             ((g_wireless_test.expected == MISSION_TEST_STAGE_SMALL_DISC) ||
+              mission_test_skip_stairs(ctx)) &&
+             mission_test_send_wait(ctx, MISSION_CMD_GO_SMALL_DISC,
+                 CHASSIS_CMD_SMALL_DISC_READY, MISSION_STATE_WAIT_SMALL_DISC);
+        if (ok) {
+            g_wireless_test.small_disc_at_start = true;
+            g_wireless_test.expected = MISSION_TEST_STAGE_SMALL_DISC;
+            /* 到位后不计超时、不启动视觉或动作组，持续等人工DISC_RUN。 */
+            mission_enter_state(ctx, MISSION_STATE_WAIT_SMALL_DISC, 0U);
+            mission_test_write("DONE DISC_READY\r\nREADY DISC_RUN\r\n");
+            return true;
+        }
+    } else {
+        if (!g_wireless_test.small_disc_at_start) {
+            mission_test_write("ERR WAIT DISC_READY\r\n");
+            return true;
+        }
+        g_wireless_test.small_disc_at_start = false;
+        /* 沿用到位请求号；不重复GO_SMALL_DISC，也不重新经过前置路线。 */
+        mission_enter_state(ctx, MISSION_STATE_WAIT_SMALL_DISC,
+                            MISSION_OPERATION_TIMEOUT_MS);
+        ok = mission_send_chassis(MISSION_CMD_SMALL_DISC_START, ctx->request_id) &&
+             mission_test_wait_chassis_event(ctx, CHASSIS_CMD_SMALL_DISC_FINISHED,
+                                             ctx->request_id);
+        if (ok) {
+            g_wireless_test.expected = MISSION_TEST_STAGE_DEPOT;
+            mission_enter_state(ctx, MISSION_STATE_READY, 0U);
+            mission_test_write("DONE DISC_RUN\r\nREADY DEPOT\r\n");
+            return true;
+        }
+    }
+    if (!g_wireless_test.stop_requested) {
+        mission_fail(ctx, MISSION_FAULT_CHASSIS);
+        mission_test_write("FAULT ROUTE\r\n");
+    }
+    return true;
 }
 
 /**
@@ -3345,6 +3407,13 @@ static void mission_wireless_test_entry(void *argument)
             ((ctx->state == MISSION_STATE_COMPLETE) &&
              (g_wireless_test.target != MISSION_TEST_STAGE_DEPOT))) {
             mission_test_write("ERR RESET REQUIRED\r\n");
+            continue;
+        }
+
+        if (mission_test_disc_path_command(ctx, command)) continue;
+        /* 底盘正等待START时，不允许DEPOT或其他路线越过这一等待点。 */
+        if (g_wireless_test.small_disc_at_start) {
+            mission_test_write("ERR WAIT DISC_RUN\r\n");
             continue;
         }
 

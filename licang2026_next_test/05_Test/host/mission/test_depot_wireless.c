@@ -11,7 +11,7 @@ typedef uint8_t mission_command_type_t;
 typedef uint8_t chassis_command_type_t;
 enum { MISSION_CMD_GO_DEPOT_2 = 1, MISSION_CMD_GO_DEPOT_3, MISSION_CMD_GO_DEPOT_4 };
 enum { CHASSIS_CMD_DEPOT_2_READY = 1, CHASSIS_CMD_DEPOT_3_READY, CHASSIS_CMD_DEPOT_4_READY };
-typedef struct { unsigned unused; } mission_context_t;
+typedef struct { bool arm_home_ready; } mission_context_t;
 typedef struct { struct { uint8_t row, column; } ball; bool placed; } mission_test_ball_t;
 static struct {
     mission_test_ball_t manual_balls[BALL_MANIFEST_CAPACITY];
@@ -32,12 +32,16 @@ static bool mission_test_read_depot_digit(mission_context_t *c, uint8_t *digit)
 { (void)c; *digit = (uint8_t)(digit_calls++ / 2 + 1); return true; }
 static bool mission_test_run_arm_group(mission_context_t *c, uint8_t group)
 {
-    (void)c; assert(group_count < 100); groups[group_count++] = group;
-    return group_count != fail_group;
+    if (group == MISSION_HOME_ACTION_GROUP && c->arm_home_ready) return true;
+    c->arm_home_ready = false;
+    assert(group_count < 100); groups[group_count++] = group;
+    if (group_count == fail_group) return false;
+    c->arm_home_ready = group == MISSION_HOME_ACTION_GROUP;
+    return true;
 }
 static bool mission_test_seek_ball_slot(mission_context_t *c, uint8_t target)
 {
-    (void)c;
+    assert(c->arm_home_ready);
     if (!seek_ok) return false;
     steps_total += (g_wireless_test.current_slot + 12U - target) % 12U;
     g_wireless_test.current_slot = target;
@@ -67,12 +71,12 @@ int main(void)
     assert(placed_count == 9 && memcmp(placed_order, expected, sizeof(expected)) == 0);
     assert(steps_total == 31 && g_wireless_test.current_slot == 5);
     /* 2层→1层→3层，只有3层插入24，均回10再标记放置。 */
-    const unsigned first_column[] = {27,10,22,25,10, 27,10,22,26,10, 27,10,22,23,24,10};
+    const unsigned first_column[] = {10,22,25,10, 22,26,10, 22,23,24,10};
     assert(memcmp(groups, first_column, sizeof(first_column)) == 0);
-    reset(); seek_ok = false;
+    reset(); c.arm_home_ready = false; seek_ok = false;
     assert(!mission_test_run_depot_balls(&c));
     assert(g_wireless_test.current_slot == 12 && placed_count == 0);
-    reset(); fail_group = 5; /* 第一球回10失败，不能提前placed。 */
+    reset(); c.arm_home_ready = false; fail_group = 4; /* 第一球回10失败，不能提前placed。 */
     assert(!mission_test_run_depot_balls(&c));
     assert(!g_wireless_test.manual_balls[8].placed && placed_count == 0);
     puts("Wireless depot nearest-slot regression passed (host logic only)");

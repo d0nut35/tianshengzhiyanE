@@ -19,7 +19,7 @@ typedef struct {
     uint8_t platform_balls, platform_attempts, stair_balls, small_disc_balls;
     uint8_t storage_slot, current_slot, active_arm_group;
     uint16_t request_id;
-    bool platform_read_ok;
+    bool platform_read_ok, arm_home_ready;
     struct { unsigned ic_status; } storage;
 } mission_context_t;
 static unsigned reads, records, turns, last_arm, visions;

@@ -38,7 +38,6 @@
 #define MISSION_DEPOT_ROW3_EXIT_GROUP    24U /* 三层放球后撤离 */
 #define MISSION_DEPOT_ROW2_GROUP         25U /* 二层放球及撤离 */
 #define MISSION_DEPOT_ROW1_GROUP         26U /* 一层放球 */
-#define MISSION_TURNTABLE_CLEAR_GROUP    27U /* 转盘运动前的机械臂避让姿态 */
 
 #define MISSION_PLATFORM_BALL_COUNT       5U
 #define MISSION_PLATFORM_MAX_ATTEMPTS     7U /* 仅圆盘：读卡失败不占槽，允许再抓。 */

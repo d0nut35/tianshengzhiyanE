@@ -23,7 +23,8 @@ typedef struct {
     uint8_t current_slot, depot_target_slot, depot_position, depot_column;
     uint8_t depot_first_digit, depot_digit, depot_columns_used, depot_sequence, depot_row;
     uint16_t depot_abnormal_mask, request_id;
-    bool depot_preparing;
+    bool depot_preparing, arm_home_ready;
+    uint8_t active_arm_group;
     ball_manifest_t manifest;
 } mission_context_t;
 
@@ -41,6 +42,8 @@ static bool mission_start_arm(mission_context_t *c, uint8_t group, mission_state
     if (!arm_ok) return false;
     assert(group_count < 128);
     groups[group_count++] = group;
+    c->active_arm_group = group;
+    c->arm_home_ready = false;
     mission_enter_state(c, state, 30000);
     return true;
 }
@@ -78,6 +81,22 @@ static void add_ball(mission_context_t *c, uint8_t row, uint8_t col, uint8_t slo
 static void digit(mission_context_t *c, uint8_t value)
 { c->depot_digit = value; mission_depot_digit_done(c); }
 
+/* 替身交付完成回报，实际姿态回报校验另由test_arm_home覆盖。 */
+static void finish_arm(mission_context_t *c)
+{
+    c->arm_home_ready = c->active_arm_group == MISSION_HOME_ACTION_GROUP;
+    mission_depot_arm_done(c);
+}
+static void until_return(mission_context_t *c)
+{
+    unsigned bound = 0;
+    while (c->state != MISSION_STATE_DEPOT_RETURN) {
+        assert(++bound < 10);
+        if (c->state == MISSION_STATE_DEPOT_SEEK) seek(c);
+        else finish_arm(c);
+    }
+}
+
 int main(void)
 {
     mission_context_t c;
@@ -87,13 +106,12 @@ int main(void)
     const uint8_t nearest[] = {1, 2, 0};
     unsigned total_steps = 0;
     for (unsigned i = 0; i < sizeof(nearest); ++i) {
-        mission_depot_next_ball(&c);
+        if (i == 0) mission_depot_next_ball(&c);
         assert(c.depot_sequence == nearest[i]);
         total_steps += mission_depot_ccw_steps(c.current_slot, c.depot_target_slot);
-        mission_depot_arm_done(&c); seek(&c);
-        while (c.state != MISSION_STATE_DEPOT_RETURN) mission_depot_arm_done(&c);
+        until_return(&c);
         assert(c.manifest.records[nearest[i]].state == BALL_MANIFEST_STATE_STORED);
-        mission_depot_arm_done(&c);
+        finish_arm(&c);
         assert(c.manifest.records[nearest[i]].state == BALL_MANIFEST_STATE_PLACED);
     }
     assert(total_steps == 9 && moves == 9 && c.depot_position == 2);
@@ -115,32 +133,35 @@ int main(void)
     const uint8_t starts[] = {0, 3, 9, 11};
     for (unsigned i = 0; i < sizeof(starts); ++i) {
         reset(&c); c.current_slot = starts[i]; mission_depot_prepare(&c);
-        assert(groups[0] == 27 && sessions == 0);
-        mission_depot_arm_done(&c); seek(&c);
+        assert(groups[0] == 10 && sessions == 0 && moves == 0);
+        /* 发送10不算到位，尚未完成时主循环不能转盘。 */
+        now += 1; mission_check_timeout(&c); assert(moves == 0);
+        finish_arm(&c); seek(&c);
         assert(c.current_slot == 11 && moves == 11U - starts[i]);
-        assert(groups[1] == 10 && sessions == 0);
-        mission_depot_arm_done(&c); assert(sessions == 1);
+        assert(group_count == 1 && sessions == 1);
     }
+    /* 小圆盘退出已完成10：入仓不重发，转到12后直接开始数字会话。 */
+    reset(&c); c.current_slot = 9; c.arm_home_ready = true;
+    mission_depot_prepare(&c); assert(group_count == 0);
+    seek(&c); assert(moves == 2 && sessions == 1 && group_count == 0);
     /* 重复目标与读卡失败留车，正常球按CCW距离；回10前不能提前PLACED。 */
     reset(&c); c.current_slot = 4;
     add_ball(&c, 1, 2, 0); add_ball(&c, 3, 2, 1); add_ball(&c, 3, 2, 2);
     assert(ball_manifest_append_read_failed(&c.manifest, BALL_MANIFEST_REGION_TURNTABLE,
         BALL_MANIFEST_COLOR_RED, 3) == BALL_MANIFEST_OK);
     mission_depot_prepare(&c); assert(c.depot_abnormal_mask == 12);
-    mission_depot_arm_done(&c); seek(&c); mission_depot_arm_done(&c);
+    finish_arm(&c); seek(&c);
     digit(&c, 2); assert(sessions == 2); digit(&c, 2);
     assert(c.depot_sequence == 1 && c.depot_row == 3);
-    unsigned start = group_count - 1;
-    mission_depot_arm_done(&c); seek(&c);
-    mission_depot_arm_done(&c); mission_depot_arm_done(&c);
-    mission_depot_arm_done(&c); mission_depot_arm_done(&c);
+    unsigned start = group_count;
+    until_return(&c);
     assert(c.manifest.records[1].state == BALL_MANIFEST_STATE_STORED);
-    const unsigned row3[] = {27, 10, 22, 23, 24, 10};
+    const unsigned row3[] = {22, 23, 24, 10};
+    assert(group_count == start + sizeof(row3) / sizeof(row3[0]));
     assert(memcmp(groups + start, row3, sizeof(row3)) == 0);
-    mission_depot_arm_done(&c);
+    finish_arm(&c);
     assert(c.manifest.records[1].state == BALL_MANIFEST_STATE_PLACED && c.depot_sequence == 0);
-    mission_depot_arm_done(&c); seek(&c); mission_depot_arm_done(&c);
-    mission_depot_arm_done(&c); mission_depot_arm_done(&c); mission_depot_arm_done(&c);
+    until_return(&c); finish_arm(&c);
     assert(c.manifest.records[0].state == BALL_MANIFEST_STATE_PLACED);
     assert(c.manifest.records[2].state == BALL_MANIFEST_STATE_STORED);
     assert(c.manifest.records[3].state == BALL_MANIFEST_STATE_READ_FAILED);
@@ -151,19 +172,18 @@ int main(void)
     reset(&c); c.depot_first_digit = 2; c.depot_columns_used = 1U << 2; digit(&c, 2);
     assert(c.state == MISSION_STATE_FAULT);
     /* 电机失败不伪造槽号、不收臂继续；下发机械臂失败不标记PLACED。 */
-    reset(&c); c.current_slot = 9; mission_depot_prepare(&c); mission_depot_arm_done(&c);
+    reset(&c); c.current_slot = 9; mission_depot_prepare(&c); finish_arm(&c);
     move_ok = false; seek(&c); assert(c.state == MISSION_STATE_FAULT && c.current_slot == 9);
     reset(&c); add_ball(&c, 2, 1, 0); c.depot_column = 1; arm_ok = false;
     mission_depot_next_ball(&c);
     assert(c.state == MISSION_STATE_FAULT && c.manifest.records[0].state == BALL_MANIFEST_STATE_STORED);
     /* 二层在D4放置后不运行24；成功收臂才开始1秒计时。 */
     reset(&c); add_ball(&c, 2, 4, 0); c.depot_column = 4; c.depot_position = 4;
-    mission_depot_next_ball(&c); mission_depot_arm_done(&c); seek(&c);
-    mission_depot_arm_done(&c); mission_depot_arm_done(&c); mission_depot_arm_done(&c);
-    const unsigned row2[] = {27, 10, 22, 25, 10};
-    assert(group_count == 5 && memcmp(groups, row2, sizeof(row2)) == 0);
+    mission_depot_next_ball(&c); until_return(&c);
+    const unsigned row2[] = {10, 22, 25, 10};
+    assert(group_count == 4 && memcmp(groups, row2, sizeof(row2)) == 0);
     assert(c.manifest.records[0].state == BALL_MANIFEST_STATE_STORED);
-    mission_depot_arm_done(&c);
+    finish_arm(&c);
     assert(c.state == MISSION_STATE_DEPOT_DWELL && c.deadline_tick == now + 1000);
     /* D4无球也等待完整1秒；随后直接DEPOT_OK，不返D1。 */
     reset(&c); c.depot_position = 4; c.depot_column = 4; mission_depot_next_ball(&c);

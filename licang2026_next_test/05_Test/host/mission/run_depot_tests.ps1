@@ -50,3 +50,24 @@ gcc -std=c11 -Wall -Wextra -Werror -I $buildDir -I $core -I (Join-Path $projectR
 if ($LASTEXITCODE -ne 0) { throw 'Wireless depot test compile failed' }
 & $wirelessBinary
 if ($LASTEXITCODE -ne 0) { throw 'Wireless depot regression failed' }
+# 实际回报/发送/等待函数覆盖10姿态缓存，不能只靠仓库替身推定到位。
+$poseFunctions = foreach ($name in @('mission_arm_tx_done', 'mission_arm_report', 'mission_start_arm', 'mission_test_run_arm_group')) {
+    $match = [regex]::Match($source, "static (?:void|bool) $name\([^;]*?\)\s*\{")
+    if (!$match.Success) { throw "Missing production function: $name" }
+    $end = $source.IndexOf('{', $match.Index) + 1
+    $depth = 1
+    while ($depth -gt 0 -and $end -lt $source.Length) {
+        if ($source[$end] -eq '{') { $depth++ }
+        if ($source[$end] -eq '}') { $depth-- }
+        $end++
+    }
+    $source.Substring($match.Index, $end - $match.Index)
+}
+[IO.File]::WriteAllText((Join-Path $buildDir 'arm_home_under_test.inc'), ($poseFunctions -join "`n"), [Text.UTF8Encoding]::new($false))
+foreach ($mode in @(0, 1)) {
+    $poseBinary = Join-Path $buildDir "test_arm_home_$mode.exe"
+    gcc -std=c11 -Wall -Wextra -Werror "-DTEST_MODE=$mode" -I $buildDir -I (Join-Path $projectRoot '01_App/mission') (Join-Path $PSScriptRoot 'test_arm_home.c') -o $poseBinary
+    if ($LASTEXITCODE -ne 0) { throw 'Arm home test compile failed' }
+    & $poseBinary
+    if ($LASTEXITCODE -ne 0) { throw 'Arm home regression failed' }
+}

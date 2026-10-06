@@ -172,6 +172,7 @@ typedef struct {
     bool initialized;
     bool chassis_ready;
     uint8_t active_arm_group;
+    volatile bool arm_home_ready;          /* 仅动作10完成回报置位；新动作或异常使姿态失效。 */
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     uint8_t arm_boot_state;                 /* 0=未尝试，1=注册失败，2=下发失败，3=已入队。 */
 #endif
@@ -415,6 +416,7 @@ static void mission_arm_tx_done(
 
     (void)request_id;
     if ((ctx != NULL) && (ctx->task != NULL) && (status != LSC16_OK)) {
+        ctx->arm_home_ready = false;
         (void)osThreadFlagsSet(ctx->task, MISSION_FLAG_ARM_FAIL);
     }
 }
@@ -438,15 +440,26 @@ static void mission_arm_report(
             ((report_events & 0xFFU) << 8) | report->action_group;
     }
 #endif
+    if ((ctx != NULL) &&
+        ((report_events & (LSC16_REPORT_EVENT_ACTION_STARTED |
+                           LSC16_REPORT_EVENT_ACTION_STOPPED |
+                           LSC16_REPORT_EVENT_INVALID_FRAME)) != 0U)) {
+        ctx->arm_home_ready = false;
+    }
     if ((ctx == NULL) || (report == NULL) ||
         (report->action_group != ctx->active_arm_group)) {
         return;
     }
-    if ((report_events & LSC16_REPORT_EVENT_ACTION_COMPLETED) != 0U) {
-        flag = MISSION_FLAG_ARM_OK;
-    } else if ((report_events & (LSC16_REPORT_EVENT_ACTION_STOPPED |
-                                 LSC16_REPORT_EVENT_INVALID_FRAME)) != 0U) {
+    if ((report_events & (LSC16_REPORT_EVENT_ACTION_STOPPED |
+                         LSC16_REPORT_EVENT_INVALID_FRAME)) != 0U) {
         flag = MISSION_FLAG_ARM_FAIL;
+    } else if ((report_events & LSC16_REPORT_EVENT_ACTION_COMPLETED) != 0U) {
+        ctx->arm_home_ready =
+            (report->action_group == MISSION_HOME_ACTION_GROUP) &&
+            (ctx->state != MISSION_STATE_STOPPING) &&
+            (ctx->state != MISSION_STATE_STOPPED) &&
+            (ctx->state != MISSION_STATE_FAULT);
+        flag = MISSION_FLAG_ARM_OK;
     }
     if ((ctx != NULL) && (ctx->task != NULL) && (flag != 0U)) {
         (void)osThreadFlagsSet(ctx->task, flag);
@@ -558,6 +571,7 @@ static void mission_fail(mission_context_t *ctx, mission_fault_t fault)
         return;
     }
     ctx->fault_code = (uint8_t)fault;
+    ctx->arm_home_ready = false;
     DEPOT_TRACE("[M] FAULT=%u STATE=%u ARM_LAST=%lu V=%u IO=%u\r\n",
                 (unsigned)fault, (unsigned)ctx->state,
                 (unsigned long)ctx->arm_last_action_report,
@@ -599,6 +613,7 @@ static bool mission_start_arm(
     uint8_t action_group,
     mission_state_t wait_state)
 {
+    ctx->arm_home_ready = false;
     ctx->active_arm_group = action_group;
     DEPOT_TRACE("[M] ARM SEND=%u WAIT=%u\r\n",
                 (unsigned)action_group, (unsigned)wait_state);
@@ -1446,6 +1461,7 @@ static void mission_handle_command(
     uint16_t request_id;
 
     if (command == MISSION_USER_COMMAND_STOP) {
+        ctx->arm_home_ready = false;
         if ((ctx->state == MISSION_STATE_STOPPED) ||
             (ctx->state == MISSION_STATE_BOOT)) {
             return;
@@ -2028,8 +2044,11 @@ static void mission_depot_prepare(mission_context_t *ctx)
     DEPOT_TRACE("[M] DEPOT BEGIN BALLS=%u SKIP=0x%X SLOT=%u TARGET=12\r\n",
                 (unsigned)ctx->manifest.count, (unsigned)ctx->depot_abnormal_mask,
                 (unsigned)(ctx->current_slot + 1U));
-    if (!mission_start_arm(ctx, MISSION_TURNTABLE_CLEAR_GROUP,
-                           MISSION_STATE_DEPOT_PREPARE)) {
+    /* 已确认动作10时直接寻槽；其他姿态先等动作10完成，不能只看下发组号。 */
+    if (ctx->arm_home_ready) {
+        mission_enter_state(ctx, MISSION_STATE_DEPOT_SEEK, 1U);
+    } else if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
+                                  MISSION_STATE_DEPOT_PREPARE)) {
         mission_fail(ctx, MISSION_FAULT_ARM);
     }
 }
@@ -2103,8 +2122,10 @@ static void mission_depot_next_ball(mission_context_t *ctx)
         DEPOT_TRACE("[M] BALL SEQ=%u ROW=%u COL=%u SLOT=%u\r\n",
                     (unsigned)best_sequence, (unsigned)best_row,
                     (unsigned)ctx->depot_column, (unsigned)(best_slot + 1U));
-        if (!mission_start_arm(ctx, MISSION_TURNTABLE_CLEAR_GROUP,
-                               MISSION_STATE_DEPOT_AVOID)) {
+        if (ctx->arm_home_ready) {
+            mission_enter_state(ctx, MISSION_STATE_DEPOT_SEEK, 1U);
+        } else if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
+                                      MISSION_STATE_DEPOT_AVOID)) {
             mission_fail(ctx, MISSION_FAULT_ARM);
         }
         return;
@@ -2134,7 +2155,7 @@ static void mission_depot_arm_done(mission_context_t *ctx)
     switch (ctx->state) {
     case MISSION_STATE_DEPOT_PREPARE:
     case MISSION_STATE_DEPOT_AVOID:
-        /* 逐槽工作由主循环驱动，保持27姿态直到目标槽到位。 */
+        /* 逐槽工作由主循环驱动，保持已完成的动作10姿态直到目标槽到位。 */
         mission_enter_state(ctx, MISSION_STATE_DEPOT_SEEK, 1U);
         return;
     case MISSION_STATE_DEPOT_SAFE:
@@ -2218,10 +2239,15 @@ static void mission_check_timeout(mission_context_t *ctx)
                     ((direction == ZDT_TURNTABLE_DIR_CW) ? 1U : 11U)) % 12U);
             }
             if (ctx->current_slot == ctx->depot_target_slot) {
-                DEPOT_TRACE("[M] SLOT REACHED=%u -> ARM10\r\n",
-                            (unsigned)(ctx->current_slot + 1U));
-                if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
-                                       MISSION_STATE_DEPOT_SAFE)) {
+                DEPOT_TRACE("[M] SLOT REACHED=%u HOME_READY=%u\r\n",
+                            (unsigned)(ctx->current_slot + 1U),
+                            (unsigned)ctx->arm_home_ready);
+                /* 转盘运动不改变臂姿态；仍在10就直接识别或取球，不重复收臂。 */
+                if (ctx->arm_home_ready) {
+                    mission_enter_state(ctx, MISSION_STATE_DEPOT_SAFE, 0U);
+                    mission_depot_arm_done(ctx);
+                } else if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
+                                              MISSION_STATE_DEPOT_SAFE)) {
                     mission_fail(ctx, MISSION_FAULT_ARM);
                 }
             } else {
@@ -2566,6 +2592,8 @@ static bool mission_test_handle_aux_command(
     }
     if (strcmp(command, "STOP") == 0) {
         uint16_t request_id;
+
+        ctx->arm_home_ready = false;
 
         if (g_wireless_test.stop_requested ||
             (ctx->state == MISSION_STATE_STOPPED)) {
@@ -3072,7 +3100,7 @@ static bool mission_test_ball_home_load(mission_context_t *ctx)
         mission_test_write("BUSY\r\n");
     }
     if (g_wireless_test.stop_requested) return false;
-    /* 装球期间27只执行一次；12槽对准后才回动作组10。 */
+    /* 装球转盘期间保持动作10；已完成该姿态则不重复下发。 */
     if (!mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP)) {
         if (!g_wireless_test.stop_requested) {
             mission_fail(ctx, MISSION_FAULT_ARM);
@@ -3091,6 +3119,11 @@ static bool mission_test_run_arm_group(mission_context_t *ctx, uint8_t group)
     char command[DEBUG_UART1_RX_BUFFER_SIZE];
     uint32_t flags;
 
+    if ((group == MISSION_HOME_ACTION_GROUP) && ctx->arm_home_ready &&
+        !g_wireless_test.stop_requested) {
+        mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1, 0U);
+        return true;
+    }
     (void)osThreadFlagsClear(MISSION_FLAG_ARM_OK | MISSION_FLAG_ARM_FAIL);
     if (!mission_start_arm(ctx, group, MISSION_STATE_DEPOT_WAIT_ARM)) return false;
     for (;;) {
@@ -3104,10 +3137,12 @@ static bool mission_test_run_arm_group(mission_context_t *ctx, uint8_t group)
         if (g_wireless_test.stop_requested ||
             ((int32_t)(osKernelGetTickCount() - ctx->deadline_tick) >= 0)) {
             (void)arm_stop(NULL, NULL);
+            ctx->arm_home_ready = false;
             ctx->active_arm_group = 0U;
             return false;
         }
         if ((flags & osFlagsError) == 0U) {
+            if ((flags & MISSION_FLAG_ARM_FAIL) != 0U) ctx->arm_home_ready = false;
             ctx->active_arm_group = 0U;
             mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1, 0U);
             return ((flags & MISSION_FLAG_ARM_OK) != 0U) &&
@@ -3211,11 +3246,10 @@ static bool mission_test_run_depot_balls(mission_context_t *ctx)
             i = best_sequence;
             ball = &g_wireless_test.manual_balls[i];
             row = ball->ball.row;
-            /* 27保持到目标球槽PB0确认完成；回10后才允许动作22取球。 */
+            /* 转盘前确认动作10，已到位不重发；PB0确认后直接动作22取球。 */
             if (!mission_test_run_arm_group(
-                    ctx, MISSION_TURNTABLE_CLEAR_GROUP) ||
+                    ctx, MISSION_HOME_ACTION_GROUP) ||
                 !mission_test_seek_ball_slot(ctx, (uint8_t)(i + 1U)) ||
-                !mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP) ||
                 !mission_test_run_arm_group(ctx, MISSION_DEPOT_PICK_GROUP) ||
                 !mission_test_run_arm_group(ctx,
                     (row == 3U) ? MISSION_DEPOT_ROW3_GROUP :
@@ -3434,11 +3468,11 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             if (!mission_test_run_arm_group(
-                    ctx, MISSION_TURNTABLE_CLEAR_GROUP)) {
+                    ctx, MISSION_HOME_ACTION_GROUP)) {
                 if (!g_wireless_test.stop_requested) {
                     mission_fail(ctx, MISSION_FAULT_ARM);
                 }
-                mission_test_write("FAULT BALL HOME ARM 27\r\n");
+                mission_test_write("FAULT BALL HOME ARM 10\r\n");
                 continue;
             }
             /* 人工先将1号槽对准取球工位；本指令不执行绝对归零。 */
@@ -3472,11 +3506,11 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             if (!mission_test_run_arm_group(
-                    ctx, MISSION_TURNTABLE_CLEAR_GROUP)) {
+                    ctx, MISSION_HOME_ACTION_GROUP)) {
                 if (!g_wireless_test.stop_requested) {
                     mission_fail(ctx, MISSION_FAULT_ARM);
                 }
-                mission_test_write("FAULT TURN ARM 27\r\n");
+                mission_test_write("FAULT TURN ARM 10\r\n");
                 continue;
             }
             fine_used = 0U;

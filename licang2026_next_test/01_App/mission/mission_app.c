@@ -1696,6 +1696,33 @@ static void mission_handle_chassis(
     }
 }
 
+/** 12完成后前四球回11继续识别，最后球直接回10再读卡转槽。 */
+static void mission_platform_prepare_storage(mission_context_t *ctx)
+{
+    bool last_ball = (uint8_t)(ctx->platform_balls + 1U) >= MISSION_PLATFORM_BALL_COUNT;
+    if (!mission_start_arm(ctx,
+            last_ball ? MISSION_HOME_ACTION_GROUP : MISSION_PLATFORM_VISION_GROUP,
+            last_ball ? MISSION_STATE_PLATFORM_WAIT_AVOID : MISSION_STATE_PLATFORM_WAIT_RETURN)) {
+        mission_fail(ctx, MISSION_FAULT_ARM);
+    }
+}
+
+/** 圆盘结束时10已完成；正式去阶梯，无线单区域测试仍在此停止。 */
+static void mission_finish_platform(mission_context_t *ctx)
+{
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    ctx->active_arm_group = 0U;
+    mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
+#else
+    (void)mission_next_request_id(ctx);
+    if (!mission_send_chassis(MISSION_CMD_GO_STAIRS, ctx->request_id)) {
+        mission_fail(ctx, MISSION_FAULT_QUEUE);
+        return;
+    }
+    mission_enter_state(ctx, MISSION_STATE_WAIT_STAIRS, MISSION_OPERATION_TIMEOUT_MS);
+#endif
+}
+
 /** 处理唯一在途动作组结果，并按圆盘、阶梯或小圆盘子流程继续。 */
 static void mission_handle_arm(mission_context_t *ctx, bool success)
 {
@@ -1749,38 +1776,22 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         mission_try_ready(ctx);
         return;
     }
-    /* 3) 首次11到位或17后重试回11，先稳定再启动圆盘视觉。 */
+    /* 3) 首次11到位或最后球读卡失败后回11，先稳定再启动圆盘视觉。 */
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_POSE) {
         mission_enter_state(ctx, MISSION_STATE_PLATFORM_SETTLE,
                             MISSION_PLATFORM_SETTLE_MS);
         return;
     }
-    /* 4) 动作组12完成后，前四球回11，第五球执行17避让。 */
+    /* 4) 动作组12完成后，前四球回11，第五球直接回10。 */
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_GRASP) {
         PLATFORM_TRACE("[P] T=%lu ARM12 DONE TRY=%u OK=%u\r\n",
             (unsigned long)osKernelGetTickCount(), (unsigned)ctx->platform_attempts,
             (unsigned)ctx->platform_balls);
-        if ((uint8_t)(ctx->platform_balls + 1U) >=
-            MISSION_PLATFORM_BALL_COUNT) {
-            if (!mission_start_arm(
-                    ctx,
-                    MISSION_PLATFORM_AVOID_GROUP,
-                    MISSION_STATE_PLATFORM_WAIT_AVOID)) {
-                mission_fail(ctx, MISSION_FAULT_ARM);
-            }
-            return;
-        }
-        /* 前四球先回动作组11，避免机械臂妨碍转盘转动。 */
-        if (!mission_start_arm(
-                ctx,
-                MISSION_PLATFORM_VISION_GROUP,
-                MISSION_STATE_PLATFORM_WAIT_RETURN)) {
-            mission_fail(ctx, MISSION_FAULT_ARM);
-        }
+        mission_platform_prepare_storage(ctx);
         return;
     }
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_AVOID) {
-        /* 第五球等动作组17完成避让后再读卡并转动转盘。 */
+        /* 第五球等动作10完成后再读卡转槽，后续不重复收臂。 */
         mission_enter_state(ctx, MISSION_STATE_PLATFORM_WAIT_STORAGE,
                             MISSION_OPERATION_TIMEOUT_MS);
         if (!mission_store_ball(ctx, MISSION_STORAGE_REGION_PLATFORM)) {
@@ -1803,13 +1814,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
     }
     /* 5) 圆盘存满并执行动作组10后，请求底盘去阶梯。 */
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_DEPARTURE_POSE) {
-        (void)mission_next_request_id(ctx);
-        if (!mission_send_chassis(MISSION_CMD_GO_STAIRS, ctx->request_id)) {
-            mission_fail(ctx, MISSION_FAULT_QUEUE);
-            return;
-        }
-        mission_enter_state(ctx, MISSION_STATE_WAIT_STAIRS,
-                            MISSION_OPERATION_TIMEOUT_MS);
+        mission_finish_platform(ctx);
         return;
     }
     /* 6) 阶梯入口动作组13完成后启动当前层。 */
@@ -1928,14 +1933,16 @@ static void mission_handle_storage(mission_context_t *ctx)
             (unsigned)ctx->platform_balls, (unsigned)(ctx->storage_slot + 1U));
         if ((ctx->platform_balls >= MISSION_PLATFORM_BALL_COUNT) ||
             (ctx->platform_attempts >= MISSION_PLATFORM_MAX_ATTEMPTS)) {
-            if (!mission_start_arm(
+            if (ctx->arm_home_ready) {
+                mission_finish_platform(ctx);
+            } else if (!mission_start_arm(
                     ctx,
                     MISSION_HOME_ACTION_GROUP,
                     MISSION_STATE_PLATFORM_WAIT_DEPARTURE_POSE)) {
                 mission_fail(ctx, MISSION_FAULT_ARM);
             }
-        } else if (ctx->active_arm_group == MISSION_PLATFORM_AVOID_GROUP) {
-            /* 第5球候选曾执行17；读卡失败后必须先回11，才能重新识别。 */
+        } else if (ctx->active_arm_group == MISSION_HOME_ACTION_GROUP) {
+            /* 最后球候选已回10；读卡失败后先回11，才能重新识别。 */
             if (!mission_start_arm(ctx, MISSION_PLATFORM_VISION_GROUP,
                                    MISSION_STATE_PLATFORM_WAIT_POSE)) {
                 mission_fail(ctx, MISSION_FAULT_ARM);

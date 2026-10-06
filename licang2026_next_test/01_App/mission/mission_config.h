@@ -28,7 +28,6 @@
 #define MISSION_STAIR_LOW_GROUP          14U
 #define MISSION_STAIR_HIGH_GROUP         15U
 #define MISSION_STAIR_MID_GROUP          16U
-#define MISSION_PLATFORM_AVOID_GROUP     17U /* 第五球完成后避开转盘旋转区域 */
 #define MISSION_STAIR_EXIT_GROUP         18U /* 阶梯结束后的撤离过渡姿态 */
 #define MISSION_SMALL_DISC_VISION_GROUP  19U /* 小圆盘绕行识别姿态 */
 #define MISSION_SMALL_DISC_GRASP_GROUP   20U /* 小圆盘抓球并放入车载转盘 */

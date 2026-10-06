@@ -70,8 +70,8 @@ int main(void)
     const uint8_t expected[] = {8, 5, 2, 1, 0, 3, 7, 6, 4};
     assert(placed_count == 9 && memcmp(placed_order, expected, sizeof(expected)) == 0);
     assert(steps_total == 31 && g_wireless_test.current_slot == 5);
-    /* 2层→1层→3层，只有3层插入24，均回10再标记放置。 */
-    const unsigned first_column[] = {10,22,25,10, 22,26,10, 22,23,24,10};
+    /* 2层→1层→3层；23包含撤离，不插入24，均回10再标记放置。 */
+    const unsigned first_column[] = {10,22,25,10, 22,26,10, 22,23,10};
     assert(memcmp(groups, first_column, sizeof(first_column)) == 0);
     reset(); c.arm_home_ready = false; seek_ok = false;
     assert(!mission_test_run_depot_balls(&c));
@@ -79,6 +79,9 @@ int main(void)
     reset(); c.arm_home_ready = false; fail_group = 4; /* 第一球回10失败，不能提前placed。 */
     assert(!mission_test_run_depot_balls(&c));
     assert(!g_wireless_test.manual_balls[8].placed && placed_count == 0);
+    reset(); c.arm_home_ready = false; fail_group = 9; /* 23失败不能继续收臂或标记高层球。 */
+    assert(!mission_test_run_depot_balls(&c));
+    assert(!g_wireless_test.manual_balls[2].placed && placed_count == 2);
     puts("Wireless depot nearest-slot regression passed (host logic only)");
     return 0;
 }

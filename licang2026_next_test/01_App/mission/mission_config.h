@@ -34,8 +34,7 @@
 #define MISSION_SMALL_DISC_GRASP_GROUP   20U /* 小圆盘抓球并放入车载转盘 */
 #define MISSION_SMALL_DISC_EXIT_GROUP    21U /* 小圆盘结束后的撤离过渡姿态 */
 #define MISSION_DEPOT_PICK_GROUP         22U /* 仓库从车载转盘取球 */
-#define MISSION_DEPOT_ROW3_GROUP         23U /* 三层放球 */
-#define MISSION_DEPOT_ROW3_EXIT_GROUP    24U /* 三层放球后撤离 */
+#define MISSION_DEPOT_ROW3_GROUP         23U /* 三层放球，用户已将撤离过渡包含在动作内 */
 #define MISSION_DEPOT_ROW2_GROUP         25U /* 二层放球及撤离 */
 #define MISSION_DEPOT_ROW1_GROUP         26U /* 一层放球 */
 

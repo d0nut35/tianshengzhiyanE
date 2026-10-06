@@ -1708,7 +1708,6 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         (ctx->state == MISSION_STATE_DEPOT_AVOID) ||
         (ctx->state == MISSION_STATE_DEPOT_PICK) ||
         (ctx->state == MISSION_STATE_DEPOT_PLACE) ||
-        (ctx->state == MISSION_STATE_DEPOT_EXIT) ||
         (ctx->state == MISSION_STATE_DEPOT_RETURN)) {
         if (!success) mission_fail(ctx, MISSION_FAULT_ARM);
         else mission_depot_arm_done(ctx);
@@ -2147,7 +2146,7 @@ static void mission_depot_next_ball(mission_context_t *ctx)
                         MISSION_OPERATION_TIMEOUT_MS);
 }
 
-/** 每个动作组都等控制器完成回报；第三层必须先24撤离，再回10。 */
+/** 每个动作组都等控制器完成回报；23已包含高层撤离，放置后直接回10。 */
 static void mission_depot_arm_done(mission_context_t *ctx)
 {
     uint8_t group;
@@ -2174,12 +2173,6 @@ static void mission_depot_arm_done(mission_context_t *ctx)
         next = MISSION_STATE_DEPOT_PLACE;
         break;
     case MISSION_STATE_DEPOT_PLACE:
-        group = (ctx->depot_row == 3U) ? MISSION_DEPOT_ROW3_EXIT_GROUP :
-                                       MISSION_HOME_ACTION_GROUP;
-        next = (ctx->depot_row == 3U) ? MISSION_STATE_DEPOT_EXIT :
-                                      MISSION_STATE_DEPOT_RETURN;
-        break;
-    case MISSION_STATE_DEPOT_EXIT:
         group = MISSION_HOME_ACTION_GROUP;
         next = MISSION_STATE_DEPOT_RETURN;
         break;
@@ -3255,9 +3248,6 @@ static bool mission_test_run_depot_balls(mission_context_t *ctx)
                     (row == 3U) ? MISSION_DEPOT_ROW3_GROUP :
                     ((row == 2U) ? MISSION_DEPOT_ROW2_GROUP :
                                      MISSION_DEPOT_ROW1_GROUP)) ||
-                ((row == 3U) &&
-                 !mission_test_run_arm_group(ctx,
-                                             MISSION_DEPOT_ROW3_EXIT_GROUP)) ||
                 !mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP)) {
                 mission_test_write("FAULT DEPOT PLACE\r\n");
                 return false;

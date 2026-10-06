@@ -156,7 +156,7 @@ int main(void)
     unsigned start = group_count;
     until_return(&c);
     assert(c.manifest.records[1].state == BALL_MANIFEST_STATE_STORED);
-    const unsigned row3[] = {22, 23, 24, 10};
+    const unsigned row3[] = {22, 23, 10};
     assert(group_count == start + sizeof(row3) / sizeof(row3[0]));
     assert(memcmp(groups + start, row3, sizeof(row3)) == 0);
     finish_arm(&c);

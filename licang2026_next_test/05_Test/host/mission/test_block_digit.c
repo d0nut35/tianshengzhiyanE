@@ -60,7 +60,11 @@ static bool mission_test_send_wait(mission_context_t *c, unsigned cmd, unsigned 
 static bool mission_test_run_arm_group(mission_context_t *c, uint8_t group)
 {
     if (group == 10 && c->arm_home_ready) return true;
-    if (group >= 28 && group <= 30) assert(c->arm_home_ready);
+    if (group == 28) assert(c->arm_home_ready);
+    if (group == 29 || group == 30) {
+        assert(arm_count > 0 && groups[arm_count - 1] == (unsigned)(group - 1));
+        assert(g_wireless_test.depot_position == 4);
+    }
     c->arm_home_ready = false;
     groups[arm_count++] = group;
     if (group == fail_group) return false;
@@ -110,9 +114,9 @@ int main(void)
     found_at[0] = 2; found_at[1] = 3; found_at[2] = 1;
     assert(mission_test_run_block_digits(&c));
     const unsigned expected_moves[] = {2,4,3,4,3,2,1,4,5};
-    const unsigned expected_groups[] = {28,10,29,10,30,10};
+    const unsigned expected_groups[] = {28,29,30,10};
     assert(moves == 9 && memcmp(points,expected_moves,sizeof(expected_moves)) == 0);
-    assert(arm_count == 6 && memcmp(groups,expected_groups,sizeof(expected_groups)) == 0);
+    assert(arm_count == 4 && memcmp(groups,expected_groups,sizeof(expected_groups)) == 0);
     assert(reads == 6 && delays_200 == 6 && settle_total == 1200);
     assert(delays_1000 == 3 && found_pause_total == 3000);
     assert(c.state == MISSION_STATE_COMPLETE);
@@ -124,11 +128,22 @@ int main(void)
     assert(!mission_test_run_block_digits(&c)); assert(reads == 0 && moves == 0);
     reset(&c); fail_group = 28;
     assert(!mission_test_run_block_digits(&c)); assert(reads == 0 && faults == 1);
-    /* 首层10缓存可跳过；层切换回10失败时禁止继续29或开中层会话。 */
-    reset(&c); found_at[0] = 1; fail_group = 10;
+    /* 首层没有10完成缓存时仍须执行10；失败禁止执行28或开启会话。 */
+    reset(&c); c.arm_home_ready = false; fail_group = 10;
     assert(!mission_test_run_block_digits(&c));
-    assert(faults == 1 && reads == 1 && moves == 1 && arm_count == 2);
-    assert(groups[0] == 28 && groups[1] == 10);
+    assert(faults == 1 && reads == 0 && moves == 0 && arm_count == 1 && groups[0] == 10);
+    /* 直接切29/30失败时不得采样下一层，层间不能插入10。 */
+    reset(&c); found_at[0] = found_at[1] = found_at[2] = 1; fail_group = 29;
+    assert(!mission_test_run_block_digits(&c));
+    assert(faults == 1 && reads == 1 && arm_count == 2 && groups[1] == 29);
+    reset(&c); fail_group = 30;
+    assert(!mission_test_run_block_digits(&c));
+    assert(faults == 1 && reads == 4 && arm_count == 3 && groups[2] == 30);
+    /* 最后回10失败时停在D4，禁止回家；全部NO_VALID仍完整扫描九个点。 */
+    reset(&c); found_at[0] = found_at[1] = found_at[2] = 0; fail_group = 10;
+    assert(!mission_test_run_block_digits(&c));
+    assert(faults == 1 && reads == 9 && arm_count == 4 && groups[3] == 10);
+    assert(points[moves - 1] == MISSION_CMD_GO_DEPOT_4);
 
     /* READY匹配本点后才开始4秒通信保护；旧会话、旧帧和运动状态均不能确认。 */
     reset(&c); c.state = MISSION_STATE_BLOCK_WAIT_DIGIT;

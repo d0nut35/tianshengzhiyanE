@@ -3501,8 +3501,9 @@ static bool mission_test_run_block_digits(mission_context_t *ctx)
     uint8_t stage, step, row, point, found_mask = 0U;
     for (stage = 0U; stage < 3U; ++stage) {
         row = (uint8_t)(3U - stage);
-        /* 每层先回10再执行识别姿态；10已完成则复用缓存，同层横移不重复动作。 */
-        if (!mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP) ||
+        /* 首层确认10；用户确认28/29/30可直接切换，仍逐组等待完成回报。 */
+        if (((stage == 0U) &&
+             !mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP)) ||
             !mission_test_run_arm_group(ctx, groups[stage])) {
             if (!g_wireless_test.stop_requested) mission_fail(ctx, MISSION_FAULT_ARM);
             return false;

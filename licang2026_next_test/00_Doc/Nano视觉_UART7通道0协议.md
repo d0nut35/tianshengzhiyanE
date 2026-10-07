@@ -1,6 +1,6 @@
 # Nano视觉 UART7通道0协议
 
-> 当前范围：本文对应STM32现有视觉协议Core，包含圆盘、低/高/中阶梯、小圆盘球视觉场景，以及仓库数字场景和`DIGIT_EVENT`。小圆盘和仓库数字仅完成双方PC协议测试，尚未完成Nano/F7实机验证和Mission接入。
+> 当前范围：球和C100仓库数字已接入Mission，用户曾反馈实机联调；本次新增MF500积木场景7、模型状态及积木终态，双方实现和主机验证完成，新增链路仍待实机验证。
 
 ## 1. 边界
 
@@ -24,7 +24,7 @@
 | 1 | 1 | SOF1 | `0x5A` |
 | 2 | 1 | VERSION | 当前`0x01` |
 | 3 | 1 | TYPE | 见消息类型表 |
-| 4 | 1 | SEQ | F7递增；Nano原样回显 |
+| 4 | 1 | SEQ | 命令响应回显F7序号；会话事件由Nano递增，按SID确认 |
 | 5 | 1 | PAYLOAD_LEN | 当前最大24字节 |
 | 6 | N | PAYLOAD | 消息载荷 |
 | 6+N | 2 | CRC16 | CRC-16/CCITT-FALSE，小端 |
@@ -39,11 +39,14 @@ CRC参数：多项式`0x1021`、初值`0xFFFF`、不反射、无最终异或；�
 | `0x02` | F7→Nano | SESSION_START |
 | `0x03` | F7→Nano | SESSION_STOP |
 | `0x04` | F7→Nano | EVENT_ACK |
+| `0x05` | F7→Nano | MODEL_QUERY，查询积木模型状态 |
 | `0x81` | Nano→F7 | 兼容观测OBSERVATION |
 | `0x82` | Nano→F7 | SESSION_READY |
 | `0x83` | Nano→F7 | VISION_EVENT |
 | `0x84` | Nano→F7 | SESSION_STOPPED |
 | `0x85` | Nano→F7 | DIGIT_EVENT |
+| `0x86` | Nano→F7 | MODEL_STATE |
+| `0x87` | Nano→F7 | BLOCK_RESULT |
 
 ## 3. F7轮询 `TYPE=0x01`
 
@@ -77,7 +80,7 @@ CRC参数：多项式`0x1021`、初值`0xFFFF`、不反射、无最终异或；�
 
 载荷均为4字节：`SESSION_ID(u16) + SCENE(u8) + TARGET_COLOR(u8)`。
 `SESSION_ID`由F7递增且不能为0；READY必须回显同一个会话、场景和颜色。
-球场景的`TARGET_COLOR`只能为红或蓝；仓库数字场景必须为任意颜色`0`。
+球场景的`TARGET_COLOR`只能为红或蓝；仓库数字场景5和积木数字场景7必须为任意颜色`0`。积木只使用会话，不使用POLL。
 
 F7发送START时通过`mult_uart_device_submit()`执行WRITE_READ。收到匹配READY后，
 F7通过同一接口提交READ并保持通道0等待视觉事件。等待期间Nano不发送无目标帧，
@@ -138,12 +141,42 @@ Nano收到匹配ACK后关闭本session。球流程中，F7在ACK发送完成后�
 5. 当前Core的PC测试参数仅为假数据示例：X容差10 px、Y容差8 px、结果年龄100 ms、连续3帧、连续3次超时离线。真实参数必须在机械安装后分别标定`BALL_TURNTABLE`、`BALL_STAIR_LOW`、`BALL_STAIR_HIGH`、`BALL_STAIR_MID`和`BALL_SMALL_DISC`。
 6. F7链路超时或连续事务超时后标记Nano离线，不触发机械臂动作。
 
-## 7. 当前验证边界
+## 7. 积木场景7及起点模型握手
+
+MODEL_QUERY载荷1字节：SCENE=7。MODEL_STATE载荷3字节：SCENE=7、STATE（0=LOADING、1=READY、2=ERROR）、REASON（正常0，模型失败10）。查询不打开相机或启动识别。
+
+Nano程序启动异步加载并预热模型；F7起点每1秒查询，收到匹配序号的READY且动作10与底盘均就绪才放行。加载期间留在起点，不使用10秒限制模型加载。
+
+BLOCK_RESULT载荷14字节：
+
+| 偏移 | 长度 | 字段 |
+| ---: | ---: | --- |
+| 0 | 2 | SESSION_ID |
+| 2 | 1 | STATUS：1=DIGIT、2=NO_VALID、3=FAULT |
+| 3 | 1 | DIGIT：成功1/2/3，其余0 |
+| 4 | 1 | QUALITY：0～100 |
+| 5 | 1 | REASON |
+| 6 | 2 | FRAME_ID |
+| 8 | 2 | AGE_MS |
+| 10 | 2 | FRAMES |
+| 12 | 2 | ELAPSED_MS |
+
+原因：1=CONFIRMED、2=NO_CANDIDATE、3=LOW_SCORE、4=AMBIGUOUS、5=UNSTABLE；故障6=CAMERA_NO_FRAME、7=FRAME_GAP、8=STALE_FRAME、9=INSUFFICIENT_FRAMES、10=MODEL_ERROR、11=MODE_NOT_READY、12=CAMERA_ERROR。
+
+DIGIT要求分数≥80且连续3张新帧一致；NO_VALID要求digit=0、原因2～5、累计至少15张有效新帧且首张有效帧起至少1500ms。低分/无候选等统一跳站，保留原因，不能据此认定物理空仓。缺帧或模型异常不能当空仓。
+
+F7只在动作完成、停车稳定200ms后的专属等待状态接受本SID结果，结果年龄≤120ms。START准备最长10秒，READY后4秒是通信保护；1500ms业务判定由Nano管理。旧C100仓库场景保留等READY后计时，不套用积木准备期限。
+
+Nano准备相机与首帧在后台进行，串口线程可响应STOP。READY时清空旧计数，只累计此后新采样帧；同SID重复START不重置计数。每会话只锁存一个结果，50ms重发直至匹配SID/FRAME_ID的EVENT_ACK或1秒ACK期限。F7等ACK写完成才移动。FAULT允许在READY之前回报；动作异常和设备故障停车。
+
+双方黄金帧：MODEL_QUERY `a55a01050701075ec1`；模型READY `a55a01860703070100c75a`；SID=0x1234、digit=2、quality=88、frame=513、age=24、frames=3、elapsed=192的结果 `a55a0187030e341201025801010218000300c000ec4d`。
+
+## 8. 当前验证边界
 
 - V1轮询已通过PC假数据和Nano/F7通道0实机通信；此前20 Hz轮询抓取存在显示负载和触发时序问题，因此不再作为轻量抓取正式路径。
 - V2 START/READY/EVENT/ACK/STOP的Python/C编解码、黄金帧、CRC和主机测试已通过。
 - V2 F7任务已接入`mult_uart_device_submit()`的WRITE_READ、READ和WRITE事务；
   低/高/中三层场景的C/Python协议测试及正式Keil链接已通过，Nano/F7分层场景切换实机尚未验证。
 - 仓库数字场景、会话目标约束和`DIGIT_EVENT`的Python/C编解码、共享黄金帧、长度、取值及CRC错误测试已通过。
-- 仓库数字尚未进行Nano/F7串口实机验证，也未接入Mission或底盘仓库流程。
-- 小圆盘场景值`6`、红蓝目标约束、START和`VISION_EVENT`共享黄金帧已通过Python/C测试；Nano/F7实机、Mission和底盘流程尚未验证。
+- 仓库数字及小圆盘已接入正式/无线Mission；用户报告此前联调，近期小圆盘基本夹到但停车偏早。不能用旧版PC测试描述覆盖现场反馈。
+- 本次积木模型查询、三层无线走位、旧会话隔离及故障停车通过双方主机测试；Keil编译结果另见CURRENT_STATUS。Nano/F7新增协议和动作28～30的联调仍待进行；完整比赛积木抓放尚未接入。

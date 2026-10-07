@@ -53,11 +53,14 @@ typedef enum {
     NANO_VISION_MSG_SESSION_START = 0x02U,
     NANO_VISION_MSG_SESSION_STOP  = 0x03U,
     NANO_VISION_MSG_EVENT_ACK     = 0x04U,
+    NANO_VISION_MSG_MODEL_QUERY   = 0x05U,
     NANO_VISION_MSG_OBSERVATION = 0x81U,
     NANO_VISION_MSG_SESSION_READY = 0x82U,
     NANO_VISION_MSG_EVENT         = 0x83U,
     NANO_VISION_MSG_SESSION_STOPPED = 0x84U,
     NANO_VISION_MSG_DIGIT_EVENT   = 0x85U,
+    NANO_VISION_MSG_MODEL_STATE   = 0x86U,
+    NANO_VISION_MSG_BLOCK_RESULT  = 0x87U,
 } nano_vision_message_type_t;
 
 typedef enum {
@@ -69,6 +72,7 @@ typedef enum {
     NANO_VISION_SCENE_WAREHOUSE_DIGIT = 5U,
     /* 小圆盘使用独立视觉参数，球事件格式继续复用VISION_EVENT。 */
     NANO_VISION_SCENE_SMALL_DISC = 6U,
+    NANO_VISION_SCENE_BLOCK_DIGIT = 7U,
     /* 兼容旧代码；新流程应按具体阶梯层选择场景。 */
     NANO_VISION_SCENE_STAIR      = NANO_VISION_SCENE_STAIR_LOW,
 } nano_vision_scene_t;
@@ -143,6 +147,65 @@ typedef struct {
     uint8_t payload[NANO_VISION_PAYLOAD_MAX];
     uint8_t payload_len;
 } nano_vision_frame_t;
+
+/* 积木使用独立结果消息，保留C100原有DIGIT_EVENT及其1~3约束。 */
+typedef enum {
+    NANO_VISION_MODEL_LOADING = 0U,
+    NANO_VISION_MODEL_READY = 1U,
+    NANO_VISION_MODEL_ERROR = 2U,
+} nano_vision_model_state_t;
+
+typedef enum {
+    NANO_VISION_BLOCK_DIGIT = 1U,
+    NANO_VISION_BLOCK_NO_VALID = 2U,
+    NANO_VISION_BLOCK_FAULT = 3U,
+} nano_vision_block_status_t;
+
+typedef enum {
+    NANO_VISION_REASON_NONE = 0U,
+    NANO_VISION_REASON_CONFIRMED = 1U,
+    NANO_VISION_REASON_NO_CANDIDATE = 2U,
+    NANO_VISION_REASON_LOW_SCORE = 3U,
+    NANO_VISION_REASON_AMBIGUOUS = 4U,
+    NANO_VISION_REASON_UNSTABLE = 5U,
+    NANO_VISION_REASON_CAMERA_NO_FRAME = 6U,
+    NANO_VISION_REASON_FRAME_GAP = 7U,
+    NANO_VISION_REASON_STALE_FRAME = 8U,
+    NANO_VISION_REASON_INSUFFICIENT_FRAMES = 9U,
+    NANO_VISION_REASON_MODEL_ERROR = 10U,
+    NANO_VISION_REASON_MODE_NOT_READY = 11U,
+    NANO_VISION_REASON_CAMERA_ERROR = 12U,
+} nano_vision_block_reason_t;
+
+typedef struct {
+    nano_vision_model_state_t state;
+    nano_vision_block_reason_t reason;
+} nano_vision_model_report_t;
+
+typedef struct {
+    uint16_t session_id;
+    nano_vision_block_status_t status;
+    uint8_t digit;
+    uint8_t quality;
+    nano_vision_block_reason_t reason;
+    uint16_t frame_id;
+    uint16_t age_ms;
+    uint16_t frames;
+    uint16_t elapsed_ms;
+} nano_vision_block_result_t;
+
+nano_vision_status_t nano_vision_build_model_query_frame(
+    uint8_t sequence, uint8_t *frame, size_t capacity, size_t *frame_len);
+nano_vision_status_t nano_vision_build_model_state_frame(
+    uint8_t sequence, const nano_vision_model_report_t *report,
+    uint8_t *frame, size_t capacity, size_t *frame_len);
+nano_vision_status_t nano_vision_decode_model_state(
+    const uint8_t *data, size_t len, nano_vision_model_report_t *report);
+nano_vision_status_t nano_vision_build_block_result_frame(
+    uint8_t sequence, const nano_vision_block_result_t *result,
+    uint8_t *frame, size_t capacity, size_t *frame_len);
+nano_vision_status_t nano_vision_decode_block_result(
+    const uint8_t *data, size_t len, nano_vision_block_result_t *result);
 
 typedef void (*nano_vision_frame_fn_t)(
     void *user_ctx,

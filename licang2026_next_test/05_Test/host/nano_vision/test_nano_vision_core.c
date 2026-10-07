@@ -631,6 +631,50 @@ static void test_warehouse_digit_errors(void)
         frame, frame_len, &parsed_event) == NANO_VISION_ERR_CRC);
 }
 
+static void test_block_protocol(void)
+{
+    const uint8_t golden[] = {0xa5,0x5a,1,0x87,3,14,0x34,0x12,1,2,88,1,1,2,24,0,3,0,0xc0,0,0xec,0x4d};
+    const uint8_t model_golden[] = {0xa5,0x5a,1,0x86,7,3,7,1,0,0xc7,0x5a};
+    const uint8_t query_golden[] = {0xa5,0x5a,1,5,7,1,7,0x5e,0xc1};
+    nano_vision_block_result_t result = {0x1234U,NANO_VISION_BLOCK_DIGIT,2U,88U,
+        NANO_VISION_REASON_CONFIRMED,513U,24U,3U,192U};
+    nano_vision_block_result_t parsed;
+    nano_vision_model_report_t model = {NANO_VISION_MODEL_READY,NANO_VISION_REASON_NONE};
+    nano_vision_session_t session = {1U,NANO_VISION_SCENE_BLOCK_DIGIT,NANO_VISION_COLOR_ANY};
+    uint8_t frame[NANO_VISION_FRAME_MAX];
+    size_t len;
+    assert(nano_vision_build_model_query_frame(7U,frame,sizeof(frame),&len) == NANO_VISION_OK);
+    assert(len == sizeof(query_golden) && memcmp(frame,query_golden,len) == 0);
+    assert(nano_vision_build_model_state_frame(7U,&model,frame,sizeof(frame),&len) == NANO_VISION_OK);
+    assert(len == sizeof(model_golden) && memcmp(frame,model_golden,len) == 0);
+    assert(nano_vision_decode_model_state(frame,len,&model) == NANO_VISION_OK);
+    assert(model.state == NANO_VISION_MODEL_READY);
+    assert(nano_vision_build_session_start_frame(1U,&session,frame,sizeof(frame),&len) == NANO_VISION_OK);
+    assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_OK);
+    assert(len == sizeof(golden) && memcmp(frame,golden,len) == 0);
+    assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_OK);
+    assert(parsed.session_id == result.session_id && parsed.digit == 2U && parsed.elapsed_ms == 192U);
+    frame[8] ^= 1U;
+    assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_ERR_CRC);
+    result.status = NANO_VISION_BLOCK_NO_VALID;
+    result.digit = 0U;
+    result.reason = NANO_VISION_REASON_LOW_SCORE;
+    result.frames = 15U;
+    result.elapsed_ms = 1500U;
+    assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_OK);
+    result.frames = 14U;
+    assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_ERR_VALUE);
+    frame[11] = NANO_VISION_REASON_CAMERA_ERROR;
+    len = refresh_frame_crc(frame);
+    assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_ERR_VALUE);
+    result.status = NANO_VISION_BLOCK_FAULT;
+    result.reason = NANO_VISION_REASON_CAMERA_ERROR;
+    result.frames = 0U;
+    assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_OK);
+    assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_OK);
+    assert(parsed.status == NANO_VISION_BLOCK_FAULT);
+}
+
 int main(void)
 {
     test_crc_and_codec();
@@ -645,6 +689,7 @@ int main(void)
     test_event_session_codec();
     test_warehouse_digit_codec();
     test_warehouse_digit_errors();
+    test_block_protocol();
     puts("nano_vision_core fake tests passed");
     return 0;
 }

@@ -11,7 +11,8 @@ static bool nano_vision_scene_is_valid(nano_vision_scene_t scene)
            (scene == NANO_VISION_SCENE_STAIR_HIGH) ||
            (scene == NANO_VISION_SCENE_STAIR_MID) ||
            (scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT) ||
-           (scene == NANO_VISION_SCENE_SMALL_DISC);
+           (scene == NANO_VISION_SCENE_SMALL_DISC) ||
+           (scene == NANO_VISION_SCENE_BLOCK_DIGIT);
 }
 
 static bool nano_vision_color_is_valid(nano_vision_color_t color)
@@ -29,7 +30,8 @@ static bool nano_vision_session_is_valid(
         return false;
     }
     /* 仓库任务不按颜色筛选；球任务仍必须明确指定红色或蓝色。 */
-    if (session->scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT) {
+    if ((session->scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT) ||
+        (session->scene == NANO_VISION_SCENE_BLOCK_DIGIT)) {
         return session->target_color == NANO_VISION_COLOR_ANY;
     }
     return (session->target_color == NANO_VISION_COLOR_RED) ||
@@ -381,6 +383,105 @@ static nano_vision_status_t nano_vision_validate_message(
     if (data[3] != (uint8_t)expected_type) return NANO_VISION_ERR_TYPE;
     return (data[5] == expected_payload_len) ?
         NANO_VISION_OK : NANO_VISION_ERR_LENGTH;
+}
+
+static bool nano_vision_model_report_is_valid(const nano_vision_model_report_t *report)
+{
+    return (report != NULL) &&
+        ((uint32_t)report->state <= NANO_VISION_MODEL_ERROR) &&
+        (report->reason == ((report->state == NANO_VISION_MODEL_ERROR) ?
+            NANO_VISION_REASON_MODEL_ERROR : NANO_VISION_REASON_NONE));
+}
+
+static bool nano_vision_block_result_is_valid(const nano_vision_block_result_t *result)
+{
+    if ((result == NULL) || (result->session_id == 0U) || (result->quality > 100U)) return false;
+    if (result->status == NANO_VISION_BLOCK_DIGIT) {
+        return (result->digit >= 1U) && (result->digit <= 3U) &&
+            (result->quality >= 80U) && (result->reason == NANO_VISION_REASON_CONFIRMED) &&
+            (result->frames >= 3U);
+    }
+    if (result->digit != 0U) return false;
+    if (result->status == NANO_VISION_BLOCK_NO_VALID) {
+        return (result->reason >= NANO_VISION_REASON_NO_CANDIDATE) &&
+            (result->reason <= NANO_VISION_REASON_UNSTABLE) &&
+            (result->frames >= 15U) && (result->elapsed_ms >= 1500U);
+    }
+    return (result->status == NANO_VISION_BLOCK_FAULT) &&
+        (result->reason >= NANO_VISION_REASON_CAMERA_NO_FRAME) &&
+        (result->reason <= NANO_VISION_REASON_CAMERA_ERROR);
+}
+
+nano_vision_status_t nano_vision_build_model_query_frame(
+    uint8_t sequence, uint8_t *frame, size_t capacity, size_t *frame_len)
+{
+    const uint8_t payload[] = {NANO_VISION_SCENE_BLOCK_DIGIT};
+    return nano_vision_build_frame(NANO_VISION_MSG_MODEL_QUERY, sequence,
+        payload, sizeof(payload), frame, capacity, frame_len);
+}
+
+nano_vision_status_t nano_vision_build_model_state_frame(
+    uint8_t sequence, const nano_vision_model_report_t *report,
+    uint8_t *frame, size_t capacity, size_t *frame_len)
+{
+    uint8_t payload[3];
+    if (!nano_vision_model_report_is_valid(report)) return NANO_VISION_ERR_VALUE;
+    payload[0] = NANO_VISION_SCENE_BLOCK_DIGIT;
+    payload[1] = (uint8_t)report->state;
+    payload[2] = (uint8_t)report->reason;
+    return nano_vision_build_frame(NANO_VISION_MSG_MODEL_STATE, sequence,
+        payload, sizeof(payload), frame, capacity, frame_len);
+}
+
+nano_vision_status_t nano_vision_decode_model_state(
+    const uint8_t *data, size_t len, nano_vision_model_report_t *report)
+{
+    nano_vision_status_t status;
+    if (report == NULL) return NANO_VISION_ERR_PARAM;
+    status = nano_vision_validate_message(data, len, NANO_VISION_MSG_MODEL_STATE, 3U);
+    if (status != NANO_VISION_OK) return status;
+    if (data[6] != NANO_VISION_SCENE_BLOCK_DIGIT) return NANO_VISION_ERR_VALUE;
+    report->state = (nano_vision_model_state_t)data[7];
+    report->reason = (nano_vision_block_reason_t)data[8];
+    return nano_vision_model_report_is_valid(report) ? NANO_VISION_OK : NANO_VISION_ERR_VALUE;
+}
+
+nano_vision_status_t nano_vision_build_block_result_frame(
+    uint8_t sequence, const nano_vision_block_result_t *result,
+    uint8_t *frame, size_t capacity, size_t *frame_len)
+{
+    uint8_t payload[14];
+    if (!nano_vision_block_result_is_valid(result)) return NANO_VISION_ERR_VALUE;
+    nano_vision_write_u16_le(payload, result->session_id);
+    payload[2] = (uint8_t)result->status;
+    payload[3] = result->digit;
+    payload[4] = result->quality;
+    payload[5] = (uint8_t)result->reason;
+    nano_vision_write_u16_le(&payload[6], result->frame_id);
+    nano_vision_write_u16_le(&payload[8], result->age_ms);
+    nano_vision_write_u16_le(&payload[10], result->frames);
+    nano_vision_write_u16_le(&payload[12], result->elapsed_ms);
+    return nano_vision_build_frame(NANO_VISION_MSG_BLOCK_RESULT, sequence,
+        payload, sizeof(payload), frame, capacity, frame_len);
+}
+
+nano_vision_status_t nano_vision_decode_block_result(
+    const uint8_t *data, size_t len, nano_vision_block_result_t *result)
+{
+    nano_vision_status_t status;
+    if (result == NULL) return NANO_VISION_ERR_PARAM;
+    status = nano_vision_validate_message(data, len, NANO_VISION_MSG_BLOCK_RESULT, 14U);
+    if (status != NANO_VISION_OK) return status;
+    result->session_id = nano_vision_read_u16_le(&data[6]);
+    result->status = (nano_vision_block_status_t)data[8];
+    result->digit = data[9];
+    result->quality = data[10];
+    result->reason = (nano_vision_block_reason_t)data[11];
+    result->frame_id = nano_vision_read_u16_le(&data[12]);
+    result->age_ms = nano_vision_read_u16_le(&data[14]);
+    result->frames = nano_vision_read_u16_le(&data[16]);
+    result->elapsed_ms = nano_vision_read_u16_le(&data[18]);
+    return nano_vision_block_result_is_valid(result) ? NANO_VISION_OK : NANO_VISION_ERR_VALUE;
 }
 
 nano_vision_status_t nano_vision_decode_session_ready(

@@ -53,6 +53,7 @@ typedef struct {
     uint8_t stair_balls, active_arm_group;
     uint32_t arm_last_action_report;
     uint16_t request_id;
+    bool block_result_received;
 } mission_context_t;
 volatile mission_color_t g_mission_side = MISSION_COLOR_RED;
 static unsigned submits, resets, advances, arms, cam_ready;
@@ -70,6 +71,7 @@ static void mission_enter_state(mission_context_t *c, mission_state_t state, uin
 static nano_vision_status_t mission_submit_vision_transfer(mission_context_t *c, unsigned op, size_t len, uint32_t timeout)
 { (void)op; (void)len; ++submits; last_timeout = timeout; c->vision.inflight = true; return NANO_VISION_OK; }
 static void mission_depot_digit_done(mission_context_t *c) { (void)c; ++advances; }
+static void mission_block_digit_done(mission_context_t *c) { (void)c; CHECK(false); }
 static uint8_t mission_stair_grasp_group(mission_stair_layer_t layer);
 static bool mission_send_chassis(unsigned command, uint16_t id)
 { (void)id; CHECK(command == MISSION_CMD_CAM_READY); ++cam_ready; return true; }

@@ -41,6 +41,12 @@ static char g_depot_trace_text[128];
 
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
 #include "debug_uart1.h"
+#define BLOCK_TRACE(...) do { \
+    (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text), __VA_ARGS__); \
+    mission_test_write(g_wireless_test.text); \
+} while (0)
+#else
+#define BLOCK_TRACE(...) DEPOT_TRACE(__VA_ARGS__)
 #endif
 
 #define MISSION_FLAG_COMMAND       (1UL << 1)
@@ -177,6 +183,13 @@ typedef struct {
     uint32_t model_next_query_tick;
     nano_vision_block_result_t block_result;
     bool block_result_received;
+    /* 无线搬运与正式共用；源层按stage降序，digit只表示D4目标层。 */
+    uint8_t block_stage;
+    uint8_t block_step;
+    uint8_t block_point;
+    uint8_t block_digit;
+    uint8_t block_found_mask;
+    uint8_t block_placed_mask;
     uint8_t active_arm_group;
     volatile bool arm_home_ready;          /* 仅动作10完成回报置位；新动作或异常使姿态失效。 */
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
@@ -345,6 +358,7 @@ typedef struct {
     bool depot_wait_ball_home;             /* ROUTE DEPOT BALL已在D1停车，等待装球命令。 */
     bool ball_home;                        /* 人工装球测试已开始。 */
     bool ball_home_ready;                  /* 9球读完且转盘已停在12槽。 */
+    bool block_move;                       /* 新搬运测试使用共用状态机；旧数字测试不抓放。 */
     uint8_t current_slot;                  /* 当前取球工位对应的物理槽号1~12。 */
     uint8_t manual_count;
     mission_test_ball_t manual_balls[BALL_MANIFEST_CAPACITY];
@@ -465,6 +479,13 @@ static void mission_handle_arm(mission_context_t *ctx, bool success);
 static void mission_handle_storage(mission_context_t *ctx);
 /** 检查当前状态是否到期并触发自动启动或故障。 */
 static void mission_check_timeout(mission_context_t *ctx);
+static void mission_block_begin(mission_context_t *ctx);
+static void mission_block_start_layer(mission_context_t *ctx);
+static void mission_block_move(mission_context_t *ctx, uint8_t point,
+                               mission_state_t wait_state);
+static void mission_block_position_done(mission_context_t *ctx);
+static void mission_block_digit_done(mission_context_t *ctx);
+static void mission_block_arm_done(mission_context_t *ctx);
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
 static void mission_depot_next_ball(mission_context_t *ctx);
 static void mission_depot_start_digit(mission_context_t *ctx);
@@ -715,6 +736,16 @@ static void mission_fail(mission_context_t *ctx, mission_fault_t fault)
     }
     ctx->fault_code = (uint8_t)fault;
     ctx->arm_home_ready = false;
+    /* 积木故障时停止在途动作，保留夹持姿态，不自动释放或收臂。 */
+    if ((ctx->state >= MISSION_STATE_BLOCK_WAIT_DIGIT) &&
+        (ctx->state <= MISSION_STATE_BLOCK_WAIT_HOME)) {
+        BLOCK_TRACE("[B] FAULT=%u STATE=%u ROW=%u D%u DIGIT=%u\r\n",
+            (unsigned)fault, (unsigned)ctx->state,
+            (unsigned)(3U - ctx->block_stage), (unsigned)ctx->depot_position,
+            (unsigned)ctx->block_digit);
+        (void)arm_stop(NULL, NULL);
+        ctx->active_arm_group = 0U;
+    }
     DEPOT_TRACE("[M] FAULT=%u STATE=%u ARM_LAST=%lu V=%u IO=%u\r\n",
                 (unsigned)fault, (unsigned)ctx->state,
                 (unsigned long)ctx->arm_last_action_report,
@@ -1236,6 +1267,160 @@ static bool mission_prepare_zdt(mission_context_t *ctx)
     return true;
 }
 
+/** 单次积木动作仍走既有完成回报；日志不参与到位判定。 */
+static void mission_block_run_arm(mission_context_t *ctx, uint8_t group,
+                                  mission_state_t wait_state)
+{
+    BLOCK_TRACE("[B] ARM START=%u ROW=%u D%u TARGET_ROW=%u\r\n",
+        (unsigned)group, (unsigned)(3U - ctx->block_stage),
+        (unsigned)ctx->depot_position, (unsigned)ctx->block_digit);
+    if (!mission_start_arm(ctx, group, wait_state))
+        mission_fail(ctx, MISSION_FAULT_ARM);
+}
+
+static void mission_block_start_layer(mission_context_t *ctx)
+{
+    static const uint8_t groups[] = {MISSION_BLOCK_HIGH_VISION_GROUP,
+        MISSION_BLOCK_MID_VISION_GROUP, MISSION_BLOCK_LOW_VISION_GROUP};
+    ctx->block_step = 0U;
+    ctx->block_digit = 0U;
+    mission_block_run_arm(ctx, groups[ctx->block_stage], MISSION_STATE_BLOCK_WAIT_POSE);
+}
+
+/** 放置完成或本层三个点均未确认后，才允许进入下一源层。 */
+static void mission_block_next_layer(mission_context_t *ctx)
+{
+    if (ctx->block_stage < 2U) {
+        ++ctx->block_stage;
+        mission_block_start_layer(ctx);
+    } else mission_block_run_arm(ctx, MISSION_HOME_ACTION_GROUP, MISSION_STATE_BLOCK_FINISH);
+}
+
+static void mission_block_position_done(mission_context_t *ctx)
+{
+    BLOCK_TRACE("[B] REACHED D%u ROW=%u TARGET_ROW=%u\r\n",
+        (unsigned)ctx->depot_position, (unsigned)(3U - ctx->block_stage),
+        (unsigned)ctx->block_digit);
+    if (ctx->state == MISSION_STATE_BLOCK_WAIT_POSITION) {
+        mission_enter_state(ctx, MISSION_STATE_BLOCK_SETTLE, MISSION_BLOCK_SETTLE_MS);
+    } else if (ctx->state == MISSION_STATE_BLOCK_WAIT_D4) {
+        if (ctx->block_digit != 0U) {
+            static const uint8_t groups[] = {MISSION_BLOCK_LOW_PLACE_GROUP,
+                MISSION_BLOCK_MID_PLACE_GROUP, MISSION_BLOCK_HIGH_PLACE_GROUP};
+            /* block_digit在有效结果确认时限定1～3，与源层无关。 */
+            mission_block_run_arm(ctx, groups[ctx->block_digit - 1U],
+                                  MISSION_STATE_BLOCK_WAIT_PLACE);
+        } else mission_block_next_layer(ctx);
+    } else if (ctx->state == MISSION_STATE_BLOCK_RETURN_DEPOT) {
+        BLOCK_TRACE("[B] DONE FOUND=0x%02X PLACED=0x%02X AT_D1\r\n",
+            (unsigned)ctx->block_found_mask, (unsigned)ctx->block_placed_mask);
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        /* 新无线测试不放小球；D1实际停车后才允许回家。 */
+        if (!mission_send_chassis(MISSION_CMD_DEPOT_OK, mission_next_request_id(ctx))) {
+            mission_fail(ctx, MISSION_FAULT_QUEUE);
+            return;
+        }
+        mission_enter_state(ctx, MISSION_STATE_BLOCK_WAIT_HOME, MISSION_OPERATION_TIMEOUT_MS);
+#else
+        /* 单独的返程状态防止第二次D1回报重进积木；保留真实球档案。 */
+        mission_depot_prepare(ctx);
+#endif
+    }
+}
+
+/** 复用仓库双向横移；当前位置只在匹配到位回报后更新。 */
+static void mission_block_move(mission_context_t *ctx, uint8_t point,
+                               mission_state_t wait_state)
+{
+    ctx->block_point = point;
+    if (ctx->depot_position == point) {
+        mission_enter_state(ctx, wait_state, 0U);
+        mission_block_position_done(ctx);
+        return;
+    }
+    BLOCK_TRACE("[B] MOVE D%u->D%u ROW=%u TARGET_ROW=%u\r\n",
+        (unsigned)ctx->depot_position, (unsigned)point,
+        (unsigned)(3U - ctx->block_stage), (unsigned)ctx->block_digit);
+    if (!mission_send_chassis((mission_command_type_t)(MISSION_CMD_GO_DEPOT_1 + point - 1U),
+                              mission_next_request_id(ctx))) {
+        mission_fail(ctx, MISSION_FAULT_QUEUE);
+        return;
+    }
+    mission_enter_state(ctx, wait_state, MISSION_OPERATION_TIMEOUT_MS);
+}
+
+static void mission_block_scan_point(mission_context_t *ctx)
+{
+    uint8_t point = (ctx->block_stage == 0U) ? (uint8_t)(ctx->block_step + 1U) :
+                                             (uint8_t)(3U - ctx->block_step);
+    mission_block_move(ctx, point, MISSION_STATE_BLOCK_WAIT_POSITION);
+}
+
+static void mission_block_arm_done(mission_context_t *ctx)
+{
+    BLOCK_TRACE("[B] ARM DONE=%u ROW=%u D%u TARGET_ROW=%u\r\n",
+        (unsigned)ctx->active_arm_group, (unsigned)(3U - ctx->block_stage),
+        (unsigned)ctx->depot_position, (unsigned)ctx->block_digit);
+    ctx->active_arm_group = 0U; /* 本组已消费，重复旧组回报不能再次推进。 */
+    switch (ctx->state) {
+    case MISSION_STATE_BLOCK_PREPARE:
+        mission_block_start_layer(ctx);
+        break;
+    case MISSION_STATE_BLOCK_WAIT_POSE:
+        mission_block_scan_point(ctx);
+        break;
+    case MISSION_STATE_BLOCK_WAIT_GRASP:
+        /* 完成夹取后不插10或识别动作，携带该姿态直达D4。 */
+        mission_block_move(ctx, 4U, MISSION_STATE_BLOCK_WAIT_D4);
+        break;
+    case MISSION_STATE_BLOCK_WAIT_PLACE:
+        ctx->block_placed_mask |= (uint8_t)(1U << (2U - ctx->block_stage));
+        mission_block_next_layer(ctx);
+        break;
+    case MISSION_STATE_BLOCK_FINISH:
+        mission_block_move(ctx, 1U, MISSION_STATE_BLOCK_RETURN_DEPOT);
+        break;
+    default:
+        break;
+    }
+}
+
+static void mission_block_begin(mission_context_t *ctx)
+{
+    ctx->block_stage = ctx->block_step = ctx->block_digit = 0U;
+    ctx->block_found_mask = ctx->block_placed_mask = 0U;
+    ctx->block_result_received = false;
+    ctx->depot_position = 1U; /* 调用入口已经确认首次D1到位。 */
+    BLOCK_TRACE("[B] BEGIN AT_D1\r\n");
+    if (ctx->arm_home_ready) mission_block_start_layer(ctx);
+    else mission_block_run_arm(ctx, MISSION_HOME_ACTION_GROUP, MISSION_STATE_BLOCK_PREPARE);
+}
+
+/** 仅在当前结果ACK发送成功且事务邮箱已消费后调用。 */
+static void mission_block_digit_done(mission_context_t *ctx)
+{
+    static const uint8_t groups[] = {MISSION_BLOCK_HIGH_GRASP_GROUP,
+        MISSION_BLOCK_MID_GRASP_GROUP, MISSION_BLOCK_LOW_GRASP_GROUP};
+    const nano_vision_block_result_t *result = &ctx->block_result;
+    ctx->block_result_received = false;
+    BLOCK_TRACE("[B] ROW=%u D%u DIGIT=%u SID=%u STATUS=%u REASON=%u FRAMES=%u\r\n",
+        (unsigned)(3U - ctx->block_stage), (unsigned)ctx->depot_position,
+        (unsigned)result->digit, (unsigned)result->session_id,
+        (unsigned)result->status, (unsigned)result->reason, (unsigned)result->frames);
+    if ((result->status == NANO_VISION_BLOCK_DIGIT) &&
+        (result->digit >= 1U) && (result->digit <= 3U)) {
+        ctx->block_digit = result->digit;
+        ctx->block_found_mask |= (uint8_t)(1U << (2U - ctx->block_stage));
+        mission_block_run_arm(ctx, groups[ctx->block_stage], MISSION_STATE_BLOCK_WAIT_GRASP);
+    } else if (result->status == NANO_VISION_BLOCK_NO_VALID) {
+        if (++ctx->block_step < 3U) mission_block_scan_point(ctx);
+        else {
+            BLOCK_TRACE("[B] ROW=%u NOT_FOUND TO_D4\r\n", (unsigned)(3U - ctx->block_stage));
+            mission_block_move(ctx, 4U, MISSION_STATE_BLOCK_WAIT_D4);
+        }
+    } else mission_fail(ctx, MISSION_FAULT_VISION);
+}
+
 /**
  * @brief 解析Nano事务结果并推进当前视觉会话。
  * @param ctx Mission上下文。
@@ -1627,6 +1812,16 @@ static void mission_vision_process(mission_context_t *ctx)
             return;
         }
 #endif
+        if ((ctx->state == MISSION_STATE_BLOCK_WAIT_DIGIT) &&
+            ctx->block_result_received) {
+            /* ACK事务已被消费，缓冲区可复用；正式/无线搬运才在此推进。 */
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            if (g_wireless_test.block_move) mission_block_digit_done(ctx);
+#else
+            mission_block_digit_done(ctx);
+#endif
+            return;
+        }
         if (ctx->state == MISSION_STATE_PLATFORM_WAIT_GRASP) {
             if (!mission_start_arm(ctx, MISSION_PLATFORM_GRASP_GROUP,
                                    MISSION_STATE_PLATFORM_WAIT_GRASP)) {
@@ -1778,6 +1973,11 @@ static void mission_handle_command(
             (ctx->state == MISSION_STATE_BOOT)) {
             return;
         }
+        if ((ctx->state >= MISSION_STATE_BLOCK_WAIT_DIGIT) &&
+            (ctx->state <= MISSION_STATE_BLOCK_WAIT_HOME)) {
+            (void)arm_stop(NULL, NULL);
+            ctx->active_arm_group = 0U;
+        }
         (void)turn_stop(NULL, NULL);
         (void)mission_stop_vision(ctx);
         request_id = mission_next_request_id(ctx);
@@ -1851,7 +2051,7 @@ static void mission_handle_chassis(
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
     if ((ctx->state == MISSION_STATE_WAIT_DEPOT_1) &&
         (event->type == CHASSIS_CMD_DEPOT_1_READY)) {
-        mission_depot_prepare(ctx);
+        mission_block_begin(ctx);
         return;
     }
     if ((ctx->state == MISSION_STATE_DEPOT_WAIT_POSITION) &&
@@ -1872,6 +2072,20 @@ static void mission_handle_chassis(
         return;
     }
 #endif
+    if (((ctx->state == MISSION_STATE_BLOCK_WAIT_POSITION) ||
+         (ctx->state == MISSION_STATE_BLOCK_WAIT_D4) ||
+         (ctx->state == MISSION_STATE_BLOCK_RETURN_DEPOT)) &&
+        (event->type == (uint8_t)(CHASSIS_CMD_DEPOT_1_READY +
+                                 ctx->block_point - 1U))) {
+        ctx->depot_position = ctx->block_point;
+        mission_block_position_done(ctx);
+        return;
+    }
+    if ((ctx->state == MISSION_STATE_BLOCK_WAIT_HOME) &&
+        (event->type == CHASSIS_CMD_HOME_READY)) {
+        mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
+        return;
+    }
     if ((ctx->state == MISSION_STATE_WAIT_PLATFORM) &&
         (event->type == CHASSIS_CMD_PLATFORM_READY)) {
         if (!mission_start_arm(
@@ -2054,6 +2268,15 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
     DEPOT_TRACE("[M] ARM DONE=%u OK=%u STATE=%u LAST=%lu\r\n",
                 (unsigned)ctx->active_arm_group, (unsigned)success,
                 (unsigned)ctx->state, (unsigned long)ctx->arm_last_action_report);
+    if ((ctx->state == MISSION_STATE_BLOCK_PREPARE) ||
+        (ctx->state == MISSION_STATE_BLOCK_WAIT_POSE) ||
+        (ctx->state == MISSION_STATE_BLOCK_WAIT_GRASP) ||
+        (ctx->state == MISSION_STATE_BLOCK_WAIT_PLACE) ||
+        (ctx->state == MISSION_STATE_BLOCK_FINISH)) {
+        if (!success) mission_fail(ctx, MISSION_FAULT_ARM);
+        else mission_block_arm_done(ctx);
+        return;
+    }
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
     if ((ctx->state == MISSION_STATE_DEPOT_PREPARE) ||
         (ctx->state == MISSION_STATE_DEPOT_SAFE) ||
@@ -2232,7 +2455,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
             mission_fail(ctx, MISSION_FAULT_QUEUE);
             return;
         }
-        /* 等待匹配请求编号的D1实际到位回执，再准备转盘和仓库视觉。 */
+        /* 等匹配D1实际到位后进入积木；返D1才接原转盘和仓库视觉。 */
         mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1,
                             MISSION_OPERATION_TIMEOUT_MS);
     }
@@ -2549,6 +2772,13 @@ static void mission_check_timeout(mission_context_t *ctx)
                                       MISSION_STATE_PLATFORM_WAIT_VISION)) {
                 mission_fail(ctx, MISSION_FAULT_VISION);
             }
+            return;
+        }
+        if (ctx->state == MISSION_STATE_BLOCK_SETTLE) {
+            ctx->block_result_received = false;
+            if (!mission_start_vision(ctx, MISSION_VISION_SCENE_BLOCK_DIGIT,
+                                      MISSION_STAIR_NONE, MISSION_STATE_BLOCK_WAIT_DIGIT))
+                mission_fail(ctx, MISSION_FAULT_VISION);
             return;
         }
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
@@ -2897,6 +3127,7 @@ static bool mission_test_handle_aux_command(
             "TARGET: ROUTE PLATFORM|STAIRS|DISC|DEPOT\r\n"
             "ROUTE DEPOT: AUTO D1-D4 DIGIT\r\n"
             "ROUTE BLOCK DIGIT: PURE PATH THEN 28/29/30 SCAN, D4, HOME\r\n"
+            "ROUTE BLOCK MOVE: SCAN/GRASP/PLACE, D1, HOME; NO BALL PLACE\r\n"
             "BALL HOME: AT D1 AFTER ROUTE DEPOT BALL\r\n"
             "TURN CW|CCW: TEST ONE SLOT BEFORE BALL HOME\r\n"
             "ROUTE DEPOT BALL: D1 THEN BALL HOME THEN AUTO PLACE\r\n"
@@ -2934,6 +3165,12 @@ static bool mission_test_handle_aux_command(
             return true;
         }
         request_id = mission_next_request_id(ctx);
+        if ((ctx->state >= MISSION_STATE_BLOCK_WAIT_DIGIT) &&
+            (ctx->state <= MISSION_STATE_BLOCK_WAIT_HOME)) {
+            (void)arm_stop(NULL, NULL);
+            ctx->active_arm_group = 0U;
+            (void)mission_stop_vision(ctx);
+        }
         if (!mission_send_chassis(MISSION_CMD_STOP, request_id)) {
             mission_test_write("ERR STOP\r\n");
             return true;
@@ -3768,6 +4005,45 @@ static bool mission_test_run_block_digits(mission_context_t *ctx)
     return true;
 }
 
+/** 无线只负责轮询事件/STOP；抓放决策与正式共用，不能用延时推定完成。 */
+static bool mission_test_run_block_move(mission_context_t *ctx)
+{
+    chassis_mission_event_t event;
+    char command[DEBUG_UART1_RX_BUFFER_SIZE];
+    uint32_t flags;
+    mission_block_begin(ctx);
+    while ((ctx->state != MISSION_STATE_COMPLETE) &&
+           (ctx->state != MISSION_STATE_FAULT)) {
+        flags = osThreadFlagsWait(MISSION_ALL_FLAGS, osFlagsWaitAny,
+                                  mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
+        if (mission_test_take_command(command, sizeof(command)) &&
+            !mission_test_handle_aux_command(ctx, command)) mission_test_write("BUSY\r\n");
+        if (g_wireless_test.stop_requested) {
+            /* 先消费在途视觉回调并关闭会话，STOP底盘回报留给外层等待。 */
+            if (((flags & osFlagsError) == 0U) && ((flags & MISSION_FLAG_VISION_DONE) != 0U))
+                mission_handle_vision(ctx);
+        } else if ((flags & osFlagsError) == 0U) {
+            if ((flags & CHASSIS_MISSION_FLAG_EVENT) != 0U) {
+                while (osMessageQueueGet(mission_event_queue, &event, NULL, 0U) == osOK)
+                    mission_handle_chassis(ctx, &event);
+                g_wireless_test.depot_position = ctx->depot_position;
+            }
+            if ((flags & MISSION_FLAG_ARM_FAIL) != 0U) mission_handle_arm(ctx, false);
+            else if ((flags & MISSION_FLAG_ARM_OK) != 0U) mission_handle_arm(ctx, true);
+            if ((flags & MISSION_FLAG_VISION_DONE) != 0U) mission_handle_vision(ctx);
+        }
+        mission_vision_process(ctx);
+        mission_check_timeout(ctx);
+        if (g_wireless_test.stop_requested && (ctx->vision.phase == MISSION_VISION_IDLE))
+            return false;
+    }
+    if (ctx->state != MISSION_STATE_COMPLETE) return false;
+    g_wireless_test.expected = MISSION_TEST_STAGE_DONE;
+    BLOCK_TRACE("DONE BLOCK MOVE D1 HOME FOUND_ROWS_MASK=0x%02X PLACED_ROWS_MASK=0x%02X\r\n",
+        (unsigned)ctx->block_found_mask, (unsigned)ctx->block_placed_mask);
+    return true;
+}
+
 /**
  * @brief USART1无线联调任务：运行纯路径分段测试或单目标视觉抓取测试
  * @param argument 指向全局Mission上下文
@@ -4021,7 +4297,8 @@ static void mission_wireless_test_entry(void *argument)
             continue;
         }
 
-        if (strcmp(command, "ROUTE BLOCK DIGIT") == 0) {
+        if ((strcmp(command, "ROUTE BLOCK DIGIT") == 0) ||
+            (strcmp(command, "ROUTE BLOCK MOVE") == 0)) {
             if (g_wireless_test.mode != MISSION_TEST_MODE_IDLE) {
                 mission_test_write("ERR RESET REQUIRED\r\n");
                 continue;
@@ -4032,12 +4309,17 @@ static void mission_wireless_test_entry(void *argument)
             }
             g_wireless_test.mode = MISSION_TEST_MODE_TARGET;
             g_wireless_test.target = MISSION_TEST_STAGE_DEPOT;
-            mission_test_write("OK ROUTE BLOCK DIGIT NO_GRASP NO_PLACE\r\n");
+            g_wireless_test.block_move = strcmp(command, "ROUTE BLOCK MOVE") == 0;
+            mission_test_write(g_wireless_test.block_move ?
+                "OK ROUTE BLOCK MOVE GRASP PLACE D1 HOME NO_BALL_PLACE\r\n" :
+                "OK ROUTE BLOCK DIGIT NO_GRASP NO_PLACE\r\n");
             ok = mission_test_run_target(ctx, MISSION_TEST_STAGE_DEPOT) &&
-                 mission_test_run_block_digits(ctx);
+                 (g_wireless_test.block_move ? mission_test_run_block_move(ctx) :
+                                               mission_test_run_block_digits(ctx));
             if (!ok && !g_wireless_test.stop_requested) {
                 if (ctx->state != MISSION_STATE_FAULT) mission_fail(ctx, MISSION_FAULT_CHASSIS);
-                mission_test_write("FAULT BLOCK DIGIT\r\n");
+                mission_test_write(g_wireless_test.block_move ?
+                    "FAULT BLOCK MOVE\r\n" : "FAULT BLOCK DIGIT\r\n");
             } else if (g_wireless_test.stop_requested) {
                 (void)mission_test_wait_chassis_event(ctx, CHASSIS_CMD_STOPPED, ctx->request_id);
             }

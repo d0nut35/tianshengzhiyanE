@@ -97,6 +97,16 @@ typedef enum {
     MISSION_STATE_DEPOT_WAIT_HOME,
     MISSION_STATE_PLATFORM_SETTLE, /* 仅阶段1：最后运动结束后稳定200ms再开视觉。 */
     MISSION_STATE_BLOCK_WAIT_DIGIT, /* 停车及识别姿态完成后，等待本点积木会话终态。 */
+    MISSION_STATE_BLOCK_PREPARE,     /* 首层前等待实际动作10。 */
+    MISSION_STATE_BLOCK_WAIT_POSE,
+    MISSION_STATE_BLOCK_WAIT_POSITION,
+    MISSION_STATE_BLOCK_SETTLE,
+    MISSION_STATE_BLOCK_WAIT_GRASP,
+    MISSION_STATE_BLOCK_WAIT_D4,     /* 携带积木或本层未找到，等待D4停车。 */
+    MISSION_STATE_BLOCK_WAIT_PLACE,
+    MISSION_STATE_BLOCK_FINISH,      /* 三层结束，等待实际动作10。 */
+    MISSION_STATE_BLOCK_RETURN_DEPOT,/* 返回D1；正式接仓库，无线回家。 */
+    MISSION_STATE_BLOCK_WAIT_HOME,   /* 无线搬运测试等待实际回家。 */
 } mission_state_t;
 
 typedef enum {

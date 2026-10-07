@@ -16,7 +16,8 @@ typedef uint8_t mission_command_type_t;
 enum { MISSION_CMD_GO_DEPOT_1 = 12, MISSION_CMD_DEPOT_OK = 16 };
 enum { MISSION_FAULT_STORAGE = 5, MISSION_FAULT_ARM = 3,
        MISSION_FAULT_VISION = 4, MISSION_FAULT_QUEUE = 6, MISSION_FAULT_TIMEOUT = 1 };
-enum { MISSION_VISION_SCENE_PLATFORM = 1, MISSION_VISION_SCENE_DEPOT_DIGIT = 4 };
+enum { MISSION_VISION_SCENE_PLATFORM = 1, MISSION_VISION_SCENE_DEPOT_DIGIT = 4,
+       MISSION_VISION_SCENE_BLOCK_DIGIT = 5 };
 typedef enum { ZDT_TURNTABLE_DIR_CW, ZDT_TURNTABLE_DIR_CCW } zdt_turntable_direction_t;
 typedef struct {
     mission_state_t state;
@@ -24,7 +25,7 @@ typedef struct {
     uint8_t current_slot, depot_target_slot, depot_position, depot_column;
     uint8_t depot_first_digit, depot_digit, depot_columns_used, depot_sequence, depot_row;
     uint16_t depot_abnormal_mask, request_id;
-    bool depot_preparing, arm_home_ready;
+    bool depot_preparing, arm_home_ready, block_result_received;
     uint8_t active_arm_group;
     ball_manifest_t manifest;
 } mission_context_t;

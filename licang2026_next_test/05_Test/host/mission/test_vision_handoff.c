@@ -12,7 +12,8 @@
 enum { MISSION_VISION_IDLE, MISSION_VISION_STARTING, MISSION_VISION_LISTENING,
        MISSION_VISION_ACKING, MISSION_VISION_STOPPING };
 typedef enum { MISSION_VISION_SCENE_PLATFORM = 1, MISSION_VISION_SCENE_STAIR,
-               MISSION_VISION_SCENE_SMALL_DISC, MISSION_VISION_SCENE_DEPOT_DIGIT } mission_vision_scene_t;
+               MISSION_VISION_SCENE_SMALL_DISC, MISSION_VISION_SCENE_DEPOT_DIGIT,
+               MISSION_VISION_SCENE_BLOCK_DIGIT } mission_vision_scene_t;
 enum { MULT_UART_OP_READ, MULT_UART_OP_WRITE_READ };
 enum { MISSION_FAULT_ARM, MISSION_FAULT_PROTOCOL };
 typedef struct {
@@ -78,6 +79,14 @@ int main(void)
         CHECK(submits == before + 1 && last_timeout == MISSION_VISION_READ_TIMEOUT_MS);
         CHECK(c.vision.phase == MISSION_VISION_STARTING && c.vision.session_id == 1);
     }
+    memset(&c, 0, sizeof(c));
+    CHECK(mission_start_vision(&c, MISSION_VISION_SCENE_BLOCK_DIGIT,
+                              MISSION_STAIR_NONE, MISSION_STATE_BLOCK_WAIT_DIGIT));
+    CHECK(c.deadline_tick == MISSION_BLOCK_PREPARE_TIMEOUT_MS);
+    c.vision.inflight = false;
+    unsigned before_block = submits;
+    mission_vision_process(&c);
+    CHECK(submits == before_block + 1 && last_timeout == MISSION_VISION_READ_TIMEOUT_MS);
     memset(&c, 0, sizeof(c));
     CHECK(mission_start_vision(&c, MISSION_VISION_SCENE_PLATFORM,
                               MISSION_STAIR_NONE, MISSION_STATE_PLATFORM_WAIT_VISION));

@@ -96,6 +96,7 @@ typedef enum {
     MISSION_STATE_DEPOT_DWELL,
     MISSION_STATE_DEPOT_WAIT_HOME,
     MISSION_STATE_PLATFORM_SETTLE, /* 仅阶段1：最后运动结束后稳定200ms再开视觉。 */
+    MISSION_STATE_BLOCK_WAIT_DIGIT, /* 停车及识别姿态完成后，等待本点积木会话终态。 */
 } mission_state_t;
 
 typedef enum {

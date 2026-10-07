@@ -279,7 +279,7 @@ static void ready(mission_context_t *c)
     assert(nano_vision_build_session_ready_frame(1, &r, c->vision.mail_data, 32, &len) == NANO_VISION_OK);
     c->vision.mail_len = (uint16_t)len; c->vision.inflight = false;
     mission_handle_block_result(c);
-    assert(c->vision.phase == MISSION_VISION_LISTENING && c->deadline_tick == now + 4000);
+    assert(c->vision.phase == MISSION_VISION_LISTENING && c->deadline_tick == now + 8000);
 }
 static void result(mission_context_t *c, unsigned digit, bool bad_ack)
 {
@@ -378,8 +378,22 @@ int main(void)
     const unsigned found[] = {2,3,1}, empty[] = {0,0,0};
     for (unsigned i = 0; i < 6; ++i) verify_run(permutations[i], found, i != 0);
     verify_run(empty, empty, true);
-    /* 已确认数字也不能在ACK失败后夹取。 */
+    /* READY后超过原4秒仍接收新鲜结果；8秒边界无结果则停车。 */
     mission_context_t c; reset(&c); begin(&c); finish_arm(&c);
+    now = c.deadline_tick; mission_check_timeout(&c); ready(&c);
+    now += 5000; mission_check_timeout(&c);
+    assert(c.state == MISSION_STATE_BLOCK_WAIT_DIGIT && arm_stops == 0);
+    result(&c, 2, false);
+    assert(c.state == MISSION_STATE_BLOCK_WAIT_GRASP && c.active_arm_group == 31);
+    reset(&c); begin(&c); finish_arm(&c);
+    now = c.deadline_tick; mission_check_timeout(&c); ready(&c);
+    now = c.deadline_tick - 1; mission_check_timeout(&c);
+    assert(c.state == MISSION_STATE_BLOCK_WAIT_DIGIT && arm_stops == 0);
+    ++now; mission_check_timeout(&c);
+    assert(c.state == MISSION_STATE_FAULT && c.fault_code == MISSION_FAULT_TIMEOUT);
+    assert(arm_stops == 1 && c.block_found_mask == 0 && c.block_placed_mask == 0);
+    /* 已确认数字也不能在ACK失败后夹取。 */
+    reset(&c); begin(&c); finish_arm(&c);
     now = c.deadline_tick; mission_check_timeout(&c); ready(&c);
     result(&c, 2, true); assert(c.block_found_mask == 0 && c.block_placed_mask == 0 && arm_stops == 1);
     /* 相机/模型可在READY之前报告FAULT；ACK消费后必须停车，不能当空层跳过。 */

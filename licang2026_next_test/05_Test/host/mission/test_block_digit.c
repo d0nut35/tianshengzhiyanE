@@ -145,7 +145,7 @@ int main(void)
     assert(faults == 1 && reads == 9 && arm_count == 4 && groups[3] == 10);
     assert(points[moves - 1] == MISSION_CMD_GO_DEPOT_4);
 
-    /* READY匹配本点后才开始4秒通信保护；旧会话、旧帧和运动状态均不能确认。 */
+    /* READY匹配本点后才开始8秒通信保护；旧会话、旧帧和运动状态均不能确认。 */
     reset(&c); c.state = MISSION_STATE_BLOCK_WAIT_DIGIT;
     c.vision.phase = MISSION_VISION_STARTING; c.vision.session_id = 7;
     nano_vision_session_t ready = {6,NANO_VISION_SCENE_BLOCK_DIGIT,NANO_VISION_COLOR_ANY};
@@ -155,7 +155,7 @@ int main(void)
     ready.session_id = 7;
     assert(nano_vision_build_session_ready_frame(1,&ready,c.vision.mail_data,32,&len) == NANO_VISION_OK);
     copy_frame(&c,len); mission_handle_block_result(&c);
-    assert(c.vision.phase == MISSION_VISION_LISTENING && c.deadline_tick == 4000);
+    assert(c.vision.phase == MISSION_VISION_LISTENING && c.deadline_tick == 8000);
     nano_vision_block_result_t r = {6,NANO_VISION_BLOCK_DIGIT,3,90,NANO_VISION_REASON_CONFIRMED,99,20,3,192};
     assert(nano_vision_build_block_result_frame(1,&r,c.vision.mail_data,32,&len) == NANO_VISION_OK);
     copy_frame(&c,len); mission_handle_block_result(&c); assert(!c.block_result_received);

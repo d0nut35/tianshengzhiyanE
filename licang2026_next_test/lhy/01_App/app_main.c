@@ -66,7 +66,7 @@
 #define APP_CYL_ARC_MS    10839U    /* [lyx] 200mm/s、半径300mm理论绕1.15圈 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
-#define APP_CYL_FIX_VY    (-100.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
+#define APP_CYL_FIX_VY    (-110.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
 #define APP_CYL_FIX_VX    70.0f    /* 找线第二段车体系 x 速度，mm/s */
 #define APP_CYL_EXTRA_MM  20U      /* 第一段末传感器低电平后追加距离，mm */
 #define APP_CYL_FIX_WAIT  1000U    /* 两段找线之间停车等待，ms */
@@ -77,7 +77,7 @@
 /* 仓库横移：1 号位找线标定后按里程计 y 在 1~4 号位间开环横移，不再找线；
  * [lyx] 航向 180° 时车体系 vy 为负即沿地图 +y 前进，反向时取相反速度；
  * 镜像侧航向 0°，经 route_lat_sign 取反后仍沿地图 +y。 */
-#define APP_DEPOT_VY_MMS  (-70.0f)  /* 正向横移速度，车体系 vy，mm/s，默认侧 */
+#define APP_DEPOT_VY_MMS  (-85.0f)  /* 正向横移速度，车体系 vy，mm/s，默认侧 */
 #define APP_DEPOT_POLL_MS 10U       /* 横移中位姿轮询周期，ms */
 
 static osThreadId_t g_task = NULL;  /* 底盘任务 */
@@ -90,8 +90,8 @@ static const struct {
     chassis_command_type_t rsp;  /* 到位后回执的事件类型 */
 } g_depot_tbl[] = {
     { MISSION_CMD_GO_DEPOT_1, 2208, CHASSIS_CMD_DEPOT_1_READY },
-    { MISSION_CMD_GO_DEPOT_2, 2407, CHASSIS_CMD_DEPOT_2_READY },
-    { MISSION_CMD_GO_DEPOT_3, 2608, CHASSIS_CMD_DEPOT_3_READY },
+    { MISSION_CMD_GO_DEPOT_2, 2405, CHASSIS_CMD_DEPOT_2_READY },
+    { MISSION_CMD_GO_DEPOT_3, 2606, CHASSIS_CMD_DEPOT_3_READY },
     { MISSION_CMD_GO_DEPOT_4, 2793, CHASSIS_CMD_DEPOT_4_READY },
 };
 

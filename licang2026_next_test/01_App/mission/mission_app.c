@@ -74,6 +74,7 @@ typedef enum {
     MISSION_VISION_LISTENING,
     MISSION_VISION_ACKING,
     MISSION_VISION_STOPPING,
+    MISSION_VISION_MODEL_QUERYING,
 } mission_vision_phase_t;
 
 typedef enum {
@@ -171,6 +172,8 @@ typedef struct {
     /* 初始化握手允许Mission和底盘以任意先后顺序完成。 */
     bool initialized;
     bool chassis_ready;
+    bool block_model_ready;
+    uint32_t model_next_query_tick;
     uint8_t active_arm_group;
     volatile bool arm_home_ready;          /* 仅动作10完成回报置位；新动作或异常使姿态失效。 */
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
@@ -300,6 +303,7 @@ static bool mission_store_ball(
 static void mission_handle_vision(mission_context_t *ctx);
 /** 视觉事务空闲后继续接收数据或启动抓取动作。 */
 static void mission_vision_process(mission_context_t *ctx);
+static void mission_model_process(mission_context_t *ctx);
 /** 双方就绪后完成握手并进入READY状态。 */
 static void mission_try_ready(mission_context_t *ctx);
 /** 按已选定的红蓝方启动一轮正式任务。 */
@@ -534,6 +538,10 @@ static uint32_t mission_wait_ticks(const mission_context_t *ctx)
 {
     uint32_t now;
     if (ctx->deadline_tick == 0U) {
+        if ((ctx->state == MISSION_STATE_WAIT_HOME) ||
+            (ctx->state == MISSION_STATE_WAIT_CHASSIS_READY)) {
+            return mission_ms_to_ticks(MISSION_MODEL_QUERY_INTERVAL_MS);
+        }
         return osWaitForever;
     }
     now = osKernelGetTickCount();
@@ -679,6 +687,28 @@ static void mission_reset_vision(mission_context_t *ctx)
     ctx->vision.session_id = 0U;
     ctx->vision.scene = NANO_VISION_SCENE_NONE;
     ctx->vision.stop_requested = false;
+}
+
+/** 起点状态查询与识别会话互斥，共用单份DMA缓冲区及回调邮箱。 */
+static void mission_model_process(mission_context_t *ctx)
+{
+    size_t tx_len;
+    if (ctx->block_model_ready ||
+        ((ctx->state != MISSION_STATE_WAIT_HOME) &&
+         (ctx->state != MISSION_STATE_WAIT_CHASSIS_READY)) ||
+        (ctx->vision.phase != MISSION_VISION_IDLE) ||
+        ctx->vision.inflight || ctx->vision.completion_pending ||
+        ((int32_t)(osKernelGetTickCount() - ctx->model_next_query_tick) < 0)) return;
+    if (nano_vision_build_model_query_frame(
+            mission_next_vision_sequence(&ctx->vision), ctx->vision.tx,
+            sizeof(ctx->vision.tx), &tx_len) != NANO_VISION_OK) return;
+    ctx->model_next_query_tick = osKernelGetTickCount() +
+        mission_ms_to_ticks(MISSION_MODEL_QUERY_INTERVAL_MS);
+    ctx->vision.phase = MISSION_VISION_MODEL_QUERYING;
+    if (mission_submit_vision_transfer(ctx, MULT_UART_OP_WRITE_READ,
+            tx_len, MISSION_VISION_TIMEOUT_MS) != NANO_VISION_OK) {
+        ctx->vision.phase = MISSION_VISION_IDLE;
+    }
 }
 
 /** 开启Nano会话；场景和颜色由F7命令决定，Nano无需人工切换模式。 */
@@ -1051,6 +1081,31 @@ static void mission_handle_vision(mission_context_t *ctx)
     if (!ctx->vision.completion_pending) return;
     ctx->vision.completion_pending = false;
     status = mission_map_vision_status(ctx->vision.mail_status);
+    if (ctx->vision.phase == MISSION_VISION_MODEL_QUERYING) {
+        nano_vision_model_report_t report;
+        ctx->vision.phase = MISSION_VISION_IDLE;
+        /* 上电未收到Nano时继续留在起点，只有匹配本次序号的READY能放行。 */
+        if ((status == NANO_VISION_ERR_TIMEOUT) ||
+            (ctx->state == MISSION_STATE_STOPPING) ||
+            (ctx->state == MISSION_STATE_STOPPED) ||
+            (ctx->state == MISSION_STATE_FAULT)) return;
+        if ((status != NANO_VISION_OK) ||
+            (nano_vision_decode_model_state(ctx->vision.mail_data,
+                ctx->vision.mail_len, &report) != NANO_VISION_OK) ||
+            (ctx->vision.mail_data[4] != ctx->vision.next_sequence)) {
+            mission_fail(ctx, MISSION_FAULT_VISION);
+            return;
+        }
+        if (report.state == NANO_VISION_MODEL_ERROR) {
+            mission_fail(ctx, MISSION_FAULT_VISION);
+            return;
+        }
+        ctx->block_model_ready = report.state == NANO_VISION_MODEL_READY;
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        mission_try_ready(ctx);
+#endif
+        return;
+    }
     if ((ctx->vision.phase == MISSION_VISION_STARTING) &&
         (ctx->vision.scene == NANO_VISION_SCENE_WAREHOUSE_DIGIT) &&
         !ctx->vision.stop_requested &&
@@ -1349,6 +1404,7 @@ static void mission_try_ready(mission_context_t *ctx)
 {
     if ((ctx->state != MISSION_STATE_WAIT_CHASSIS_READY) ||
         !ctx->chassis_ready ||
+        !ctx->arm_home_ready || !ctx->block_model_ready ||
         (g_mission_side == MISSION_COLOR_NONE)) {
         return;
     }
@@ -2303,6 +2359,7 @@ static void mission_task_entry(void *argument)
     mission_enter_state(ctx, MISSION_STATE_WAIT_HOME, 0U);
     for (;;) {
         /* 1) 等待任一事件；等待时长由当前状态的截止时间决定。 */
+        mission_model_process(ctx);
         flags = osThreadFlagsWait(
             MISSION_ALL_FLAGS,
             osFlagsWaitAny,
@@ -2414,7 +2471,7 @@ static void mission_test_print_status(const mission_context_t *ctx)
         sizeof(g_wireless_test.text),
         "STATUS MODE=%s TARGET=%s EXPECT=%s STATE=%u COLOR=%s "
         "BALLS=%u SLOT=%u FAULT=%u ARM_BOOT=%u ARM_READY=%u "
-        "ARM_GROUP=%u ARM_EVENT=0x%02X\r\n",
+        "ARM_GROUP=%u ARM_EVENT=0x%02X MODEL_READY=%u\r\n",
         mode,
         mission_test_stage_name(g_wireless_test.target),
         mission_test_stage_name(g_wireless_test.expected),
@@ -2428,7 +2485,8 @@ static void mission_test_print_status(const mission_context_t *ctx)
         (unsigned)ctx->arm_boot_state,
         (unsigned)g_wireless_test.arm_ready,
         (unsigned)(ctx->arm_last_action_report & 0xFFU),
-        (unsigned)((ctx->arm_last_action_report >> 8) & 0xFFU));
+        (unsigned)((ctx->arm_last_action_report >> 8) & 0xFFU),
+        (unsigned)ctx->block_model_ready);
     mission_test_write(g_wireless_test.text);
 }
 
@@ -3369,16 +3427,20 @@ static void mission_wireless_test_entry(void *argument)
         mission_test_color_name(g_mission_side));
     mission_test_write(g_wireless_test.text);
 
-    /* [lyx] 选色后只等底盘握手；动作组10成功才开放抓球ROUTE。 */
+    /* 选色后留在起点，动作10完成、底盘就绪、模型预加载均成功才握手。 */
     mission_enter_state(ctx, MISSION_STATE_WAIT_CHASSIS_READY, 0U);
-    while (chassis_ready == 0U) {
+    mission_test_write("WAIT ARM 10 + CHASSIS + BLOCK MODEL\r\n");
+    while ((chassis_ready == 0U) || !ctx->arm_home_ready || !ctx->block_model_ready) {
+        mission_model_process(ctx);
         flags = osThreadFlagsWait(
             CHASSIS_MISSION_FLAG_EVENT | MISSION_FLAG_ARM_OK |
-                MISSION_FLAG_ARM_FAIL,
+                MISSION_FLAG_ARM_FAIL | MISSION_FLAG_VISION_DONE,
             osFlagsWaitAny,
-            osWaitForever);
+            mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
+        if ((flags & osFlagsError) == 0U) {
         if ((flags & MISSION_FLAG_ARM_FAIL) != 0U) {
             g_wireless_test.arm_ready = false;
+            mission_fail(ctx, MISSION_FAULT_ARM);
         } else if ((flags & MISSION_FLAG_ARM_OK) != 0U) {
             g_wireless_test.arm_ready = true;
         }
@@ -3389,8 +3451,26 @@ static void mission_wireless_test_entry(void *argument)
                     (event.is_ready != 0U)) {
                     ctx->request_id = event.request_id;
                     chassis_ready = 1U;
+                    ctx->chassis_ready = true;
                 }
             }
+        }
+        if ((flags & MISSION_FLAG_VISION_DONE) != 0U) mission_handle_vision(ctx);
+        }
+        if (mission_test_take_command(command, sizeof(command)) &&
+            !mission_test_handle_aux_command(ctx, command)) mission_test_write("WAIT START GATE\r\n");
+        if (g_wireless_test.stop_requested || (ctx->state == MISSION_STATE_FAULT)) {
+            (void)arm_stop(NULL, NULL);
+            mission_test_write("START GATE ABORTED RESET REQUIRED\r\n");
+            break;
+        }
+    }
+    if (g_wireless_test.stop_requested || (ctx->state == MISSION_STATE_FAULT)) {
+        for (;;) {
+            if (ctx->vision.completion_pending) mission_handle_vision(ctx);
+            if (mission_test_take_command(command, sizeof(command)))
+                (void)mission_test_handle_aux_command(ctx, command);
+            osDelay(mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
         }
     }
     if (!mission_send_chassis(MISSION_CMD_MISSION_READY, ctx->request_id)) {
@@ -3400,7 +3480,7 @@ static void mission_wireless_test_entry(void *argument)
     }
     mission_enter_state(ctx, MISSION_STATE_READY, 0U);
     g_wireless_test.expected = MISSION_TEST_STAGE_PLATFORM;
-    mission_test_write("READY PLATFORM STAIR DISC DEPOT OR ROUTE\r\n");
+    mission_test_write("READY ARM=10 MODEL=READY PLATFORM STAIR DISC DEPOT OR ROUTE\r\n");
 
     for (;;) {
         /* [lyx] 动作组10可晚于底盘握手完成，空闲时继续接收其结果。 */

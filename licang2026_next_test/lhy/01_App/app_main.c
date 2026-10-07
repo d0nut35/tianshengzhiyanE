@@ -66,8 +66,8 @@
 #define APP_CYL_ARC_MS    12043U    /* [lyx] 180mm/s、半径300mm理论绕1.15圈 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
-#define APP_CYL_FIX_VY    (-60.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
-#define APP_CYL_FIX_VX    60.0f    /* 找线第二段车体系 x 速度，mm/s */
+#define APP_CYL_FIX_VY    (-100.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
+#define APP_CYL_FIX_VX    70.0f    /* 找线第二段车体系 x 速度，mm/s */
 #define APP_CYL_EXTRA_MM  20U      /* 第一段末传感器低电平后追加距离，mm */
 #define APP_CYL_FIX_WAIT  1000U    /* 两段找线之间停车等待，ms */
 /* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */

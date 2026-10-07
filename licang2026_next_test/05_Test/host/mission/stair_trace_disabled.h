@@ -1,0 +1,10 @@
+/* 与正式关闭日志构建一致：诊断参数不求值。 */
+#define STAIR_TRACE(...) ((void)0)
+#define STAIR_COUNT(...) ((void)0)
+#define STAIR_RESET(...) ((void)0)
+#define STAIR_SESSION(...) ((void)0)
+#define STAIR_REJECT(...) ((void)0)
+#define STAIR_STATE_REJECT(...) ((void)0)
+#define STAIR_ACCEPT(...) ((void)0)
+#define STAIR_POLL(...) ((void)0)
+#define STAIR_TOTAL(...) ((void)0)

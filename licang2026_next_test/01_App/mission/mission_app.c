@@ -187,6 +187,138 @@ typedef struct {
 #endif
 } mission_context_t;
 
+
+/* 阶梯诊断只在正式日志开关打开时存在；不参与状态机或接收判定。 */
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+typedef struct {
+    uint16_t sid;
+    uint8_t scene;
+    uint32_t tick;
+    uint32_t accepted;
+    uint32_t rejected[7]; /* decode/SID/scene/status/color/age/state，首次失败。 */
+    bool has_rejected;
+    nano_vision_event_t last_rejected;
+} mission_stair_diag_t;
+static mission_stair_diag_t g_stair_diag, g_stair_closed;
+static bool g_stair_closed_pending;
+static bool g_stair_run_active;
+static uint32_t g_stair_events, g_stair_grasps, g_stair_ic_ok, g_stair_ic_failed;
+static uint32_t g_stair_arm_report;
+
+static bool mission_stair_trace_active(const mission_context_t *ctx)
+{
+    return (ctx->state >= MISSION_STATE_WAIT_STAIRS) &&
+           (ctx->state <= MISSION_STATE_STAIR_WAIT_SAFE);
+}
+static unsigned long mission_stair_time_ms(void)
+{
+    return (unsigned long)(((uint64_t)osKernelGetTickCount() * 1000U) /
+                           osKernelGetTickFreq());
+}
+#define STAIR_TRACE(ctx, fmt, ...) do { \
+    if (mission_stair_trace_active(ctx)) \
+        DEPOT_TRACE("[S] T=%lu " fmt, mission_stair_time_ms(), ##__VA_ARGS__); \
+} while (0)
+#define STAIR_COUNT(name) (++g_stair_##name)
+#define STAIR_RESET() do { \
+    memset(&g_stair_diag, 0, sizeof(g_stair_diag)); \
+    g_stair_closed_pending = false; \
+    g_stair_run_active = true; \
+    g_stair_arm_report = 0U; \
+    g_stair_events = g_stair_grasps = g_stair_ic_ok = g_stair_ic_failed = 0U; \
+} while (0)
+static void mission_stair_session(mission_context_t *ctx, bool begin)
+{
+    if (begin) {
+        if (!mission_stair_trace_active(ctx)) return;
+        memset(&g_stair_diag, 0, sizeof(g_stair_diag));
+        g_stair_diag.sid = ctx->vision.session_id;
+        g_stair_diag.scene = (uint8_t)ctx->vision.scene;
+        g_stair_diag.tick = osKernelGetTickCount();
+    } else if ((g_stair_diag.sid != 0U) &&
+               (g_stair_diag.sid == ctx->vision.session_id)) {
+        /* ACK/STOP处理时只保存；主循环提交关键操作后再输出，避免插在抓取前。 */
+        g_stair_closed = g_stair_diag;
+        g_stair_closed_pending = true;
+        g_stair_diag.sid = 0U;
+    }
+}
+static void mission_stair_reject(mission_context_t *ctx, nano_vision_status_t status,
+                                 const nano_vision_event_t *event)
+{
+    unsigned reason;
+    if (g_stair_diag.sid != ctx->vision.session_id || g_stair_diag.sid == 0U) return;
+    if (status != NANO_VISION_OK) reason = 0U;
+    else if (event->session_id != ctx->vision.session_id) reason = 1U;
+    else if (event->observation.scene != ctx->vision.scene) reason = 2U;
+    else if (event->observation.status != NANO_VISION_OBS_VALID) reason = 3U;
+    else if (event->observation.color != ((g_mission_side == MISSION_COLOR_RED) ?
+             NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE)) reason = 4U;
+    else reason = 5U;
+    ++g_stair_diag.rejected[reason];
+    g_stair_diag.has_rejected = (status == NANO_VISION_OK);
+    if (g_stair_diag.has_rejected) g_stair_diag.last_rejected = *event;
+}
+static void mission_stair_summary(const mission_stair_diag_t *d, bool end)
+{
+    if (d->has_rejected) {
+        DEPOT_TRACE("[S] SID=%u SCENE=%u END=%u EVENT=%lu BAD=%u/%u/%u/%u/%u/%u\r\n",
+            (unsigned)d->sid, (unsigned)d->scene, (unsigned)end, (unsigned long)d->accepted,
+            (unsigned)d->last_rejected.session_id, (unsigned)d->last_rejected.observation.frame_id,
+            (unsigned)d->last_rejected.observation.scene, (unsigned)d->last_rejected.observation.status,
+            (unsigned)d->last_rejected.observation.color, (unsigned)d->last_rejected.observation.age_ms);
+    } else {
+        DEPOT_TRACE("[S] SID=%u SCENE=%u END=%u EVENT=%lu BAD=NA\r\n",
+            (unsigned)d->sid, (unsigned)d->scene, (unsigned)end, (unsigned long)d->accepted);
+    }
+    DEPOT_TRACE("[S] SID=%u REJ=%lu,%lu,%lu,%lu,%lu,%lu,%lu\r\n",
+        (unsigned)d->sid, (unsigned long)d->rejected[0],
+        (unsigned long)d->rejected[1], (unsigned long)d->rejected[2],
+        (unsigned long)d->rejected[3], (unsigned long)d->rejected[4],
+        (unsigned long)d->rejected[5], (unsigned long)d->rejected[6]);
+}
+static void mission_stair_poll(mission_context_t *ctx)
+{
+    uint32_t now = osKernelGetTickCount();
+    if (mission_stair_trace_active(ctx) &&
+        g_stair_arm_report != ctx->arm_last_action_report) {
+        g_stair_arm_report = ctx->arm_last_action_report;
+        STAIR_TRACE(ctx, "ARM_RAW GROUP=%u EVENT=0x%02X WAIT=%u\r\n",
+            (unsigned)(g_stair_arm_report & 0xFFU),
+            (unsigned)((g_stair_arm_report >> 8) & 0xFFU),
+            (unsigned)ctx->active_arm_group);
+    }
+    if (g_stair_closed_pending) {
+        mission_stair_summary(&g_stair_closed, true);
+        g_stair_closed_pending = false;
+    } else if ((g_stair_diag.sid != 0U) &&
+               ((now - g_stair_diag.tick) >= osKernelGetTickFreq())) {
+        mission_stair_summary(&g_stair_diag, false);
+        g_stair_diag.tick = now;
+    }
+}
+#define STAIR_SESSION(ctx, begin) mission_stair_session(ctx, begin)
+#define STAIR_REJECT(ctx, status, event) mission_stair_reject(ctx, status, event)
+#define STAIR_STATE_REJECT() (++g_stair_diag.rejected[6])
+#define STAIR_ACCEPT() do { ++g_stair_diag.accepted; ++g_stair_events; } while (0)
+#define STAIR_POLL(ctx) mission_stair_poll(ctx)
+#define STAIR_TOTAL(ctx) do { if (g_stair_run_active) { \
+    DEPOT_TRACE("[S] END EVENTS=%lu GRASP_DONE=%lu IC_OK=%lu READ_FAILED=%lu COUNT=%u\r\n", \
+    (unsigned long)g_stair_events, (unsigned long)g_stair_grasps, \
+    (unsigned long)g_stair_ic_ok, (unsigned long)g_stair_ic_failed, (unsigned)(ctx)->stair_balls); \
+    g_stair_run_active = false; } } while (0)
+#else
+#define STAIR_TRACE(...) ((void)0)
+#define STAIR_COUNT(...) ((void)0)
+#define STAIR_RESET(...) ((void)0)
+#define STAIR_SESSION(...) ((void)0)
+#define STAIR_REJECT(...) ((void)0)
+#define STAIR_STATE_REJECT(...) ((void)0)
+#define STAIR_ACCEPT(...) ((void)0)
+#define STAIR_POLL(...) ((void)0)
+#define STAIR_TOTAL(...) ((void)0)
+#endif
+
 static mission_context_t g_mission;
 
 /* 当前比赛红蓝方由Mission唯一维护，其他模块只读并据此选择地图。 */
@@ -593,6 +725,8 @@ static void mission_fail(mission_context_t *ctx, mission_fault_t fault)
     request_id = mission_next_request_id(ctx);
     (void)mission_send_chassis(MISSION_CMD_STOP, request_id);
     mission_enter_state(ctx, MISSION_STATE_FAULT, 0U);
+    STAIR_SESSION(ctx, false);
+    STAIR_TOTAL(ctx);
 }
 
 /** 生成非零请求编号，回绕时跳过协议保留值0。 */
@@ -686,6 +820,7 @@ static nano_vision_status_t mission_submit_vision_transfer(
 /** 清除当前视觉会话状态；已经结束的复用事务无需另行取消。 */
 static void mission_reset_vision(mission_context_t *ctx)
 {
+    STAIR_SESSION(ctx, false);
     ctx->vision.phase = MISSION_VISION_IDLE;
     ctx->vision.session_id = 0U;
     ctx->vision.scene = NANO_VISION_SCENE_NONE;
@@ -774,6 +909,10 @@ static bool mission_start_vision(
         mission_reset_vision(ctx);
         return false;
     }
+    STAIR_SESSION(ctx, true);
+    STAIR_TRACE(ctx, "START SID=%u SCENE=%u COLOR=%u LAYER=%u\r\n",
+        (unsigned)session.session_id, (unsigned)session.scene,
+        (unsigned)session.target_color, (unsigned)layer);
     /* 仓库切相机不设总期限；START只发一次，后续短读轮询等待同一会话READY。 */
     if (scene == MISSION_VISION_SCENE_DEPOT_DIGIT) {
         ctx->deadline_tick = 0U;
@@ -806,9 +945,12 @@ static bool mission_stop_vision(mission_context_t *ctx)
         &tx_len);
     if (status != NANO_VISION_OK) return false;
     ctx->vision.phase = MISSION_VISION_STOPPING;
-    return mission_submit_vision_transfer(
-               ctx, MULT_UART_OP_WRITE_READ, tx_len,
-               MISSION_VISION_TIMEOUT_MS) == NANO_VISION_OK;
+    status = mission_submit_vision_transfer(
+        ctx, MULT_UART_OP_WRITE_READ, tx_len, MISSION_VISION_TIMEOUT_MS);
+    if (status == NANO_VISION_OK) {
+        STAIR_TRACE(ctx, "STOP_SENT SID=%u\r\n", (unsigned)ctx->vision.session_id);
+    }
+    return status == NANO_VISION_OK;
 }
 
 /** 连续读取PB0，只有全部样本为高才认为槽位已经对准。 */
@@ -921,7 +1063,17 @@ static bool mission_read_ball(
                 IC_READ_TIMEOUT_MS + 100U) &&
             (ctx->storage.ic_status == IC_CARD_OK)) {
             read_ok = true;
+            if (region == MISSION_STORAGE_REGION_STAIR) {
+                STAIR_TRACE(ctx, "IC TRY=%u STATUS=%u OK=1 SLOT=%u\r\n",
+                    (unsigned)(attempt + 1U), (unsigned)ctx->storage.ic_status,
+                    (unsigned)(ctx->storage_slot + 1U));
+            }
             break;
+        }
+        if (region == MISSION_STORAGE_REGION_STAIR) {
+            STAIR_TRACE(ctx, "IC TRY=%u STATUS=%u OK=0 SLOT=%u\r\n",
+                (unsigned)(attempt + 1U), (unsigned)ctx->storage.ic_status,
+                (unsigned)(ctx->storage_slot + 1U));
         }
         if ((attempt + 1U) < MISSION_IC_MAX_ATTEMPTS) {
             (void)osDelay(mission_ms_to_ticks(MISSION_IC_RETRY_MS));
@@ -935,6 +1087,11 @@ static bool mission_read_ball(
             (unsigned)(read_ok ? attempt + 1U : MISSION_IC_MAX_ATTEMPTS),
             (unsigned)(ctx->storage_slot + 1U), (unsigned)read_ok);
         if (!read_ok) return true; /* 可重试的夹空/未读卡，不是设备存储故障。 */
+    }
+    if (region == MISSION_STORAGE_REGION_STAIR) {
+        if (read_ok) STAIR_COUNT(ic_ok); else STAIR_COUNT(ic_failed);
+        STAIR_TRACE(ctx, "IC_RESULT=%s SLOT0=%u PHYS=%u\r\n", read_ok ? "VALID" : "READ_FAILED",
+            (unsigned)ctx->storage_slot, (unsigned)(ctx->storage_slot + 1U));
     }
     return mission_record_ball(ctx, region, read_ok);
 }
@@ -1041,6 +1198,10 @@ static bool mission_store_ball(
     mission_storage_region_t region)
 {
     if (!mission_read_ball(ctx, region)) return false;
+    if (region == MISSION_STORAGE_REGION_STAIR) {
+        STAIR_TRACE(ctx, "TURN FROM0=%u PHYS=%u DIR=%u\r\n", (unsigned)ctx->current_slot,
+            (unsigned)(ctx->current_slot + 1U), (unsigned)MISSION_SLOT_USE_CW);
+    }
     if ((region == MISSION_STORAGE_REGION_PLATFORM) && !ctx->platform_read_ok) {
         return true; /* 仅圆盘保留同一空槽，其他区域行为不变。 */
     }
@@ -1051,6 +1212,10 @@ static bool mission_store_ball(
     ctx->current_slot = MISSION_SLOT_USE_CW ?
         (uint8_t)((ctx->current_slot + 1U) % 12U) :
         (uint8_t)((ctx->current_slot + 11U) % 12U);
+    if (region == MISSION_STORAGE_REGION_STAIR) {
+        STAIR_TRACE(ctx, "PB0_DONE SLOT0=%u PHYS=%u\r\n",
+            (unsigned)ctx->current_slot, (unsigned)(ctx->current_slot + 1U));
+    }
     return true;
 }
 
@@ -1201,9 +1366,17 @@ static void mission_handle_vision(mission_context_t *ctx)
             ctx->vision.mail_data, ctx->vision.mail_len, &stopped_session);
         if ((status != NANO_VISION_OK) ||
             (stopped_session != ctx->vision.session_id)) {
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            bool stair = mission_stair_trace_active(ctx);
+#endif
             mission_fail(ctx, MISSION_FAULT_VISION);
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            if (stair) DEPOT_TRACE("[S] STOPPED_REJECT DECODE=%u SID=%u\r\n",
+                (unsigned)status, (unsigned)stopped_session);
+#endif
             return;
         }
+        STAIR_TRACE(ctx, "STOPPED SID=%u\r\n", (unsigned)stopped_session);
         mission_reset_vision(ctx);
         if (ctx->state == MISSION_STATE_DEPOT_DIGIT_STOP) {
             mission_fail(ctx, MISSION_FAULT_VISION);
@@ -1236,7 +1409,17 @@ static void mission_handle_vision(mission_context_t *ctx)
               NANO_VISION_COLOR_ANY :
               ((g_mission_side == MISSION_COLOR_RED) ?
                NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE)))) {
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            bool stair = mission_stair_trace_active(ctx);
+#endif
             mission_fail(ctx, MISSION_FAULT_VISION);
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            /* 解码失败不读取未初始化字段；DECODE非0时后三个0仅为占位。 */
+            if (stair) DEPOT_TRACE("[S] READY_REJECT DECODE=%u SID=%u SCENE=%u COLOR=%u\r\n",
+                (unsigned)status, status == NANO_VISION_OK ? (unsigned)session.session_id : 0U,
+                status == NANO_VISION_OK ? (unsigned)session.scene : 0U,
+                status == NANO_VISION_OK ? (unsigned)session.target_color : 0U);
+#endif
             return;
         }
         ctx->vision.phase = MISSION_VISION_LISTENING;
@@ -1293,6 +1476,9 @@ static void mission_handle_vision(mission_context_t *ctx)
             mission_enter_state(ctx, MISSION_STATE_STAIR_SCANNING,
                                 MISSION_OPERATION_TIMEOUT_MS);
         }
+        STAIR_TRACE(ctx, "READY SID=%u SCENE=%u STATE=%u ID=%u\r\n",
+            (unsigned)ctx->vision.session_id, (unsigned)ctx->vision.scene,
+            (unsigned)ctx->state, (unsigned)ctx->request_id);
         return;
     }
     /* 5) 小球只在对应扫描状态接收；仓库数字只在停车位接收。 */
@@ -1301,6 +1487,7 @@ static void mission_handle_vision(mission_context_t *ctx)
          (ctx->state != MISSION_STATE_STAIR_SCANNING) &&
          (ctx->state != MISSION_STATE_SMALL_DISC_RUNNING) &&
          (ctx->state != MISSION_STATE_DEPOT_WAIT_DIGIT))) {
+        STAIR_STATE_REJECT();
         return;
     }
     if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
@@ -1351,8 +1538,10 @@ static void mission_handle_vision(mission_context_t *ctx)
         (event.observation.color != ((g_mission_side == MISSION_COLOR_RED) ?
             NANO_VISION_COLOR_RED : NANO_VISION_COLOR_BLUE)) ||
         (event.observation.age_ms > MISSION_VISION_EVENT_MAX_AGE_MS)) {
+        STAIR_REJECT(ctx, status, &event);
         return;
     }
+    if (ctx->state == MISSION_STATE_STAIR_SCANNING) STAIR_ACCEPT();
     /* 6) 先确认该视觉帧；运动中的阶梯和小圆盘还要请求底盘停车。 */
     if (ctx->state == MISSION_STATE_PLATFORM_WAIT_TARGET) {
         PLATFORM_TRACE("[P] T=%lu EVENT SID=%u FRAME=%u AGE=%u DX=%d DY=%d\r\n",
@@ -1386,6 +1575,10 @@ static void mission_handle_vision(mission_context_t *ctx)
         }
         mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_PAUSE,
                             MISSION_OPERATION_TIMEOUT_MS);
+        STAIR_TRACE(ctx, "EVENT SID=%u FRAME=%u SCENE=%u COLOR=%u AGE=%u ACK_SUBMIT STOP_SENT\r\n",
+            (unsigned)event.session_id, (unsigned)event.observation.frame_id,
+            (unsigned)event.observation.scene, (unsigned)event.observation.color,
+            (unsigned)event.observation.age_ms);
     } else if (ctx->state == MISSION_STATE_SMALL_DISC_RUNNING) {
         if (!mission_send_chassis(MISSION_CMD_SMALL_DISC_STOP,
                                   ctx->request_id)) {
@@ -1425,6 +1618,8 @@ static void mission_vision_process(mission_context_t *ctx)
     } else if (ctx->vision.phase == MISSION_VISION_ACKING) {
         DEPOT_TRACE("[M] ACK DONE STATE=%u DIGIT=%u\r\n",
                     (unsigned)ctx->state, (unsigned)ctx->depot_digit);
+        STAIR_TRACE(ctx, "ACK_DONE SID=%u STATE=%u\r\n",
+            (unsigned)ctx->vision.session_id, (unsigned)ctx->state);
         mission_reset_vision(ctx);
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
         if (ctx->state == MISSION_STATE_DEPOT_WAIT_DIGIT) {
@@ -1523,6 +1718,8 @@ static void mission_start_stair_layer(mission_context_t *ctx)
         }
         mission_enter_state(ctx, MISSION_STATE_STAIR_SCANNING,
                             MISSION_OPERATION_TIMEOUT_MS);
+        STAIR_TRACE(ctx, "SKIP_LIMIT LAYER=%u COUNT=%u\r\n",
+            (unsigned)ctx->stair_layer, (unsigned)ctx->stair_balls);
         return;
     }
     /* 2) 未抓满时启动当前层视觉，收到匹配READY后再放行底盘。 */
@@ -1635,6 +1832,9 @@ static void mission_handle_chassis(
     /* 1) 正式流程只接收当前request_id且is_ready=1的回报。 */
     if ((event->request_id != ctx->request_id) ||
         (event->is_ready == 0U)) {
+        STAIR_TRACE(ctx, "CHASSIS_REJECT TYPE=%u ID=%u EXPECT=%u READY=%u\r\n",
+            (unsigned)event->type, (unsigned)event->request_id,
+            (unsigned)ctx->request_id, (unsigned)event->is_ready);
         if ((event->request_id == ctx->request_id) &&
             (event->is_ready == 0U)) {
             mission_fail(ctx, MISSION_FAULT_CHASSIS);
@@ -1708,6 +1908,8 @@ static void mission_handle_chassis(
         if ((ctx->state != MISSION_STATE_STAIR_WAIT_POSE) &&
             (ctx->state != MISSION_STATE_STAIR_WAIT_LAYER) &&
             (ctx->state != MISSION_STATE_STAIR_SCANNING)) {
+            STAIR_TRACE(ctx, "LAYER_REJECT TYPE=%u STATE=%u\r\n",
+                (unsigned)event->type, (unsigned)ctx->state);
             return;
         }
         ctx->stair_layer = layer;
@@ -1721,6 +1923,8 @@ static void mission_handle_chassis(
         } else if (ctx->state != MISSION_STATE_STAIR_WAIT_POSE) {
             mission_start_stair_layer(ctx);
         }
+        STAIR_TRACE(ctx, "LAYER=%u STATE=%u COUNT=%u\r\n",
+            (unsigned)layer, (unsigned)ctx->state, (unsigned)ctx->stair_balls);
         return;
     }
     /* 6) 只有底盘确认实际停车后才执行当前层抓取动作组。 */
@@ -1729,6 +1933,7 @@ static void mission_handle_chassis(
         if (ctx->vision.phase == MISSION_VISION_ACKING) {
             mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_ACK,
                                 MISSION_OPERATION_TIMEOUT_MS);
+            STAIR_TRACE(ctx, "PAUSE ID=%u WAIT_ACK\r\n", (unsigned)ctx->request_id);
             return;
         }
         grasp_group = mission_stair_grasp_group(ctx->stair_layer);
@@ -1742,6 +1947,8 @@ static void mission_handle_chassis(
                 MISSION_STATE_STAIR_WAIT_GRASP)) {
             mission_fail(ctx, MISSION_FAULT_ARM);
         }
+        STAIR_TRACE(ctx, "PAUSE ID=%u GRASP_SENT=%u\r\n",
+            (unsigned)ctx->request_id, (unsigned)grasp_group);
         return;
     }
     /* 7) 底盘确认恢复后重新进入当前层扫描状态。 */
@@ -1753,6 +1960,7 @@ static void mission_handle_chassis(
     }
     /* 8) 阶梯走完后停止视觉，再按18、10的顺序准备前往小圆盘。 */
     if (event->type == CHASSIS_CMD_STAIRS_FINISHED) {
+        STAIR_TRACE(ctx, "STAIRS_FINISHED COUNT=%u\r\n", (unsigned)ctx->stair_balls);
         if (ctx->vision.phase != MISSION_VISION_IDLE) {
             mission_enter_state(ctx, MISSION_STATE_STAIR_WAIT_VISION_END,
                                 MISSION_OPERATION_TIMEOUT_MS);
@@ -1834,7 +2042,9 @@ static void mission_finish_platform(mission_context_t *ctx)
         mission_fail(ctx, MISSION_FAULT_QUEUE);
         return;
     }
+    STAIR_RESET();
     mission_enter_state(ctx, MISSION_STATE_WAIT_STAIRS, MISSION_OPERATION_TIMEOUT_MS);
+    STAIR_TRACE(ctx, "GO_STAIRS ID=%u\r\n", (unsigned)ctx->request_id);
 #endif
 }
 
@@ -1939,6 +2149,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
     }
     /* 7) 动作组14/15/16抓取完成后统一回动作组13。 */
     if (ctx->state == MISSION_STATE_STAIR_WAIT_GRASP) {
+        STAIR_COUNT(grasps);
         if (!mission_start_arm(
                 ctx,
                 MISSION_STAIR_VISION_GROUP,
@@ -1975,6 +2186,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         }
         mission_enter_state(ctx, MISSION_STATE_WAIT_SMALL_DISC,
                             MISSION_OPERATION_TIMEOUT_MS);
+        STAIR_TOTAL(ctx);
         return;
     }
     /* 10) 到达小圆盘后，动作组19到位才启动独立场景6。 */
@@ -2072,6 +2284,8 @@ static void mission_handle_storage(mission_context_t *ctx)
     if (completed_state == MISSION_STATE_STAIR_WAIT_STORAGE) {
         /* 3) 阶梯满2球后直接恢复；未满时先重启本层视觉。 */
         ++ctx->stair_balls;
+        STAIR_TRACE(ctx, "STORED COUNT=%u NEXT_SLOT0=%u\r\n",
+            (unsigned)ctx->stair_balls, (unsigned)ctx->storage_slot);
         if (ctx->stair_balls >= MISSION_STAIR_BALL_COUNT) {
             if (!mission_send_chassis(
                     MISSION_CMD_STAIR_RESUME, ctx->request_id)) {
@@ -2414,7 +2628,7 @@ static void mission_task_entry(void *argument)
     /* 只启用诊断输出，不解析无线测试命令；关闭开关即不占用该调试实例。 */
     (void)debug_uart1_init(&g_depot_debug);
 #endif
-    DEPOT_TRACE("[M] FORMAL DEPOT TRACE ON\r\n");
+    DEPOT_TRACE("[M] FORMAL DEPOT/STAIR TRACE ON\r\n");
     mission_enter_state(ctx, MISSION_STATE_WAIT_HOME, 0U);
     for (;;) {
         /* 1) 等待任一事件；等待时长由当前状态的截止时间决定。 */
@@ -2459,6 +2673,7 @@ static void mission_task_entry(void *argument)
         /* 6) 提交下一次视觉事务，并统一检查当前状态是否超时。 */
         mission_vision_process(ctx);
         mission_check_timeout(ctx);
+        STAIR_POLL(ctx);
     }
 }
 

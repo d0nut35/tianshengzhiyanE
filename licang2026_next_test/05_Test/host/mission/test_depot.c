@@ -9,6 +9,7 @@
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED 0
 /* 主机测试不接USART1，诊断打印不改变状态转换断言。 */
 #define DEPOT_TRACE(...) ((void)0)
+#include "stair_trace_disabled.h"
 #define PLATFORM_TRACE(...) ((void)0)
 
 typedef uint8_t mission_command_type_t;

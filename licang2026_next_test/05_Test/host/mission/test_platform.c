@@ -7,6 +7,7 @@
 #undef MISSION_CHASSIS_ROUTE_TEST_ENABLED
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED TEST_MODE
 #define DEPOT_TRACE(...) ((void)0)
+#include "stair_trace_disabled.h"
 #define PLATFORM_TRACE(...) ((void)0)
 enum { IC_CARD_OK, IC_CARD_ERR_BUSY, IC_READ_TIMEOUT_MS = 1000, MISSION_FLAG_IC_DONE = 1 };
 enum { LSC16_OK, LSC16_FAIL };

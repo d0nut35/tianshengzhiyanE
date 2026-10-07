@@ -8,6 +8,7 @@
 #undef MISSION_CHASSIS_ROUTE_TEST_ENABLED
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED TEST_MODE
 #define DEPOT_TRACE(...) ((void)0)
+#include "stair_trace_disabled.h"
 #define PLATFORM_TRACE(...) ((void)0)
 #define DEBUG_UART1_RX_BUFFER_SIZE 64
 #define osFlagsError 0x80000000U

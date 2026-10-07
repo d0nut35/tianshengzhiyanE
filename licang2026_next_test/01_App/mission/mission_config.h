@@ -15,7 +15,7 @@
  * 测试任务支持纯路径分段控制，以及只在指定区域启用完整视觉抓取。
  */
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED  1U
-/* 临时正式仓库诊断：USART1输出；现场定位后改0即可关闭。 */
+/* 正式仓库/阶梯诊断：USART1输出；现场定位后改0即可关闭。 */
 #define MISSION_DEPOT_TRACE_ENABLED          0U
 #define MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS 2000U
 #define MISSION_DEPOT_DIGIT_WAIT_MS        3000U

@@ -3501,8 +3501,9 @@ static bool mission_test_run_block_digits(mission_context_t *ctx)
     uint8_t stage, step, row, point, found_mask = 0U;
     for (stage = 0U; stage < 3U; ++stage) {
         row = (uint8_t)(3U - stage);
-        /* 等匹配动作组的0x08回报；同层横移不重复下发识别动作。 */
-        if (!mission_test_run_arm_group(ctx, groups[stage])) {
+        /* 每层先回10再执行识别姿态；10已完成则复用缓存，同层横移不重复动作。 */
+        if (!mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP) ||
+            !mission_test_run_arm_group(ctx, groups[stage])) {
             if (!g_wireless_test.stop_requested) mission_fail(ctx, MISSION_FAULT_ARM);
             return false;
         }
@@ -3667,7 +3668,7 @@ static void mission_wireless_test_entry(void *argument)
     mission_test_write("READY ARM=10 MODEL=READY PLATFORM STAIR DISC DEPOT OR ROUTE\r\n");
 
     for (;;) {
-        /* [lyx] 动作组10可晚于底盘握手完成，空闲时继续接收其结果。 */
+        /* 空闲时继续接收机械臂回报，姿态缓存仍以实际完成回报为准。 */
         flags = osThreadFlagsWait(
             MISSION_FLAG_ARM_OK | MISSION_FLAG_ARM_FAIL,
             osFlagsWaitAny, 0U);

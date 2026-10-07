@@ -25,6 +25,7 @@ typedef struct {
     mission_vision_t vision;
     nano_vision_block_result_t block_result;
     bool block_result_received;
+    bool arm_home_ready;
     uint32_t deadline_tick;
 } mission_context_t;
 static struct { bool stop_requested; unsigned depot_position, expected; char text[224]; } g_wireless_test;
@@ -58,8 +59,12 @@ static bool mission_test_send_wait(mission_context_t *c, unsigned cmd, unsigned 
 { (void)c; (void)s; assert(cmd == evt); points[moves++] = cmd; return true; }
 static bool mission_test_run_arm_group(mission_context_t *c, uint8_t group)
 {
-    (void)c; groups[arm_count++] = group;
+    if (group == 10 && c->arm_home_ready) return true;
+    if (group >= 28 && group <= 30) assert(c->arm_home_ready);
+    c->arm_home_ready = false;
+    groups[arm_count++] = group;
     if (group == fail_group) return false;
+    c->arm_home_ready = group == 10;
     if (group >= 28 && group <= 30) stage = group - 28;
     return true;
 }
@@ -94,6 +99,7 @@ static void reset(mission_context_t *c)
 {
     memset(c,0,sizeof(*c)); memset(&g_wireless_test,0,sizeof(g_wireless_test));
     g_wireless_test.depot_position = 1;
+    c->arm_home_ready = true;
     moves = arm_count = reads = stage = faults = acknowledgements = fail_group = 0;
     now = stop_at = settle_total = found_pause_total = delays_200 = delays_1000 = 0;
 }
@@ -104,9 +110,9 @@ int main(void)
     found_at[0] = 2; found_at[1] = 3; found_at[2] = 1;
     assert(mission_test_run_block_digits(&c));
     const unsigned expected_moves[] = {2,4,3,4,3,2,1,4,5};
-    const unsigned expected_groups[] = {28,29,30,10};
+    const unsigned expected_groups[] = {28,10,29,10,30,10};
     assert(moves == 9 && memcmp(points,expected_moves,sizeof(expected_moves)) == 0);
-    assert(arm_count == 4 && memcmp(groups,expected_groups,sizeof(expected_groups)) == 0);
+    assert(arm_count == 6 && memcmp(groups,expected_groups,sizeof(expected_groups)) == 0);
     assert(reads == 6 && delays_200 == 6 && settle_total == 1200);
     assert(delays_1000 == 3 && found_pause_total == 3000);
     assert(c.state == MISSION_STATE_COMPLETE);
@@ -118,6 +124,11 @@ int main(void)
     assert(!mission_test_run_block_digits(&c)); assert(reads == 0 && moves == 0);
     reset(&c); fail_group = 28;
     assert(!mission_test_run_block_digits(&c)); assert(reads == 0 && faults == 1);
+    /* 首层10缓存可跳过；层切换回10失败时禁止继续29或开中层会话。 */
+    reset(&c); found_at[0] = 1; fail_group = 10;
+    assert(!mission_test_run_block_digits(&c));
+    assert(faults == 1 && reads == 1 && moves == 1 && arm_count == 2);
+    assert(groups[0] == 28 && groups[1] == 10);
 
     /* READY匹配本点后才开始4秒通信保护；旧会话、旧帧和运动状态均不能确认。 */
     reset(&c); c.state = MISSION_STATE_BLOCK_WAIT_DIGIT;

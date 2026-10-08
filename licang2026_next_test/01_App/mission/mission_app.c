@@ -1992,7 +1992,7 @@ static void mission_start_run(mission_context_t *ctx)
         MISSION_OPERATION_TIMEOUT_MS);
 }
 
-/** 当前层起点就绪后开启对应视觉；抓满2球则只放行底盘走完整段。 */
+/** 当前层起点就绪后开启对应视觉；正式流程抓满2球；ROUTE STAIRS测试最多抓8球，达到对应上限后只放行底盘走完整段。 */
 static void mission_start_stair_layer(mission_context_t *ctx)
 {
     /* 0) 动作组13可能先于层事件完成，此时只等待底盘上报层号。 */
@@ -2001,8 +2001,8 @@ static void mission_start_stair_layer(mission_context_t *ctx)
                             MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
-    /* 1) 已抓满2球后不再启动视觉，只允许底盘走完剩余层。 */
-    if (ctx->stair_balls >= MISSION_STAIR_BALL_COUNT) {
+    /* 1) 达到当前编译模式的阶梯上限后不再启动视觉，只允许底盘走完剩余层。 */
+    if (ctx->stair_balls >= MISSION_STAIR_BALL_LIMIT) {
         if (!mission_send_chassis(MISSION_CMD_CAM_READY, ctx->request_id)) {
             mission_fail(ctx, MISSION_FAULT_QUEUE);
             return;
@@ -2616,11 +2616,11 @@ static void mission_handle_storage(mission_context_t *ctx)
         return;
     }
     if (completed_state == MISSION_STATE_STAIR_WAIT_STORAGE) {
-        /* 3) 阶梯满2球后直接恢复；未满时先重启本层视觉。 */
+        /* 3) 达到当前编译模式的阶梯上限后直接恢复；未满时先重启本层视觉。 */
         ++ctx->stair_balls;
         STAIR_TRACE(ctx, "STORED COUNT=%u NEXT_SLOT0=%u\r\n",
             (unsigned)ctx->stair_balls, (unsigned)ctx->storage_slot);
-        if (ctx->stair_balls >= MISSION_STAIR_BALL_COUNT) {
+        if (ctx->stair_balls >= MISSION_STAIR_BALL_LIMIT) {
             if (!mission_send_chassis(
                     MISSION_CMD_STAIR_RESUME, ctx->request_id)) {
                 mission_fail(ctx, MISSION_FAULT_QUEUE);

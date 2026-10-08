@@ -660,7 +660,18 @@ static void test_block_protocol(void)
     result.digit = 0U;
     result.reason = NANO_VISION_REASON_LOW_SCORE;
     result.frames = 15U;
-    result.elapsed_ms = 1500U;
+    result.elapsed_ms = 1000U;
+    assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_OK);
+    assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_OK);
+    assert(parsed.status == NANO_VISION_BLOCK_NO_VALID && parsed.elapsed_ms == 1000U);
+    /* 999ms即使CRC正确也不能作为NO_VALID消费。 */
+    result.elapsed_ms = 999U;
+    assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_ERR_VALUE);
+    frame[18] = 0xe7U;
+    frame[19] = 0x03U;
+    len = refresh_frame_crc(frame);
+    assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_ERR_VALUE);
+    result.elapsed_ms = 1000U;
     assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_OK);
     result.frames = 14U;
     assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_ERR_VALUE);

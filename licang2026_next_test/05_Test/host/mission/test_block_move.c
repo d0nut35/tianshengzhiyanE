@@ -288,7 +288,7 @@ static void result(mission_context_t *c, unsigned digit, bool bad_ack)
         digit ? NANO_VISION_BLOCK_DIGIT : NANO_VISION_BLOCK_NO_VALID,
         (uint8_t)digit, digit ? 90 : 0,
         digit ? NANO_VISION_REASON_CONFIRMED : NANO_VISION_REASON_NO_CANDIDATE,
-        21, 20, digit ? 3 : 20, digit ? 192 : 1500};
+        21, 20, digit ? 3 : 20, digit ? 192 : 1000};
     size_t len; unsigned before = group_count;
     assert(nano_vision_build_block_result_frame(1, &r, c->vision.mail_data, 32, &len) == NANO_VISION_OK);
     c->vision.mail_len = (uint16_t)len;

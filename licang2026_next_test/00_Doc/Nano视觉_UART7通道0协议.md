@@ -163,9 +163,9 @@ BLOCK_RESULT载荷14字节：
 
 原因：1=CONFIRMED、2=NO_CANDIDATE、3=LOW_SCORE、4=AMBIGUOUS、5=UNSTABLE；故障6=CAMERA_NO_FRAME、7=FRAME_GAP、8=STALE_FRAME、9=INSUFFICIENT_FRAMES、10=MODEL_ERROR、11=MODE_NOT_READY、12=CAMERA_ERROR。
 
-DIGIT要求分数≥80且连续3张新帧一致；NO_VALID要求digit=0、原因2～5、累计至少15张有效新帧且首张有效帧起至少1500ms。低分/无候选等统一跳站，保留原因，不能据此认定物理空仓。缺帧或模型异常不能当空仓。
+DIGIT要求分数≥80且连续3张新帧一致；NO_VALID要求digit=0、原因2～5、累计至少15张有效新帧且首张有效帧起至少1000ms。低分/无候选等统一跳站，保留原因，不能据此认定物理空仓。缺帧或模型异常不能当空仓。
 
-F7只在动作完成、停车稳定200ms后的专属等待状态接受本SID结果，结果年龄≤120ms。START准备最长10秒，READY后8秒是通信保护；1500ms业务判定由Nano管理。旧C100仓库场景保留等READY后计时，不套用积木准备期限。
+F7只在动作完成、停车稳定200ms后的专属等待状态接受本SID结果，结果年龄≤120ms。START准备最长10秒，READY后8秒是通信保护；1000ms业务判定由Nano管理。旧C100仓库场景保留等READY后计时，不套用积木准备期限。
 
 Nano准备相机与首帧在后台进行，串口线程可响应STOP。READY时清空旧计数，只累计此后新采样帧；同SID重复START不重置计数。每会话只锁存一个结果，50ms重发直至匹配SID/FRAME_ID的EVENT_ACK或1秒ACK期限。F7等ACK写完成才移动。FAULT允许在READY之前回报；动作异常和设备故障停车。
 

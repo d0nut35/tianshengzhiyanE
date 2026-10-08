@@ -403,9 +403,10 @@ static bool nano_vision_block_result_is_valid(const nano_vision_block_result_t *
     }
     if (result->digit != 0U) return false;
     if (result->status == NANO_VISION_BLOCK_NO_VALID) {
+        /* 与Nano同步首张有效新帧起1秒下限；15帧证据要求仍保留。 */
         return (result->reason >= NANO_VISION_REASON_NO_CANDIDATE) &&
             (result->reason <= NANO_VISION_REASON_UNSTABLE) &&
-            (result->frames >= 15U) && (result->elapsed_ms >= 1500U);
+            (result->frames >= 15U) && (result->elapsed_ms >= 1000U);
     }
     return (result->status == NANO_VISION_BLOCK_FAULT) &&
         (result->reason >= NANO_VISION_REASON_CAMERA_NO_FRAME) &&

@@ -38,8 +38,8 @@ static unsigned ic_read(bool prompt, void (*done)(void), mission_context_t *c)
 static bool mission_wait_device(unsigned flag, unsigned ms) { (void)flag; (void)ms; return true; }
 static bool mission_record_ball(mission_context_t *c, mission_storage_region_t r, bool ok)
 { (void)c; (void)r; (void)ok; ++records; return true; }
-static bool mission_advance_slot(mission_context_t *c, unsigned dir, uint8_t *fine, bool require_gate)
-{ (void)c; (void)dir; (void)fine; assert(require_gate); ++turns; return move_success; }
+static bool mission_advance_slot(mission_context_t *c, unsigned dir, uint8_t *fine)
+{ (void)c; (void)dir; (void)fine; ++turns; return move_success; }
 static unsigned arm_run(uint8_t group, unsigned count, void (*done)(void), mission_context_t *c)
 { (void)count; (void)done; (void)c; assert(group != 17); ++arm_commands; last_arm = group; return arm_success ? LSC16_OK : LSC16_FAIL; }
 static void mission_enter_state(mission_context_t *c, mission_state_t state, unsigned ms)
@@ -115,6 +115,12 @@ int main(void)
     assert(mission_store_ball(&c, MISSION_STORAGE_REGION_STAIR));
     assert(mission_store_ball(&c, MISSION_STORAGE_REGION_SMALL_DISC));
     assert(turns == before + 2);
+    /* PB0可选不能忽略通信/电机失败，也不能在失败时更新槽号。 */
+    move_success = false;
+    uint8_t prior_slot = c.current_slot;
+    assert(!mission_store_ball(&c, MISSION_STORAGE_REGION_STAIR));
+    assert(!mission_store_ball(&c, MISSION_STORAGE_REGION_SMALL_DISC));
+    assert(c.current_slot == prior_slot);
     memset(&c, 0, sizeof(c)); move_success = false;
     attempt(&c, true);
     assert(c.state == MISSION_STATE_FAULT && c.platform_balls == 0 && c.current_slot == 0);

@@ -61,8 +61,8 @@ static bool mission_stop_vision(mission_context_t *c) { (void)c; ++stops; return
 static uint16_t mission_next_request_id(mission_context_t *c) { return ++c->request_id; }
 static bool mission_send_chassis(mission_command_type_t cmd, uint16_t id)
 { assert(id != 0); last_command = cmd; return true; }
-static bool mission_advance_slot(mission_context_t *c, zdt_turntable_direction_t direction, uint8_t *fine, bool require_gate)
-{ (void)c; (void)direction; (void)fine; assert(!require_gate); ++moves; return move_ok; }
+static bool mission_advance_slot(mission_context_t *c, zdt_turntable_direction_t direction, uint8_t *fine)
+{ (void)c; (void)direction; (void)fine; ++moves; return move_ok; }
 static void mission_start_run(mission_context_t *c) { (void)c; assert(false); }
 static void mission_depot_next_ball(mission_context_t *ctx);
 static void mission_depot_start_digit(mission_context_t *ctx);

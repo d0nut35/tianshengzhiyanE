@@ -1132,12 +1132,11 @@ static bool mission_read_ball(
     return mission_record_ball(ctx, region, read_ok);
 }
 
-/** 单槽粗转/微调同向；放球允许微调耗尽后继续，收球仍须PB0确认。 */
+/** 所有转槽保留同向PB0校准，微调耗尽后继续；电机/通信故障仍停车。 */
 static bool mission_advance_slot(
     mission_context_t *ctx,
     zdt_turntable_direction_t direction,
-    uint8_t *fine_used,
-    bool require_gate)
+    uint8_t *fine_used)
 {
     const zdt_turntable_response_t *response = &ctx->storage.zdt_response;
     uint32_t started_tick = osKernelGetTickCount();
@@ -1247,20 +1246,14 @@ static bool mission_advance_slot(
             return true;
         }
         if (fine_steps >= MISSION_ZDT_FINE_MAX_STEPS) {
-            if (!require_gate) {
-                if (fine_used != NULL) *fine_used = fine_steps;
-                DEPOT_TRACE("[M] TURN PB0 UNCONFIRMED SLOT=%u DIR=%u FINE=%u CONTINUE\r\n",
-                    (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
-                    (unsigned)fine_steps);
-#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
-                mission_test_write("TURN PB0 UNCONFIRMED FINE LIMIT CONTINUE\r\n");
-#endif
-                return true;
-            }
-            DEPOT_TRACE("[M] TURN FAIL=PB0 SLOT=%u DIR=%u FINE=%u LIMIT=%u\r\n",
+            if (fine_used != NULL) *fine_used = fine_steps;
+            DEPOT_TRACE("[M] TURN PB0 UNCONFIRMED SLOT=%u DIR=%u FINE=%u CONTINUE\r\n",
                 (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
-                (unsigned)fine_steps, (unsigned)MISSION_ZDT_FINE_MAX_STEPS);
-            return false;
+                (unsigned)fine_steps);
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            mission_test_write("TURN PB0 UNCONFIRMED FINE LIMIT CONTINUE\r\n");
+#endif
+            return true;
         }
         ++fine_steps;
     }
@@ -1279,15 +1272,16 @@ static bool mission_store_ball(
     if ((region == MISSION_STORAGE_REGION_PLATFORM) && !ctx->platform_read_ok) {
         return true; /* 仅圆盘保留同一空槽，其他区域行为不变。 */
     }
+    /* 圆盘/阶梯/绕桩均保留微调，达到上限后不再强制等待PB0。 */
     if (!mission_advance_slot(ctx,
             MISSION_SLOT_USE_CW ? ZDT_TURNTABLE_DIR_CW :
-                                  ZDT_TURNTABLE_DIR_CCW, NULL, true)) return false;
-    /* [lyx] 初始物理1槽对应0；只有PB0确认成功才更新当前位置。 */
+                                  ZDT_TURNTABLE_DIR_CCW, NULL)) return false;
+    /* 初始物理1槽对应0；PB0可选时，当前位置按完成的一槽运动推定。 */
     ctx->current_slot = MISSION_SLOT_USE_CW ?
         (uint8_t)((ctx->current_slot + 1U) % 12U) :
         (uint8_t)((ctx->current_slot + 11U) % 12U);
     if (region == MISSION_STORAGE_REGION_STAIR) {
-        STAIR_TRACE(ctx, "PB0_DONE SLOT0=%u PHYS=%u\r\n",
+        STAIR_TRACE(ctx, "TURN_DONE PB0=OPTIONAL SLOT0=%u PHYS=%u\r\n",
             (unsigned)ctx->current_slot, (unsigned)(ctx->current_slot + 1U));
     }
     return true;
@@ -2912,11 +2906,11 @@ static void mission_check_timeout(mission_context_t *ctx)
         }
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
         if (ctx->state == MISSION_STATE_DEPOT_SEEK) {
-            /* 仓库保留PB0校准，8次未确认也继续；电机到位/故障保护仍有效。 */
+            /* 仓库保留PB0校准，微调耗尽也继续；电机到位/故障保护仍有效。 */
             if (ctx->current_slot != ctx->depot_target_slot) {
                 zdt_turntable_direction_t direction = ctx->depot_preparing ?
                     ZDT_TURNTABLE_DIR_CW : ZDT_TURNTABLE_DIR_CCW;
-                if (!mission_advance_slot(ctx, direction, NULL, false)) {
+                if (!mission_advance_slot(ctx, direction, NULL)) {
                     if ((ctx->state != MISSION_STATE_STOPPING) &&
                         (ctx->state != MISSION_STATE_STOPPED)) {
                         mission_fail(ctx, MISSION_FAULT_STORAGE);
@@ -3802,7 +3796,7 @@ static bool mission_test_ball_home_load(mission_context_t *ctx)
         while (moves-- > 0U) {
             if (!mission_advance_slot(ctx,
                     MISSION_SLOT_USE_CW ? ZDT_TURNTABLE_DIR_CW :
-                                          ZDT_TURNTABLE_DIR_CCW, NULL, true)) {
+                                          ZDT_TURNTABLE_DIR_CCW, NULL)) {
                 (void)turn_stop(NULL, NULL);
                 if (!g_wireless_test.stop_requested) {
                     mission_fail(ctx, MISSION_FAULT_STORAGE);
@@ -3883,7 +3877,7 @@ static bool mission_test_seek_ball_slot(mission_context_t *ctx, uint8_t slot)
     while (g_wireless_test.current_slot != slot) {
         fine_used = 0U;
         if (g_wireless_test.stop_requested ||
-            !mission_advance_slot(ctx, ZDT_TURNTABLE_DIR_CCW, &fine_used, false)) {
+            !mission_advance_slot(ctx, ZDT_TURNTABLE_DIR_CCW, &fine_used)) {
             (void)turn_stop(NULL, NULL);
             return false;
         }
@@ -4434,7 +4428,7 @@ static void mission_wireless_test_entry(void *argument)
             ok = mission_advance_slot(ctx,
                 (strcmp(command, "TURN CW") == 0) ?
                     ZDT_TURNTABLE_DIR_CW : ZDT_TURNTABLE_DIR_CCW,
-                &fine_used, true);
+                &fine_used);
             if (!ok) {
                 (void)turn_stop(NULL, NULL);
                 if (!g_wireless_test.stop_requested) {
@@ -4451,7 +4445,7 @@ static void mission_wireless_test_entry(void *argument)
                 }
                 (void)snprintf(g_wireless_test.text,
                                sizeof(g_wireless_test.text),
-                               "TURN %s REACHED PB0=1 FINE=%u\r\n",
+                               "TURN %s REACHED PB0=OPTIONAL FINE=%u\r\n",
                                (strcmp(command, "TURN CW") == 0) ? "CW" : "CCW",
                                (unsigned)fine_used);
                 mission_test_write(g_wireless_test.text);

@@ -151,8 +151,8 @@ static void mission_depot_start_digit(mission_context_t *c) { (void)c; assert(fa
 static void mission_depot_next_ball(mission_context_t *c) { (void)c; assert(false); }
 static void mission_depot_digit_done(mission_context_t *c) { (void)c; assert(false); }
 static void mission_depot_arm_done(mission_context_t *c) { (void)c; assert(false); }
-static bool mission_advance_slot(mission_context_t *c, zdt_turntable_direction_t dir, uint8_t *fine, bool require_gate)
-{ (void)c; (void)dir; (void)fine; (void)require_gate; assert(false); return false; }
+static bool mission_advance_slot(mission_context_t *c, zdt_turntable_direction_t dir, uint8_t *fine)
+{ (void)c; (void)dir; (void)fine; assert(false); return false; }
 static void mission_try_ready(mission_context_t *c) { (void)c; assert(false); }
 #if TEST_TRACE
 static bool mission_stair_trace_active(const mission_context_t *c) { (void)c; return false; }

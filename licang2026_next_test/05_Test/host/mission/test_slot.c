@@ -43,7 +43,7 @@ static zdt_turntable_status_t mission_submit_slot_motion(mission_context_t *c, u
     assert(direction == expected_direction);
     assert(angle == (moves == 0 ? (direction == ZDT_TURNTABLE_DIR_CW ?
         MISSION_ZDT_COARSE_ANGLE_0P1DEG : MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG) : MISSION_ZDT_FINE_ANGLE_0P1DEG));
-    assert(speed == 400); ++moves;
+    assert(speed == 600); ++moves;
     c->storage.zdt_response.kind = ZDT_TURNTABLE_REPLY_ACK;
     c->storage.zdt_status = ZDT_TURNTABLE_OK; c->storage.zdt_has_response = true;
     return fault == 1 ? ZDT_TURNTABLE_ERR_BUSY : ZDT_TURNTABLE_OK;
@@ -70,28 +70,27 @@ static mission_context_t reset(unsigned gate, unsigned fail)
 }
 int main(void)
 {
-    assert(MISSION_ZDT_FINE_MAX_STEPS == 8);
+    assert(MISSION_ZDT_FINE_MAX_STEPS == 10);
     for (unsigned direction = 0; direction < 2; ++direction) {
         expected_direction = (zdt_turntable_direction_t)direction;
-        for (unsigned require = 0; require < 2; ++require) {
-            for (unsigned gate = 1; gate <= 9; ++gate) {
-                mission_context_t c = reset(gate,0); uint8_t fine = 99;
-                assert(mission_advance_slot(&c,expected_direction,&fine,require));
-                assert(moves == gate && fine == gate - 1); /* 到PB0即停，不多转一步。 */
-            }
-            mission_context_t c = reset(0,0); uint8_t fine = 99;
-            assert(mission_advance_slot(&c,expected_direction,&fine,require) == !require);
-            assert(moves == 9); /* 一次粗转加八次微调，不能有第九次微调。 */
-            if (!require) assert(fine == 8);
-            for (unsigned fail = 1; fail <= 9; ++fail) {
-                c = reset(1,fail);
-                assert(!mission_advance_slot(&c,expected_direction,NULL,require));
-                assert(moves == 1); /* PB0可选也不能跳过到位/电机/通信/超时保护。 */
-            }
-            c = reset(0,0); stop_at = 1;
-            assert(!mission_advance_slot(&c,expected_direction,NULL,require));
-            assert(c.state == MISSION_STATE_STOPPING && moves == 1);
+        for (unsigned gate = 1; gate <= 11; ++gate) {
+            mission_context_t c = reset(gate,0); uint8_t fine = 99;
+            assert(mission_advance_slot(&c,expected_direction,&fine));
+            assert(moves == gate && fine == gate - 1); /* 到PB0即停，不多转一步。 */
         }
+        mission_context_t c = reset(0,0); uint8_t fine = 99;
+        assert(mission_advance_slot(&c,expected_direction,&fine));
+        assert(moves == 11 && fine == 10); /* 一次粗转加十次微调，不能有第十一次。 */
+        c = reset(0,0);
+        assert(mission_advance_slot(&c,expected_direction,NULL) && moves == 11);
+        for (unsigned fail = 1; fail <= 9; ++fail) {
+            c = reset(1,fail);
+            assert(!mission_advance_slot(&c,expected_direction,NULL));
+            assert(moves == 1); /* PB0可选也不能跳过到位/电机/通信/超时保护。 */
+        }
+        c = reset(0,0); stop_at = 1;
+        assert(!mission_advance_slot(&c,expected_direction,NULL));
+        assert(c.state == MISSION_STATE_STOPPING && moves == 1);
     }
-    puts("Slot calibration limit, optional depot PB0 and motor/STOP protection passed (host only)");
+    puts("Slot calibration limit, optional PB0 in all regions and motor/STOP protection passed (host only)");
 }

@@ -4,6 +4,8 @@
 
 ## 0. 当前事实覆盖说明（2026-10-09）
 
+2026-10-09修复阶梯8球无线档案遗漏：用户新日志第三次IC_STATUS=0后STORE FAIL=RECORD，源码显示ball_manifest区域完成仍固定阶梯2球，Mission改8不够；独立ROUTE STAIRS现在通过ball_manifest_init_stair_test按MISSION_STAIR_TEST_BALL_COUNT配置本轮阶梯档案上限8。正式默认初始化仍2球，其他区域5/2及档案总容量9、重复槽/校验保护不变，读卡失败记录同样适用测试上限。补STORE RECORD FAIL具体manifest状态码。真实Mission建档/存球推进+真实Core测试覆盖红蓝、正式2/无线8、读卡成功/失败、第三至第八条/第九条拒绝及完整/精简构建；原档案、仓库、视觉交接回归通过。无线和正式固件分别stair8-record-wireless.hex、stair8-record-red-formal.hex，编译结果见同名build日志，未烧录实机。Nano中高层各再上移3，当前中56..276、高75..315、低95..265，79d97c9已推送Gitee。此前将该次FAULT=5按转盘推测不成立，前两次转盘DONE均正常，SSH断连仍是独立待查现象。
+
 2026-10-09转盘诊断补齐：TURN_TRACE复用MISSION_DEPOT_TRACE_ENABLED，正式和无线均输出USART1。共用转槽函数打印BEGIN（起槽/方向/格数/微调上限/超时）、DONE或PB0未确认继续，以及FAIL=MOVE/STATUS/MOTOR/TIMEOUT细分；存球打印读卡状态/建档失败/实际转槽完成，mission_fail在改为FAULT前输出原状态。仅增加诊断，不放宽电机/通信/STOP保护，不改600RPM、单格10次/放球15次、限球及动作流程。转盘日志开关/失败原因主机断言、圆盘/阶梯收球、仓库/动作10回归通过；无线、红方正式日志开/关Keil均0错误0警告，产物turnlog-wireless.hex、turnlog-red-formal.hex。当前无线1/日志1保留，未烧录现场；本次两球STORED后FAULT=5及Nano SSH断连仍待新日志，不确认根因。Nano高层78..318、中层59..279已推送0ee4ed3。
 
 2026-10-09放球多格更新：红蓝正式与无线放球按CCW最近目标的格数一次粗调（格数×MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG，当前140°/格），仅在末端每次1°微调；MISSION_ZDT_DEPOT_FINE_MAX_STEPS=15，到上限未确认PB0继续。MISSION_ZDT_DEPOT_SLOT_TIMEOUT_MS=8000，总保护按格数相乘；粗/微调600 RPM保持。运动成功后才将当前位置更新为目标槽，零格不动，电机/通信/STOP保护保留；原收球、九球读卡装载、独立TURN仍单格/10次。主机测试覆盖0～11格、15次边界、按格数超时、故障及STOP；正式/无线编译结果见multislot-*-build.log，未烧录实机。

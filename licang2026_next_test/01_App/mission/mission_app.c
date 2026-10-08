@@ -1081,6 +1081,11 @@ static bool mission_record_ball(
         status = ball_manifest_append_read_failed(
             &ctx->manifest, region, color, ctx->storage_slot);
     }
+    if (status != BALL_MANIFEST_OK) {
+        TURN_TRACE("[M] STORE RECORD FAIL=%u REGION=%u COUNT=%u SLOT0=%u\r\n",
+            (unsigned)status, (unsigned)region, (unsigned)ctx->manifest.count,
+            (unsigned)ctx->storage_slot);
+    }
     return status == BALL_MANIFEST_OK;
 }
 
@@ -4571,6 +4576,10 @@ static void mission_wireless_test_entry(void *argument)
             ctx->storage_slot = 0U;
             ctx->fault_code = MISSION_FAULT_NONE;
             ball_manifest_init(&ctx->manifest);
+            /* ROUTE STAIRS跳过其他抓球区域，档案限额须与测试8球一致；正式仍2球。 */
+            if (g_wireless_test.target == MISSION_TEST_STAGE_STAIRS) {
+                ball_manifest_init_stair_test(&ctx->manifest, MISSION_STAIR_TEST_BALL_COUNT);
+            }
             g_wireless_test.reported_ball_count = 0U;
             if ((g_wireless_test.target != MISSION_TEST_STAGE_DEPOT) &&
                 !mission_prepare_zdt(ctx)) {

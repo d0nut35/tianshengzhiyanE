@@ -72,6 +72,7 @@ typedef struct {
 typedef struct {
     ball_manifest_record_t records[BALL_MANIFEST_CAPACITY];
     uint8_t count;
+    uint8_t stair_limit; /* 默认规则2球；仅独立阶梯无线测试初始化时放宽。 */
 #if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     uint8_t region_counts[4];
 #endif
@@ -79,6 +80,9 @@ typedef struct {
 
 /** 清空并开始一轮新的球档案；只能由上层在安全空闲状态显式调用。 */
 void ball_manifest_init(ball_manifest_t *manifest);
+
+/** 仅独立阶梯测试使用；总容量/槽位/校验保护不变，无效上限沿用正式规则。 */
+void ball_manifest_init_stair_test(ball_manifest_t *manifest, uint8_t ball_limit);
 
 /** 返回2026规则下本方颜色在指定区域应抓取的球数：圆盘5、阶梯2、立柱2。 */
 uint8_t ball_manifest_region_expected(ball_manifest_region_t region);

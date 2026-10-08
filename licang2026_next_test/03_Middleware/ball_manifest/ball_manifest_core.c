@@ -69,6 +69,14 @@ void ball_manifest_init(ball_manifest_t *manifest)
 {
     if (manifest == NULL) return;
     (void)memset(manifest, 0, sizeof(*manifest));
+    manifest->stair_limit = 2U;
+}
+
+void ball_manifest_init_stair_test(ball_manifest_t *manifest, uint8_t ball_limit)
+{
+    ball_manifest_init(manifest);
+    if ((manifest != NULL) && (ball_limit >= 2U) &&
+        (ball_limit <= BALL_MANIFEST_CAPACITY)) manifest->stair_limit = ball_limit;
 }
 
 uint8_t ball_manifest_region_expected(ball_manifest_region_t region)
@@ -106,6 +114,8 @@ bool ball_manifest_region_is_complete(
 
     if (manifest == NULL) return false;
     expected = ball_manifest_region_expected(region);
+    if ((region == BALL_MANIFEST_REGION_STAIR) && (manifest->stair_limit >= 2U) &&
+        (manifest->stair_limit <= BALL_MANIFEST_CAPACITY)) expected = manifest->stair_limit;
     return (expected > 0U) &&
            (ball_manifest_region_count(manifest, region) >= expected);
 }

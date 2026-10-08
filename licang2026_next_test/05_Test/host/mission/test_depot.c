@@ -14,8 +14,13 @@
 
 typedef uint8_t mission_command_type_t;
 enum { MISSION_CMD_GO_DEPOT_1 = 12, MISSION_CMD_DEPOT_OK = 16 };
+enum { CHASSIS_CMD_DEPOT_1_READY = 20, CHASSIS_CMD_DEPOT_2_READY,
+       CHASSIS_CMD_DEPOT_3_READY, CHASSIS_CMD_DEPOT_4_READY, CHASSIS_CMD_HOME_READY };
+typedef struct { uint16_t request_id; uint8_t type, is_ready; } chassis_mission_event_t;
+volatile mission_color_t g_mission_side = MISSION_COLOR_RED;
 enum { MISSION_FAULT_STORAGE = 5, MISSION_FAULT_ARM = 3,
-       MISSION_FAULT_VISION = 4, MISSION_FAULT_QUEUE = 6, MISSION_FAULT_TIMEOUT = 1 };
+       MISSION_FAULT_VISION = 4, MISSION_FAULT_QUEUE = 6, MISSION_FAULT_TIMEOUT = 1,
+       MISSION_FAULT_CHASSIS = 2 };
 enum { MISSION_VISION_SCENE_PLATFORM = 1, MISSION_VISION_SCENE_DEPOT_DIGIT = 4,
        MISSION_VISION_SCENE_BLOCK_DIGIT = 5 };
 typedef enum { ZDT_TURNTABLE_DIR_CW, ZDT_TURNTABLE_DIR_CCW } zdt_turntable_direction_t;
@@ -61,11 +66,13 @@ static bool mission_advance_slot(mission_context_t *c, zdt_turntable_direction_t
 static void mission_start_run(mission_context_t *c) { (void)c; assert(false); }
 static void mission_depot_next_ball(mission_context_t *ctx);
 static void mission_depot_start_digit(mission_context_t *ctx);
+static void mission_block_begin(mission_context_t *ctx) { (void)ctx; assert(false); }
 #include "depot_under_test.inc"
 
 static void reset(mission_context_t *c)
 {
     memset(c, 0, sizeof(*c)); now = 100; group_count = moves = sessions = stops = 0;
+    g_mission_side = MISSION_COLOR_RED;
     last_command = 0; move_ok = arm_ok = true;
 }
 static void seek(mission_context_t *c)
@@ -195,6 +202,62 @@ int main(void)
     reset(&c); mission_enter_state(&c, MISSION_STATE_DEPOT_WAIT_DIGIT, 3000);
     now += 3000; mission_check_timeout(&c);
     assert(stops == 1 && c.state == MISSION_STATE_DEPOT_DIGIT_STOP);
+    /* 蓝方D2～D4的数字排列任意，全部按IC目标列放置；D4不可假定列4。
+     * 实际返D1回报前不回家，重复D1不能重进积木或清空档案。 */
+    const uint8_t permutations[][3] = {{1,2,3},{1,3,2},{2,1,3},{2,3,1},{3,1,2},{3,2,1}};
+    for (unsigned p = 0; p < 6; ++p) {
+        reset(&c); g_mission_side = MISSION_COLOR_BLUE;
+        c.depot_position = 2; c.current_slot = 8; c.arm_home_ready = true;
+        for (uint8_t i = 0; i < 9; ++i) {
+            ball_manifest_region_t region = i < 5 ? BALL_MANIFEST_REGION_TURNTABLE :
+                (i < 7 ? BALL_MANIFEST_REGION_STAIR : BALL_MANIFEST_REGION_PILLAR);
+            uint8_t row = i / 3 + 1, col = i % 3 + 1;
+            assert(ball_manifest_append(&c.manifest, region, BALL_MANIFEST_COLOR_BLUE,
+                (uint8_t)((row << 4) | col), row, col, i) == BALL_MANIFEST_OK);
+        }
+        mission_depot_prepare(&c);
+        assert(c.depot_position == 2 && c.manifest.count == 9 && c.current_slot == 8);
+        seek(&c); assert(c.current_slot == 11 && sessions == 1);
+        for (unsigned point = 2; point <= 4; ++point) {
+            unsigned column = permutations[p][point - 2];
+            digit(&c, (uint8_t)column); digit(&c, (uint8_t)column);
+            unsigned count = 0;
+            while (c.state != MISSION_STATE_DEPOT_WAIT_POSITION && c.state != MISSION_STATE_DEPOT_RETURN_ENTRY) {
+                assert(++count <= 3); until_return(&c); finish_arm(&c);
+            }
+            assert(count == 3);
+            for (unsigned i = 0; i < 9; ++i)
+                if (c.manifest.records[i].target_column == column)
+                    assert(c.manifest.records[i].state == BALL_MANIFEST_STATE_PLACED);
+            if (point < 4) {
+                unsigned before = sessions;
+                chassis_mission_event_t e = {(uint16_t)(c.request_id - 1), (uint8_t)(CHASSIS_CMD_DEPOT_1_READY + point), 1};
+                depot_handle_chassis(&c, &e); assert(sessions == before);
+                e.request_id = c.request_id; depot_handle_chassis(&c, &e);
+                assert(sessions == before + 1 && c.state == MISSION_STATE_DEPOT_WAIT_DIGIT);
+            }
+        }
+        assert(c.state == MISSION_STATE_DEPOT_RETURN_ENTRY && c.depot_position == 4 && last_command == MISSION_CMD_GO_DEPOT_1);
+        unsigned before = sessions;
+        chassis_mission_event_t e = {(uint16_t)(c.request_id - 1), CHASSIS_CMD_DEPOT_1_READY, 1};
+        depot_handle_chassis(&c, &e); assert(c.state == MISSION_STATE_DEPOT_RETURN_ENTRY);
+        e.request_id = c.request_id; e.type = CHASSIS_CMD_DEPOT_4_READY;
+        depot_handle_chassis(&c, &e); assert(c.state == MISSION_STATE_DEPOT_RETURN_ENTRY);
+        e.type = CHASSIS_CMD_DEPOT_1_READY; depot_handle_chassis(&c, &e);
+        assert(c.depot_position == 1 && c.state == MISSION_STATE_DEPOT_DWELL && sessions == before);
+        depot_handle_chassis(&c, &e); assert(c.manifest.count == 9 && sessions == before);
+        now += 999; mission_check_timeout(&c); assert(last_command == MISSION_CMD_GO_DEPOT_1);
+        ++now; mission_check_timeout(&c); assert(last_command == MISSION_CMD_DEPOT_OK);
+        e.request_id = c.request_id; e.type = CHASSIS_CMD_HOME_READY;
+        depot_handle_chassis(&c, &e); assert(c.state == MISSION_STATE_COMPLETE);
+    }
+    reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.depot_position = 4;
+    mission_depot_next_ball(&c);
+    chassis_mission_event_t failed = {c.request_id, CHASSIS_CMD_DEPOT_1_READY, 0};
+    depot_handle_chassis(&c, &failed); assert(c.state == MISSION_STATE_FAULT && c.depot_position == 4);
+    reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.depot_position = 4;
+    mission_depot_next_ball(&c); now = c.deadline_tick; mission_check_timeout(&c);
+    assert(c.state == MISSION_STATE_FAULT && last_command == MISSION_CMD_GO_DEPOT_1);
     puts("Mission depot regression passed (host logic only)");
     return 0;
 }

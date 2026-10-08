@@ -128,7 +128,8 @@ static nano_vision_status_t mission_submit_vision_transfer(mission_context_t *c,
         assert(nano_vision_decode_frame(c->vision.tx, len, &f) == NANO_VISION_OK);
         if (c->vision.phase == MISSION_VISION_STARTING) {
             static const unsigned order[3][3] = {{1,2,3},{3,2,1},{3,2,1}};
-            assert(c->depot_position == order[c->block_stage][c->block_step]);
+            assert(c->depot_position == ((g_mission_side == MISSION_COLOR_BLUE) ?
+                c->block_step + 2U : order[c->block_stage][c->block_step]));
             ++sessions;
         }
         if (c->vision.phase == MISSION_VISION_ACKING) ++ack_count;
@@ -144,7 +145,7 @@ static uint8_t mission_stair_grasp_group(mission_stair_layer_t layer)
 { (void)layer; assert(false); return 0; }
 #if !TEST_MODE
 static void mission_depot_prepare(mission_context_t *c)
-{ assert(c->depot_position == 1 && c->arm_home_ready); ++depot_calls; c->state = MISSION_STATE_DEPOT_SEEK; }
+{ assert(c->depot_position == (g_mission_side == MISSION_COLOR_BLUE ? 2 : 1) && c->arm_home_ready); ++depot_calls; c->state = MISSION_STATE_DEPOT_SEEK; }
 static void mission_depot_start_digit(mission_context_t *c) { (void)c; assert(false); }
 static void mission_depot_next_ball(mission_context_t *c) { (void)c; assert(false); }
 static void mission_depot_digit_done(mission_context_t *c) { (void)c; assert(false); }
@@ -313,6 +314,8 @@ static void run(mission_context_t *c, const unsigned digits[3], const unsigned f
         case MISSION_STATE_BLOCK_FINISH:
             if (c->state == MISSION_STATE_BLOCK_WAIT_PLACE)
                 assert((c->block_placed_mask & (1U << (2 - c->block_stage))) == 0);
+            if (c->state == MISSION_STATE_BLOCK_WAIT_PLACE)
+                assert(c->depot_position == (g_mission_side == MISSION_COLOR_BLUE ? 1 : 4));
             finish_arm(c); break;
         case MISSION_STATE_BLOCK_WAIT_POSITION:
         case MISSION_STATE_BLOCK_WAIT_D4:
@@ -352,14 +355,15 @@ static void verify_run(const unsigned digits[3], const unsigned found[3], bool h
     expected[n++] = 10;
     assert(group_count == n && memcmp(expected, groups, n * sizeof(unsigned)) == 0);
     assert(c.block_found_mask == mask && c.block_placed_mask == mask);
-    assert(c.depot_position == 1 && c.arm_home_ready && c.vision.phase == MISSION_VISION_IDLE);
+    unsigned end_point = (!TEST_MODE && g_mission_side == MISSION_COLOR_BLUE) ? 2 : 1;
+    assert(c.depot_position == end_point && c.arm_home_ready && c.vision.phase == MISSION_VISION_IDLE);
 #if TEST_MODE
     assert(depot_calls == 0 && c.state == MISSION_STATE_COMPLETE);
     assert(commands[move_count - 2] == MISSION_CMD_GO_DEPOT_1);
     assert(commands[move_count - 1] == MISSION_CMD_DEPOT_OK);
 #else
-    assert(depot_calls == 1 && commands[move_count - 1] == MISSION_CMD_GO_DEPOT_1);
-    chassis_mission_event_t repeat = {c.request_id, CHASSIS_CMD_DEPOT_1_READY, 1};
+    assert(depot_calls == 1 && commands[move_count - 1] == MISSION_CMD_GO_DEPOT_1 + end_point - 1);
+    chassis_mission_event_t repeat = {c.request_id, (uint8_t)(CHASSIS_CMD_DEPOT_1_READY + end_point - 1), 1};
     block_handle_chassis(&c, &repeat); assert(depot_calls == 1);
 #endif
     assert(arm_stops == 0 && vision_stops == 0 && ack_count == sessions);
@@ -378,6 +382,19 @@ int main(void)
     const unsigned found[] = {2,3,1}, empty[] = {0,0,0};
     for (unsigned i = 0; i < 6; ++i) verify_run(permutations[i], found, i != 0);
     verify_run(empty, empty, true);
+    /* 蓝方各源层/目标层、互异排列、空层：D1不识别，夹取都回D1放置。 */
+    g_mission_side = MISSION_COLOR_BLUE;
+    for (unsigned source = 0; source < 3; ++source) {
+        for (unsigned target = 1; target <= 3; ++target) {
+            unsigned digits[3] = {0}, blue_found[3] = {0};
+            digits[source] = target; blue_found[source] = source + 2;
+            verify_run(digits, blue_found, true);
+        }
+    }
+    const unsigned blue_found[] = {4,3,2};
+    for (unsigned i = 0; i < 6; ++i) verify_run(permutations[i], blue_found, i != 0);
+    verify_run(empty, empty, true);
+    g_mission_side = MISSION_COLOR_RED;
     /* READY后超过原4秒仍接收新鲜结果；8秒边界无结果则停车。 */
     mission_context_t c; reset(&c); begin(&c); finish_arm(&c);
     now = c.deadline_tick; mission_check_timeout(&c); ready(&c);
@@ -459,6 +476,13 @@ int main(void)
     assert(c.state == MISSION_STATE_COMPLETE && c.depot_position == 1 && c.block_placed_mask == 7);
     assert(commands[move_count - 2] == MISSION_CMD_GO_DEPOT_1 && commands[move_count - 1] == MISSION_CMD_DEPOT_OK);
     assert(ack_count == 3 && depot_calls == 0 && !chassis_queued);
+    g_mission_side = MISSION_COLOR_BLUE;
+    reset(&c); pump_context = &c;
+    assert(mission_test_run_block_move(&c));
+    assert(c.state == MISSION_STATE_COMPLETE && c.depot_position == 1 && c.block_placed_mask == 7);
+    assert(ack_count == 3 && depot_calls == 0 && !chassis_queued);
+    assert(commands[move_count - 2] == MISSION_CMD_GO_DEPOT_1 && commands[move_count - 1] == MISSION_CMD_DEPOT_OK);
+    g_mission_side = MISSION_COLOR_RED;
     /* STOP正好遇到结果/动作回调时，循环仍须关闭会话、不夹取或标记放置。 */
     const mission_state_t stop_states[] = {MISSION_STATE_BLOCK_WAIT_DIGIT, MISSION_STATE_BLOCK_WAIT_GRASP,
         MISSION_STATE_BLOCK_WAIT_D4, MISSION_STATE_BLOCK_WAIT_PLACE};

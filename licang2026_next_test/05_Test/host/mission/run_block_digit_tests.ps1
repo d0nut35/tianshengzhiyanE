@@ -4,7 +4,7 @@ $buildDir = Join-Path $PSScriptRoot '.build'
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 $source = [IO.File]::ReadAllText((Join-Path $projectRoot '01_App/mission/mission_app.c'))
 function Get-ProductionFunction([string]$name) {
-    $match = [regex]::Match($source, "static (?:void|bool) $name\([^;]*?\)\s*\{")
+    $match = [regex]::Match($source, "static (?:void|bool|uint8_t) $name\([^;]*?\)\s*\{")
     if (!$match.Success) { throw "Missing function: $name" }
     $depth = 1
     $end = $source.IndexOf('{', $match.Index) + 1
@@ -15,7 +15,7 @@ function Get-ProductionFunction([string]$name) {
     }
     $source.Substring($match.Index, $end - $match.Index)
 }
-$functions = foreach ($name in @('mission_handle_block_result', 'mission_test_block_move', 'mission_test_run_block_digits')) { Get-ProductionFunction $name }
+$functions = foreach ($name in @('mission_block_place_point', 'mission_block_scan_point_id', 'mission_handle_block_result', 'mission_test_block_move', 'mission_test_run_block_digits')) { Get-ProductionFunction $name }
 [IO.File]::WriteAllText((Join-Path $buildDir 'block_digit_under_test.inc'), ($functions -join "`n"), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $buildDir 'block_delay_under_test.inc'), (Get-ProductionFunction 'mission_test_block_delay'), [Text.UTF8Encoding]::new($false))
 $core = Join-Path $projectRoot '03_Middleware/nano_vision'

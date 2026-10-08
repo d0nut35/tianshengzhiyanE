@@ -5,6 +5,7 @@
 #include "mission_app.h"
 #include "mission_config.h"
 #include "nano_vision_core.h"
+volatile mission_color_t g_mission_side = MISSION_COLOR_RED;
 typedef unsigned mission_command_type_t;
 typedef unsigned chassis_command_type_t;
 enum { MISSION_CMD_GO_DEPOT_1 = 1, MISSION_CMD_GO_DEPOT_2,
@@ -63,7 +64,7 @@ static bool mission_test_run_arm_group(mission_context_t *c, uint8_t group)
     if (group == 28) assert(c->arm_home_ready);
     if (group == 29 || group == 30) {
         assert(arm_count > 0 && groups[arm_count - 1] == (unsigned)(group - 1));
-        assert(g_wireless_test.depot_position == 4);
+        assert(g_wireless_test.depot_position == (g_mission_side == MISSION_COLOR_BLUE ? 1U : 4U));
     }
     c->arm_home_ready = false;
     groups[arm_count++] = group;
@@ -75,7 +76,9 @@ static bool mission_test_run_arm_group(mission_context_t *c, uint8_t group)
 static bool mission_test_read_block_digit(mission_context_t *c, nano_vision_block_result_t *r)
 {
     assert(c->state != MISSION_STATE_FAULT);
-    assert(g_wireless_test.depot_position >= 1 && g_wireless_test.depot_position <= 3);
+    if (g_mission_side == MISSION_COLOR_BLUE)
+        assert(g_wireless_test.depot_position >= 2 && g_wireless_test.depot_position <= 4);
+    else assert(g_wireless_test.depot_position >= 1 && g_wireless_test.depot_position <= 3);
     assert(delays_200 == reads + 1); /* 每次读之前已停车并等200ms。 */
     ++reads;
     memset(r,0,sizeof(*r));
@@ -144,6 +147,21 @@ int main(void)
     assert(!mission_test_run_block_digits(&c));
     assert(faults == 1 && reads == 9 && arm_count == 4 && groups[3] == 10);
     assert(points[moves - 1] == MISSION_CMD_GO_DEPOT_4);
+
+    /* 旧蓝方测试仍只识别；所有层从D2正向扫，空D1不采样，回D1直接换姿态。 */
+    g_mission_side = MISSION_COLOR_BLUE;
+    reset(&c); found_at[0] = 2; found_at[1] = 3; found_at[2] = 4;
+    assert(mission_test_run_block_digits(&c));
+    const unsigned blue_moves[] = {2,1,2,3,1,2,3,4,1,5};
+    assert(moves == 10 && memcmp(points,blue_moves,sizeof(blue_moves)) == 0);
+    assert(reads == 6 && delays_1000 == 3 && arm_count == 4);
+    assert(memcmp(groups,expected_groups,sizeof(expected_groups)) == 0);
+    reset(&c); found_at[0] = found_at[1] = found_at[2] = 0;
+    assert(mission_test_run_block_digits(&c));
+    const unsigned blue_empty[] = {2,3,4,1,2,3,4,1,2,3,4,1,5};
+    assert(reads == 9 && delays_1000 == 0 && moves == 13);
+    assert(memcmp(points,blue_empty,sizeof(blue_empty)) == 0);
+    g_mission_side = MISSION_COLOR_RED;
 
     /* READY匹配本点后才开始8秒通信保护；旧会话、旧帧和运动状态均不能确认。 */
     reset(&c); c.state = MISSION_STATE_BLOCK_WAIT_DIGIT;

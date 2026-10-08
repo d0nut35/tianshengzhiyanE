@@ -4,7 +4,7 @@ $build = Join-Path $PSScriptRoot '.build'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 $source = [IO.File]::ReadAllText((Join-Path $root '01_App/mission/mission_app.c'))
 function Get-Function([string]$name) {
-    $match = [regex]::Match($source, "static (?:void|bool|uint16_t) $name\([^;]*?\)\s*\{")
+    $match = [regex]::Match($source, "static (?:void|bool|uint8_t|uint16_t) $name\([^;]*?\)\s*\{")
     if (!$match.Success) { throw "Missing production function $name" }
     $end = $source.IndexOf('{', $match.Index) + 1
     $depth = 1
@@ -19,7 +19,7 @@ $names = @('mission_arm_tx_done', 'mission_arm_report', 'mission_start_arm',
     'mission_next_request_id', 'mission_fail', 'mission_handle_command',
     'mission_reset_vision', 'mission_start_vision', 'mission_stop_vision',
     'mission_handle_block_result', 'mission_vision_process', 'mission_check_timeout',
-    'mission_block_run_arm', 'mission_block_start_layer', 'mission_block_next_layer',
+    'mission_block_place_point', 'mission_block_scan_point_id', 'mission_block_run_arm', 'mission_block_start_layer', 'mission_block_next_layer',
     'mission_block_position_done', 'mission_block_move', 'mission_block_scan_point',
     'mission_block_arm_done', 'mission_block_begin', 'mission_block_digit_done')
 $functions = @($names | ForEach-Object { Get-Function $_ })

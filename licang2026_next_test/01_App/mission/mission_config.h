@@ -17,6 +17,8 @@
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED  1U
 /* 正式仓库/阶梯诊断：USART1输出；现场定位后改0即可关闭。 */
 #define MISSION_DEPOT_TRACE_ENABLED          0U
+/* 正式假按钮选色：0=红方，1=蓝方；无线仍由RED/BLUE选择，实体按键尚未接入。 */
+#define MISSION_FORMAL_BLUE_SIDE              0U
 #define MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS 2000U
 #define MISSION_DEPOT_DIGIT_WAIT_MS        3000U
 #define MISSION_WIRELESS_POLL_MS               10U
@@ -89,6 +91,9 @@
 
 #if (MISSION_CHASSIS_ROUTE_TEST_ENABLED > 1U)
 #error "MISSION_CHASSIS_ROUTE_TEST_ENABLED must be 0 or 1"
+#endif
+#if (MISSION_FORMAL_BLUE_SIDE > 1U)
+#error "MISSION_FORMAL_BLUE_SIDE must be 0 or 1"
 #endif
 
 #endif /* MISSION_CONFIG_H */

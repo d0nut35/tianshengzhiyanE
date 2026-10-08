@@ -1267,6 +1267,19 @@ static bool mission_prepare_zdt(mission_context_t *ctx)
     return true;
 }
 
+/** 本方物理D号不倒换底盘命令；空列用途为红D4、蓝D1。 */
+static uint8_t mission_block_place_point(void)
+{
+    return (g_mission_side == MISSION_COLOR_BLUE) ? 1U : 4U;
+}
+
+/** 蓝方三层均从D2正向扫描；红方保留高层正向、中底层反向。 */
+static uint8_t mission_block_scan_point_id(uint8_t stage, uint8_t step)
+{
+    if (g_mission_side == MISSION_COLOR_BLUE) return (uint8_t)(step + 2U);
+    return (stage == 0U) ? (uint8_t)(step + 1U) : (uint8_t)(3U - step);
+}
+
 /** 单次积木动作仍走既有完成回报；日志不参与到位判定。 */
 static void mission_block_run_arm(mission_context_t *ctx, uint8_t group,
                                   mission_state_t wait_state)
@@ -1312,8 +1325,9 @@ static void mission_block_position_done(mission_context_t *ctx)
                                   MISSION_STATE_BLOCK_WAIT_PLACE);
         } else mission_block_next_layer(ctx);
     } else if (ctx->state == MISSION_STATE_BLOCK_RETURN_DEPOT) {
-        BLOCK_TRACE("[B] DONE FOUND=0x%02X PLACED=0x%02X AT_D1\r\n",
-            (unsigned)ctx->block_found_mask, (unsigned)ctx->block_placed_mask);
+        BLOCK_TRACE("[B] DONE FOUND=0x%02X PLACED=0x%02X AT_D%u\r\n",
+            (unsigned)ctx->block_found_mask, (unsigned)ctx->block_placed_mask,
+            (unsigned)ctx->depot_position);
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
         /* 新无线测试不放小球；D1实际停车后才允许回家。 */
         if (!mission_send_chassis(MISSION_CMD_DEPOT_OK, mission_next_request_id(ctx))) {
@@ -1322,7 +1336,7 @@ static void mission_block_position_done(mission_context_t *ctx)
         }
         mission_enter_state(ctx, MISSION_STATE_BLOCK_WAIT_HOME, MISSION_OPERATION_TIMEOUT_MS);
 #else
-        /* 单独的返程状态防止第二次D1回报重进积木；保留真实球档案。 */
+        /* 正式红D1/蓝D2入口已经实际到位；独立状态防止再进积木。 */
         mission_depot_prepare(ctx);
 #endif
     }
@@ -1351,8 +1365,7 @@ static void mission_block_move(mission_context_t *ctx, uint8_t point,
 
 static void mission_block_scan_point(mission_context_t *ctx)
 {
-    uint8_t point = (ctx->block_stage == 0U) ? (uint8_t)(ctx->block_step + 1U) :
-                                             (uint8_t)(3U - ctx->block_step);
+    uint8_t point = mission_block_scan_point_id(ctx->block_stage, ctx->block_step);
     mission_block_move(ctx, point, MISSION_STATE_BLOCK_WAIT_POSITION);
 }
 
@@ -1370,15 +1383,22 @@ static void mission_block_arm_done(mission_context_t *ctx)
         mission_block_scan_point(ctx);
         break;
     case MISSION_STATE_BLOCK_WAIT_GRASP:
-        /* 完成夹取后不插10或识别动作，携带该姿态直达D4。 */
-        mission_block_move(ctx, 4U, MISSION_STATE_BLOCK_WAIT_D4);
+        /* 完成夹取保持姿态到本方空列：红D4、蓝D1；数字只指定目标层。 */
+        mission_block_move(ctx, mission_block_place_point(), MISSION_STATE_BLOCK_WAIT_D4);
         break;
     case MISSION_STATE_BLOCK_WAIT_PLACE:
         ctx->block_placed_mask |= (uint8_t)(1U << (2U - ctx->block_stage));
         mission_block_next_layer(ctx);
         break;
     case MISSION_STATE_BLOCK_FINISH:
-        mission_block_move(ctx, 1U, MISSION_STATE_BLOCK_RETURN_DEPOT);
+        /* 蓝方正式从D1去有数字的D2；无线两方仍到D1回家、不放小球。 */
+        mission_block_move(ctx,
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            1U,
+#else
+            (g_mission_side == MISSION_COLOR_BLUE) ? 2U : 1U,
+#endif
+            MISSION_STATE_BLOCK_RETURN_DEPOT);
         break;
     default:
         break;
@@ -1391,7 +1411,8 @@ static void mission_block_begin(mission_context_t *ctx)
     ctx->block_found_mask = ctx->block_placed_mask = 0U;
     ctx->block_result_received = false;
     ctx->depot_position = 1U; /* 调用入口已经确认首次D1到位。 */
-    BLOCK_TRACE("[B] BEGIN AT_D1\r\n");
+    BLOCK_TRACE("[B] BEGIN SIDE=%u AT_D1 PLACE_D%u\r\n",
+        (unsigned)g_mission_side, (unsigned)mission_block_place_point());
     if (ctx->arm_home_ready) mission_block_start_layer(ctx);
     else mission_block_run_arm(ctx, MISSION_HOME_ACTION_GROUP, MISSION_STATE_BLOCK_PREPARE);
 }
@@ -1415,8 +1436,9 @@ static void mission_block_digit_done(mission_context_t *ctx)
     } else if (result->status == NANO_VISION_BLOCK_NO_VALID) {
         if (++ctx->block_step < 3U) mission_block_scan_point(ctx);
         else {
-            BLOCK_TRACE("[B] ROW=%u NOT_FOUND TO_D4\r\n", (unsigned)(3U - ctx->block_stage));
-            mission_block_move(ctx, 4U, MISSION_STATE_BLOCK_WAIT_D4);
+            BLOCK_TRACE("[B] ROW=%u NOT_FOUND TO_D%u\r\n",
+                (unsigned)(3U - ctx->block_stage), (unsigned)mission_block_place_point());
+            mission_block_move(ctx, mission_block_place_point(), MISSION_STATE_BLOCK_WAIT_D4);
         }
     } else mission_fail(ctx, MISSION_FAULT_VISION);
 }
@@ -2057,13 +2079,21 @@ static void mission_handle_chassis(
     if ((ctx->state == MISSION_STATE_DEPOT_WAIT_POSITION) &&
         (event->type == (uint8_t)(CHASSIS_CMD_DEPOT_1_READY +
                                   ctx->depot_position - 1U))) {
-        if (ctx->depot_position == 4U) {
+        /* 红D4无数字；蓝D4有数字，必须按C100实测逻辑列放球。 */
+        if ((ctx->depot_position == 4U) && (g_mission_side != MISSION_COLOR_BLUE)) {
             ctx->depot_column = 4U;
             mission_depot_next_ball(ctx);
         } else {
             ctx->depot_first_digit = 0U;
             mission_depot_start_digit(ctx);
         }
+        return;
+    }
+    if ((ctx->state == MISSION_STATE_DEPOT_RETURN_ENTRY) &&
+        (event->type == CHASSIS_CMD_DEPOT_1_READY)) {
+        /* 蓝方小球收尾返D1实际停车后才允许回家，不重启积木/球档案。 */
+        ctx->depot_position = 1U;
+        mission_enter_state(ctx, MISSION_STATE_DEPOT_DWELL, 1000U);
         return;
     }
     if ((ctx->state == MISSION_STATE_DEPOT_WAIT_HOME) &&
@@ -2601,7 +2631,8 @@ static void mission_depot_prepare(mission_context_t *ctx)
         targets |= target_bit;
         slots |= slot_bit;
     }
-    ctx->depot_position = 1U;
+    /* 入口已确认红D1/蓝D2到位，蓝方不得把真实D2改记为D1。 */
+    if (g_mission_side != MISSION_COLOR_BLUE) ctx->depot_position = 1U;
     ctx->depot_columns_used = 0U;
     ctx->depot_first_digit = 0U;
     ctx->depot_preparing = true;
@@ -2696,7 +2727,18 @@ static void mission_depot_next_ball(mission_context_t *ctx)
         return;
     }
     if (ctx->depot_position == 4U) {
-        /* D4最后一次收臂完成（无球则到位）后停1秒，直接走既有回家路线。 */
+        if (g_mission_side == MISSION_COLOR_BLUE) {
+            /* 蓝D4是最后数字列；收臂后返回空列D1，等匹配到位再回家。 */
+            if (!mission_send_chassis(MISSION_CMD_GO_DEPOT_1,
+                                      mission_next_request_id(ctx))) {
+                mission_fail(ctx, MISSION_FAULT_QUEUE);
+                return;
+            }
+            mission_enter_state(ctx, MISSION_STATE_DEPOT_RETURN_ENTRY,
+                                MISSION_OPERATION_TIMEOUT_MS);
+            return;
+        }
+        /* 红D4最后一次收臂完成（无球则到位）后停1秒，直接回家。 */
         mission_enter_state(ctx, MISSION_STATE_DEPOT_DWELL, 1000U);
         return;
     }
@@ -3778,16 +3820,17 @@ static bool mission_test_run_depot_balls(mission_context_t *ctx)
             }
         }
     }
-    for (depot = 1U; depot <= 4U; ++depot) {
+    /* 蓝D1只放积木，数字列D2～D4；物理D号不是IC逻辑列号。 */
+    for (depot = (g_mission_side == MISSION_COLOR_BLUE) ? 2U : 1U; depot <= 4U; ++depot) {
         if ((depot > 1U) &&
             !mission_test_send_wait(ctx, commands[depot - 2U],
                                     events[depot - 2U],
                                     MISSION_STATE_WAIT_DEPOT_1)) return false;
         g_wireless_test.depot_position = depot;
-        digit = 4U; /* 物理D4固定为逻辑第4列。 */
-        if (depot < 4U) {
+        digit = 4U; /* 红方物理D4保留固定逻辑第4列；蓝方随后读取实测数字。 */
+        if ((depot < 4U) || (g_mission_side == MISSION_COLOR_BLUE)) {
             if (!mission_test_read_depot_digit(ctx, &digit) ||
-                (digit == 0U) ||
+                (digit < 1U) || (digit > 3U) ||
                 !mission_test_read_depot_digit(ctx, &confirmation) ||
                 (digit != confirmation)) {
                 mission_test_write("FAULT DEPOT DIGIT\r\n");
@@ -3846,6 +3889,11 @@ static bool mission_test_run_depot_balls(mission_context_t *ctx)
             return false;
         }
     }
+    if (g_mission_side == MISSION_COLOR_BLUE) {
+        if (!mission_test_send_wait(ctx, MISSION_CMD_GO_DEPOT_1,
+                CHASSIS_CMD_DEPOT_1_READY, MISSION_STATE_WAIT_DEPOT_1)) return false;
+        g_wireless_test.depot_position = 1U; /* 实际返D1后仍等原手动HOME指令。 */
+    }
     return true;
 }
 
@@ -3863,7 +3911,8 @@ static bool mission_test_run_depot_digits(mission_context_t *ctx)
     uint8_t depot;
     uint8_t digit;
 
-    for (depot = 1U; depot <= 4U; ++depot) {
+    /* 蓝方空D1不等C100数字，只巡检D2～D4；红方保留原巡检范围。 */
+    for (depot = (g_mission_side == MISSION_COLOR_BLUE) ? 2U : 1U; depot <= 4U; ++depot) {
         if ((depot > 1U) &&
             !mission_test_send_wait(ctx, commands[depot - 2U],
                                     events[depot - 2U],
@@ -3948,7 +3997,7 @@ static bool mission_test_block_move(mission_context_t *ctx, uint8_t point)
     return true;
 }
 
-/** 三层每行至多一个、D4初始空。此测试不抓放积木或小球，只核对识别/跳站/回家。 */
+/** 三层每行至多一个、红D4/蓝D1初始空；旧测试只识别/跳站，不抓放。 */
 static bool mission_test_run_block_digits(mission_context_t *ctx)
 {
     static const uint8_t groups[] = {MISSION_BLOCK_HIGH_VISION_GROUP,
@@ -3968,7 +4017,7 @@ static bool mission_test_run_block_digits(mission_context_t *ctx)
             return false;
         }
         for (step = 0U; step < 3U; ++step) {
-            point = (stage == 0U) ? (uint8_t)(step + 1U) : (uint8_t)(3U - step);
+            point = mission_block_scan_point_id(stage, step);
             if (!mission_test_block_move(ctx, point) ||
                 !mission_test_block_delay(ctx, MISSION_BLOCK_SETTLE_MS) ||
                 !mission_test_read_block_digit(ctx, &result)) return false;
@@ -3988,15 +4037,16 @@ static bool mission_test_run_block_digits(mission_context_t *ctx)
             if (result.status == NANO_VISION_BLOCK_DIGIT) {
                 found_mask |= (uint8_t)(1U << (row - 1U));
                 if (!mission_test_block_delay(ctx, MISSION_BLOCK_FOUND_PAUSE_MS)) return false;
-                break; /* 停1秒后直达D4，该层后续列不再识别。 */
+                break; /* 停1秒后直达本方空列，该层后续位置不再识别。 */
             }
         }
         if ((found_mask & (1U << (row - 1U))) == 0U) {
             (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
-                "BLOCK ROW=%u NOT_FOUND TO_D4\r\n", (unsigned)row);
+                "BLOCK ROW=%u NOT_FOUND TO_D%u\r\n", (unsigned)row,
+                (unsigned)mission_block_place_point());
             mission_test_write(g_wireless_test.text);
         }
-        if (!mission_test_block_move(ctx, 4U)) return false;
+        if (!mission_test_block_move(ctx, mission_block_place_point())) return false;
     }
     if (!mission_test_run_arm_group(ctx, MISSION_HOME_ACTION_GROUP)) {
         if (!g_wireless_test.stop_requested) mission_fail(ctx, MISSION_FAULT_ARM);
@@ -4606,8 +4656,8 @@ mission_app_status_t mission_app_init(void)
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     g_mission_side = MISSION_COLOR_NONE;
 #else
-    /* 正式模式以假按钮暂定红方；后续在此接入真实选色开关。 */
-    g_mission_side = MISSION_COLOR_RED;
+    /* 正式假按钮按构建选色，两方都走同一正式Mission；实体按键尚未接入。 */
+    g_mission_side = MISSION_FORMAL_BLUE_SIDE ? MISSION_COLOR_BLUE : MISSION_COLOR_RED;
 #endif
     ball_manifest_init(&ctx->manifest);
     /* 2) 目标区域测试会复用正式读卡和车载转盘服务。 */

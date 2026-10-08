@@ -19,6 +19,13 @@ $functions = foreach ($name in $names) {
     }
     $source.Substring($match.Index, $end - $match.Index)
 }
+# 使用实际请求门禁及正式仓库到位分支，覆盖蓝D4识别与返D1收尾。
+$gateStart = $source.IndexOf('    /* 1) 正式流程只接收当前request_id')
+$gateEnd = $source.IndexOf('    /* 2) 全局停车', $gateStart)
+$branchStart = $source.IndexOf('#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED', $gateEnd)
+$branchEnd = $source.IndexOf('#endif', $branchStart)
+if ($gateStart -lt 0 -or $branchStart -lt 0 -or $branchEnd -lt 0) { throw 'Missing depot event branches' }
+$functions += "static void depot_handle_chassis(mission_context_t *ctx, const chassis_mission_event_t *event) {`n" + $source.Substring($gateStart, $gateEnd - $gateStart) + $source.Substring($branchStart, $branchEnd - $branchStart) + "#endif`n}`n"
 [IO.File]::WriteAllText((Join-Path $buildDir 'depot_under_test.inc'), ($functions -join "`n"), [Text.UTF8Encoding]::new($false))
 $core = Join-Path $projectRoot '03_Middleware/ball_manifest'
 foreach ($minimal in @(0, 1)) {

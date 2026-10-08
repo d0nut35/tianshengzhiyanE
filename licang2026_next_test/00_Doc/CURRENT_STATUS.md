@@ -1,5 +1,9 @@
 # STM32当前状态
 
+2026-10-09正式起点诊断：用户自己编译下载红方正式后起点不动，无线偶尔需复位，尚无本次两端日志；Nano地址172.20.10.2本轮SSH连接超时，现场精确版本/状态未读取。源码本来就是STM32在起点每秒主动MODEL_QUERY，Nano收到查询后回复，不依赖一次性广播；先开Nano再给STM32供电在协议上可行。无回复超时/模型LOADING继续查询，但当前单次IO/坏CRC/半包/错序号直接FAULT=4并停车，主机已复现这一风险，尚不能认定就是现场根因。正式动作10后还先查转盘EMM/闭环配置，失败FAULT=5，无线起点没有这项额外检查。已在原MISSION_DEPOT_TRACE_ENABLED下补[BOOT]颜色/门禁汇总、查询及回复SEQ/IO/DECODE/MODEL、ZDT检查、四秒倒计时与GO_PLATFORM日志；每秒汇总一次，回调不打印，保持原协议/门禁/故障策略。起点坏帧重试优化仅为待确认方案，未接入。读《正式起点握手诊断与优化方案.md》获取字段、排查顺序和后续最小改动范围，不宣称已解决实机启动故障。
+
+启动就绪/实际协议消费及转盘检查的日志开/关主机回归通过，覆盖21秒LOADING、已有模型READY、动作10/底盘门禁、通信繁忙及超时、坏帧/错序号现有故障、明确MODEL_ERROR、STOP后迟到回复和转盘检查失败；原圆盘、仓库、动作10、视觉交接/阶梯、积木数字及搬运回归通过。五种Keil增量构建0错误0警告：MDK-ARM/startup-red-formal-debug.hex、startup-blue-formal-debug.hex、startup-red-formal.hex、startup-blue-formal.hex、startup-wireless.hex。标准HEX为当前真实工作树配置的红方正式日志版；其余配置在隔离副本构建。未烧录，不重复训练/导出/引擎或更新Nano运行代码；1秒无有效数字和红蓝正式接入保留。本轮修改前ba8006e保存用户正式0/日志1/红方0及绕桩找线-130、退出-250参数，本轮不改底盘或用户宏，197个换行差异保留。
+
 2026-10-08最新积木无有效数字期限覆盖：用户要求从1.5秒改为1秒；BlockDigitConfirmation、BlockDigitWorker和独立预览默认wait_ms均为1000，首张有效新帧起满1秒仍未连续确认数字且有效帧累计至少15张才回NO_VALID，帧不足仍为INSUFFICIENT_FRAMES故障。0.80门槛、连续3帧确认、120ms帧龄、运行中200ms断帧、首帧1秒等待及F7 READY后8秒通信保护均保留；有效数字仍立即回报。Nano/F7双方BLOCK_RESULT校验同步允许elapsed_ms>=1000，载荷/命令/SID/ACK不改；999ms仍拒收，旧F7要求1500ms会拒收新Nano的一秒NO_VALID，因此现场必须同时更新Nano运行文件block_digit_detector.py、nano_uart_protocol.py并重启服务，再烧录新版F7。独立预览同时更新block_digit_preview.py，显式--wait-ms参数按1000；旧Nano配新F7仍按旧1.5秒等待。本机不推送或远程部署，不重复训练/导出/引擎构建；模型及摄像头配置保留。
 
 本轮验证：123项Python主机测试及Python3.6语法检查通过；C协议、红蓝旧数字扫描、积木搬运四种正式/无线日志配置、视觉交接/阶梯与仓库回归通过。Keil无线、红/蓝正式及红/蓝正式日志五种构建均0错误0警告，新产物为MDK-ARM/block-1s-*.hex，标准HEX为同版无线；模式/大小/哈希见STM32《蓝方仓库流程接入方案.md》第8节。未更新Nano现场、未烧录F7，本轮一秒期限尚待实机验证。
@@ -17,7 +21,7 @@
 本轮主机回归全部通过：积木搬运正式/无线×日志开/关、仓库两种发布配置/无线最近槽/动作10缓存、红蓝旧数字扫描、红蓝阶梯视觉交接、起点模型门禁、圆盘容错与纯路径。五种Keil增量构建均0错误0警告：blue-depot-wireless.hex、blue-depot-red-formal.hex、blue-depot-red-formal-debug.hex、blue-depot-blue-formal.hex、blue-depot-blue-formal-debug.hex；均在MDK-ARM，同名-build.log为编译日志。模式、大小与SHA256见蓝方仓库流程接入方案.md第7节。未烧录；蓝方底盘覆盖、抓放及正式全程待现场验收。
 
 - 当前唯一开发仓库为D:/programfile/licang/licang2026_next_test，工程在同名子目录，F756VGT6、1 MiB Flash。旧工程不修改。
-- 当前MISSION_CHASSIS_ROUTE_TEST_ENABLED=1为无线测试；MISSION_DEPOT_TRACE_ENABLED=0，MISSION_FORMAL_BLUE_SIDE=0。正式[M]/[S]/[B]共用诊断开关；无线搬运进度常开，Nano --stair-debug默认关闭。APP_TEST_MODE=0只控制底盘测试任务。最新固件为MDK-ARM/blue-depot-*.hex，正式红/蓝分别构建，未烧录。
+- 当前用户保存MISSION_CHASSIS_ROUTE_TEST_ENABLED=0为正式，MISSION_DEPOT_TRACE_ENABLED=1、MISSION_FORMAL_BLUE_SIDE=0为红方正式日志版；USART1输出[M]/[S]/[B]/[BOOT]。无线及其它红蓝构建另存startup-*.hex，标准HEX为红方正式日志。APP_TEST_MODE=0仅控制底盘测试任务。实体按键/OLED未接入，保留假按钮四秒自动启动。
 - 测试先RED或BLUE选色/握手，再运行目标命令。ROUTE PLATFORM、ROUTE STAIRS、ROUTE DISC是视觉抓取测试；纯路径DISC_READY到绕行起点停车，DISC_RUN从该点绕行；DEPOT到D1停车，不识别不放球。详见小圆盘纯路径无线调试.md。
 - 第一部分正式/无线共用成功最多5球、动作12最多7次；读IC最多5次，失败不建档不转盘，原槽继续尝试。返回识别准备状态后、重新启动视觉前非阻塞等200ms，仅影响第一部分。ROUTE PLATFORM保留[P]诊断。
 - 第一部分原17已改用10：前四球仍12→11→读卡转槽，最后球12→10完成→读卡转槽→正式去阶梯，已完成10不再重复收臂；无线单区域测试在圆盘完成后停住。最后球读卡失败且仍可重试时回11，原成功5球/最多7次与200ms稳定等待保留。

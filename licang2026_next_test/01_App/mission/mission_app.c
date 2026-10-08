@@ -862,6 +862,7 @@ static void mission_reset_vision(mission_context_t *ctx)
 static void mission_model_process(mission_context_t *ctx)
 {
     size_t tx_len;
+    nano_vision_status_t status;
     if (ctx->block_model_ready ||
         ((ctx->state != MISSION_STATE_WAIT_HOME) &&
          (ctx->state != MISSION_STATE_WAIT_CHASSIS_READY)) ||
@@ -874,8 +875,11 @@ static void mission_model_process(mission_context_t *ctx)
     ctx->model_next_query_tick = osKernelGetTickCount() +
         mission_ms_to_ticks(MISSION_MODEL_QUERY_INTERVAL_MS);
     ctx->vision.phase = MISSION_VISION_MODEL_QUERYING;
-    if (mission_submit_vision_transfer(ctx, MULT_UART_OP_WRITE_READ,
-            tx_len, MISSION_VISION_TIMEOUT_MS) != NANO_VISION_OK) {
+    status = mission_submit_vision_transfer(ctx, MULT_UART_OP_WRITE_READ,
+            tx_len, MISSION_VISION_TIMEOUT_MS);
+    DEPOT_TRACE("[BOOT] MODEL QUERY SEQ=%u SUBMIT=%u\r\n",
+                (unsigned)ctx->vision.next_sequence, (unsigned)status);
+    if (status != NANO_VISION_OK) {
         ctx->vision.phase = MISSION_VISION_IDLE;
     }
 }
@@ -1254,13 +1258,25 @@ static bool mission_store_ball(
 static bool mission_prepare_zdt(mission_context_t *ctx)
 {
     const zdt_turntable_response_t *response = &ctx->storage.zdt_response;
+    zdt_turntable_status_t status;
+    bool completed;
 
     (void)osThreadFlagsClear(MISSION_FLAG_ZDT_DONE);
     ctx->storage.zdt_has_response = false;
-    if ((turn_query_options(mission_zdt_done, ctx) != ZDT_TURNTABLE_OK) ||
-        !mission_wait_zdt(ctx) ||
-        (response->kind != ZDT_TURNTABLE_REPLY_OPTIONS) ||
-        !response->data.options.closed_loop ||
+    status = turn_query_options(mission_zdt_done, ctx);
+    DEPOT_TRACE("[BOOT] ZDT OPTIONS QUERY SUBMIT=%u\r\n", (unsigned)status);
+    if (status != ZDT_TURNTABLE_OK) return false;
+    completed = mission_wait_zdt(ctx);
+    DEPOT_TRACE("[BOOT] ZDT OPTIONS RX DONE=%u IO=%u HAS=%u KIND=%u\r\n",
+                (unsigned)completed, (unsigned)ctx->storage.zdt_status,
+                (unsigned)ctx->storage.zdt_has_response,
+                ctx->storage.zdt_has_response ? (unsigned)response->kind : 0U);
+    if (!completed || (response->kind != ZDT_TURNTABLE_REPLY_OPTIONS)) return false;
+    /* 只在正确回复类型下解释options联合体；打印仍不参与就绪判定。 */
+    DEPOT_TRACE("[BOOT] ZDT OPTIONS CLOSED=%u FW=%u\r\n",
+                (unsigned)response->data.options.closed_loop,
+                (unsigned)response->data.options.firmware);
+    if (!response->data.options.closed_loop ||
         (response->data.options.firmware != ZDT_TURNTABLE_FIRMWARE_EMM)) {
         return false;
     }
@@ -1506,19 +1522,32 @@ static void mission_handle_vision(mission_context_t *ctx)
     status = mission_map_vision_status(ctx->vision.mail_status);
     if (ctx->vision.phase == MISSION_VISION_MODEL_QUERYING) {
         nano_vision_model_report_t report;
+        nano_vision_status_t decoded;
         ctx->vision.phase = MISSION_VISION_IDLE;
+        DEPOT_TRACE("[BOOT] MODEL RX IO=%u LEN=%u TYPE=%u SEQ=%u EXPECT=%u\r\n",
+            (unsigned)status, (unsigned)ctx->vision.mail_len,
+            (ctx->vision.mail_len > 3U) ? (unsigned)ctx->vision.mail_data[3] : 0U,
+            (ctx->vision.mail_len > 4U) ? (unsigned)ctx->vision.mail_data[4] : 0U,
+            (unsigned)ctx->vision.next_sequence);
         /* 上电未收到Nano时继续留在起点，只有匹配本次序号的READY能放行。 */
         if ((status == NANO_VISION_ERR_TIMEOUT) ||
             (ctx->state == MISSION_STATE_STOPPING) ||
             (ctx->state == MISSION_STATE_STOPPED) ||
             (ctx->state == MISSION_STATE_FAULT)) return;
-        if ((status != NANO_VISION_OK) ||
-            (nano_vision_decode_model_state(ctx->vision.mail_data,
-                ctx->vision.mail_len, &report) != NANO_VISION_OK) ||
+        if (status != NANO_VISION_OK) {
+            mission_fail(ctx, MISSION_FAULT_VISION);
+            return;
+        }
+        decoded = nano_vision_decode_model_state(ctx->vision.mail_data,
+                ctx->vision.mail_len, &report);
+        DEPOT_TRACE("[BOOT] MODEL DECODE=%u\r\n", (unsigned)decoded);
+        if ((decoded != NANO_VISION_OK) ||
             (ctx->vision.mail_data[4] != ctx->vision.next_sequence)) {
             mission_fail(ctx, MISSION_FAULT_VISION);
             return;
         }
+        DEPOT_TRACE("[BOOT] MODEL STATE=%u REASON=%u\r\n",
+                    (unsigned)report.state, (unsigned)report.reason);
         if (report.state == NANO_VISION_MODEL_ERROR) {
             mission_fail(ctx, MISSION_FAULT_VISION);
             return;
@@ -1883,6 +1912,8 @@ static void mission_try_ready(mission_context_t *ctx)
         mission_fail(ctx, MISSION_FAULT_QUEUE);
         return;
     }
+    DEPOT_TRACE("[BOOT] GATE READY ARM10=1 CHASSIS=1 MODEL=1 START_IN=%uMS\r\n",
+                (unsigned)MISSION_AUTO_START_DELAY_MS);
     mission_enter_state(ctx, MISSION_STATE_READY,
                         MISSION_AUTO_START_DELAY_MS);
 }
@@ -1897,6 +1928,8 @@ static void mission_start_run(mission_context_t *ctx)
     /* 0) 新一轮任务使用新的request_id，隔离上一轮底盘回包。 */
     uint16_t request_id = mission_next_request_id(ctx);
 
+    DEPOT_TRACE("[BOOT] AUTO START SIDE=%u GO_PLATFORM ID=%u\r\n",
+                (unsigned)g_mission_side, (unsigned)request_id);
     /* 1) 保留已选红蓝方，只清空本轮小球、槽位和故障计数。 */
     ctx->platform_balls = 0U;
     ctx->platform_attempts = 0U;
@@ -2890,6 +2923,23 @@ static void mission_check_timeout(mission_context_t *ctx)
     }
 }
 
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+/** 起点每秒汇总阻塞条件，不在回调打印、不更改就绪或故障策略。 */
+static void mission_boot_trace(mission_context_t *ctx, uint32_t *next_tick)
+{
+    uint32_t now = osKernelGetTickCount();
+    if (((ctx->state != MISSION_STATE_WAIT_HOME) &&
+         (ctx->state != MISSION_STATE_WAIT_CHASSIS_READY)) ||
+        ((int32_t)(now - *next_tick) < 0)) return;
+    *next_tick = now + mission_ms_to_ticks(MISSION_MODEL_QUERY_INTERVAL_MS);
+    DEPOT_TRACE("[BOOT] WAIT STATE=%u ARM10=%u CHASSIS=%u MODEL=%u V=%u BUSY=%u PENDING=%u LAST=%lu\r\n",
+        (unsigned)ctx->state, (unsigned)ctx->arm_home_ready,
+        (unsigned)ctx->chassis_ready, (unsigned)ctx->block_model_ready,
+        (unsigned)ctx->vision.phase, (unsigned)ctx->vision.inflight,
+        (unsigned)ctx->vision.completion_pending, (unsigned long)ctx->arm_last_action_report);
+}
+#endif
+
 /**
  * @brief Mission唯一任务，串行处理用户命令、底盘事件和设备结果。
  * @param argument 指向全局Mission上下文。
@@ -2904,13 +2954,21 @@ static void mission_task_entry(void *argument)
 
     /* 0) 上电先等待动作组10完成，不设置超时。 */
 #if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    uint32_t boot_trace_next_tick = 0U;
     /* 只启用诊断输出，不解析无线测试命令；关闭开关即不占用该调试实例。 */
     (void)debug_uart1_init(&g_depot_debug);
 #endif
     DEPOT_TRACE("[M] FORMAL DEPOT/STAIR TRACE ON\r\n");
+    DEPOT_TRACE("[BOOT] FORMAL SIDE=%s ARM10 REQUIRED CHASSIS + MODEL POLL=%uMS\r\n",
+        (g_mission_side == MISSION_COLOR_BLUE) ? "BLUE" :
+        ((g_mission_side == MISSION_COLOR_RED) ? "RED" : "NONE"),
+        (unsigned)MISSION_MODEL_QUERY_INTERVAL_MS);
     mission_enter_state(ctx, MISSION_STATE_WAIT_HOME, 0U);
     for (;;) {
         /* 1) 等待任一事件；等待时长由当前状态的截止时间决定。 */
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        mission_boot_trace(ctx, &boot_trace_next_tick);
+#endif
         mission_model_process(ctx);
         flags = osThreadFlagsWait(
             MISSION_ALL_FLAGS,

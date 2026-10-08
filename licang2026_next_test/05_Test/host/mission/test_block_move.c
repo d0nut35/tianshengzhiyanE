@@ -52,6 +52,7 @@ typedef struct {
     uint32_t deadline_tick; uint16_t request_id;
     mission_vision_t vision; nano_vision_block_result_t block_result;
     bool block_result_received, arm_home_ready, block_model_ready;
+    uint32_t model_query_retries;
     uint8_t block_stage, block_step, block_point, block_digit, block_found_mask, block_placed_mask;
     uint8_t active_arm_group, platform_attempts, fault_code, current_slot;
     uint8_t depot_position, depot_digit, depot_column, depot_target_slot, depot_first_digit;
@@ -150,8 +151,8 @@ static void mission_depot_start_digit(mission_context_t *c) { (void)c; assert(fa
 static void mission_depot_next_ball(mission_context_t *c) { (void)c; assert(false); }
 static void mission_depot_digit_done(mission_context_t *c) { (void)c; assert(false); }
 static void mission_depot_arm_done(mission_context_t *c) { (void)c; assert(false); }
-static bool mission_advance_slot(mission_context_t *c, zdt_turntable_direction_t dir, uint8_t *fine)
-{ (void)c; (void)dir; (void)fine; assert(false); return false; }
+static bool mission_advance_slot(mission_context_t *c, zdt_turntable_direction_t dir, uint8_t *fine, bool require_gate)
+{ (void)c; (void)dir; (void)fine; (void)require_gate; assert(false); return false; }
 static void mission_try_ready(mission_context_t *c) { (void)c; assert(false); }
 #if TEST_TRACE
 static bool mission_stair_trace_active(const mission_context_t *c) { (void)c; return false; }

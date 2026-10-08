@@ -80,9 +80,9 @@
 #define MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG 1400U
 #define MISSION_ZDT_FINE_ANGLE_0P1DEG         10U
 #define MISSION_ZDT_SPEED_RPM                 400U
-#define MISSION_ZDT_FINE_SPEED_RPM             200U
+#define MISSION_ZDT_FINE_SPEED_RPM             400U /* 用户要求微调与粗调同速，保留PB0校准。 */
 #define MISSION_ZDT_ACCEL                      50U
-#define MISSION_ZDT_FINE_MAX_STEPS             35U
+#define MISSION_ZDT_FINE_MAX_STEPS              8U
 #define MISSION_ZDT_STATUS_POLL_MS             50U
 #define MISSION_ZDT_SLOT_TIMEOUT_MS          8000U
 #define MISSION_GATE_CONFIRM_SAMPLES            3U

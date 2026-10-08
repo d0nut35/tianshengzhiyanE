@@ -34,6 +34,7 @@ typedef struct {
     mission_state_t state;
     bool chassis_ready, arm_home_ready, block_model_ready;
     uint32_t model_next_query_tick;
+    uint32_t model_query_retries;
     uint16_t request_id;
     mission_vision_t vision;
     struct {
@@ -151,14 +152,31 @@ int main(void)
     c.vision.inflight = false; submit_status = NANO_VISION_ERR_BUSY;
     mission_model_process(&c); assert(queries == before + 1 && c.vision.phase == MISSION_VISION_IDLE);
     submit_status = NANO_VISION_OK;
-    /* 记录当前故障策略：错序号/坏CRC/半包会锁存故障，日志必须与关闭时行为一致。 */
-    for (unsigned error = 0; error < 4; ++error) {
+    /* 无效起点回复不能出发；后续新序号READY恢复，日志开/关行为一致。 */
+    for (unsigned error = 0; error < 5; ++error) {
         memset(&c,0,sizeof(c)); c.state = MISSION_STATE_WAIT_CHASSIS_READY; c.vision.next_sequence = 7;
+        c.request_id = 7; c.arm_home_ready = c.chassis_ready = true; sends = 0;
         response(&c,error == 0 ? 6 : 7,NANO_VISION_MODEL_READY);
         if (error == 1) c.vision.mail_data[7] ^= 1;
         if (error == 2) c.vision.mail_len = 5;
         if (error == 3) c.vision.mail_status = NANO_VISION_ERR_IO;
-        model_reply(&c); assert(c.state == MISSION_STATE_FAULT && !c.block_model_ready);
+        if (error == 4) c.vision.mail_len = 0;
+        model_reply(&c);
+        assert(c.state == MISSION_STATE_WAIT_CHASSIS_READY && !c.block_model_ready && sends == 0);
+        assert(c.model_query_retries == 1 && !c.vision.completion_pending);
+        /* 每秒发新查询，不能复用错误回复直接放行。 */
+        now = 0; mission_model_process(&c); assert(c.vision.next_sequence == 8);
+        response(&c,8,NANO_VISION_MODEL_READY); model_reply(&c);
+        assert(c.state == MISSION_STATE_READY && c.block_model_ready && sends == 1);
+        assert(c.model_query_retries == 0);
+    }
+    memset(&c,0,sizeof(c)); c.state = MISSION_STATE_WAIT_HOME; sends = 0;
+    for (unsigned retry = 1; retry <= 40; ++retry) {
+        now = (retry - 1) * 1000; mission_model_process(&c);
+        c.vision.mail_status = NANO_VISION_ERR_IO; c.vision.mail_len = 0;
+        c.vision.completion_pending = true; model_reply(&c);
+        assert(c.state == MISSION_STATE_WAIT_HOME && !c.block_model_ready && sends == 0);
+        assert(c.model_query_retries == retry);
     }
     memset(&c,0,sizeof(c)); c.state = MISSION_STATE_WAIT_CHASSIS_READY; c.vision.next_sequence = 7;
     response(&c,7,NANO_VISION_MODEL_ERROR); model_reply(&c);

@@ -181,6 +181,7 @@ typedef struct {
     bool chassis_ready;
     bool block_model_ready;
     uint32_t model_next_query_tick;
+    uint32_t model_query_retries; /* 起点连续无效查询数；有效模型回复后清零。 */
     nano_vision_block_result_t block_result;
     bool block_result_received;
     /* 无线搬运与正式共用；源层按stage降序，digit只表示D4目标层。 */
@@ -1131,16 +1132,19 @@ static bool mission_read_ball(
     return mission_record_ball(ctx, region, read_ok);
 }
 
-/** 按指定方向走一格；粗转与PB0微调必须同向，超出搜索上限则报错。 */
+/** 单槽粗转/微调同向；放球允许微调耗尽后继续，收球仍须PB0确认。 */
 static bool mission_advance_slot(
     mission_context_t *ctx,
     zdt_turntable_direction_t direction,
-    uint8_t *fine_used)
+    uint8_t *fine_used,
+    bool require_gate)
 {
     const zdt_turntable_response_t *response = &ctx->storage.zdt_response;
     uint32_t started_tick = osKernelGetTickCount();
     uint8_t fine_steps = 0U;
     bool coarse = true;
+    zdt_turntable_status_t submitted;
+    bool completed;
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     char command[DEBUG_UART1_RX_BUFFER_SIZE];
 #else
@@ -1166,7 +1170,7 @@ static bool mission_advance_slot(
 #endif
         (void)osThreadFlagsClear(MISSION_FLAG_ZDT_DONE);
         ctx->storage.zdt_has_response = false;
-        if ((mission_submit_slot_motion(
+        submitted = mission_submit_slot_motion(
                  ctx,
                  coarse ? ((direction == ZDT_TURNTABLE_DIR_CCW) ?
                      MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG :
@@ -1174,11 +1178,16 @@ static bool mission_advance_slot(
                           MISSION_ZDT_FINE_ANGLE_0P1DEG,
                  coarse ? MISSION_ZDT_SPEED_RPM :
                           MISSION_ZDT_FINE_SPEED_RPM,
-                 direction) !=
-             ZDT_TURNTABLE_OK) ||
-            !mission_wait_zdt(ctx) ||
+                 direction);
+        completed = (submitted == ZDT_TURNTABLE_OK) && mission_wait_zdt(ctx);
+        if (!completed ||
             ((response->kind != ZDT_TURNTABLE_REPLY_ACK) &&
              (response->kind != ZDT_TURNTABLE_REPLY_REACHED))) {
+            DEPOT_TRACE("[M] TURN FAIL=MOVE SLOT=%u DIR=%u FINE=%u SUBMIT=%u IO=%u HAS=%u KIND=%u\r\n",
+                (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
+                (unsigned)fine_steps, (unsigned)submitted,
+                (unsigned)ctx->storage.zdt_status, (unsigned)ctx->storage.zdt_has_response,
+                ctx->storage.zdt_has_response ? (unsigned)response->kind : 0U);
             return false;
         }
         coarse = false;
@@ -1201,19 +1210,34 @@ static bool mission_advance_slot(
 #endif
             if ((osKernelGetTickCount() - started_tick) >=
                 mission_ms_to_ticks(MISSION_ZDT_SLOT_TIMEOUT_MS)) {
+                DEPOT_TRACE("[M] TURN FAIL=TIMEOUT SLOT=%u DIR=%u FINE=%u\r\n",
+                    (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
+                    (unsigned)fine_steps);
                 return false;
             }
             (void)osDelay(mission_ms_to_ticks(MISSION_ZDT_STATUS_POLL_MS));
             (void)osThreadFlagsClear(MISSION_FLAG_ZDT_DONE);
             ctx->storage.zdt_has_response = false;
-            if ((turn_query_status(mission_zdt_done, ctx) !=
-                 ZDT_TURNTABLE_OK) ||
-                !mission_wait_zdt(ctx) ||
-                (response->kind != ZDT_TURNTABLE_REPLY_STATUS) ||
-                !response->data.motor_status.enabled ||
+            submitted = turn_query_status(mission_zdt_done, ctx);
+            completed = (submitted == ZDT_TURNTABLE_OK) && mission_wait_zdt(ctx);
+            if (!completed || (response->kind != ZDT_TURNTABLE_REPLY_STATUS)) {
+                DEPOT_TRACE("[M] TURN FAIL=STATUS SLOT=%u DIR=%u FINE=%u SUBMIT=%u IO=%u HAS=%u KIND=%u\r\n",
+                    (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
+                    (unsigned)fine_steps, (unsigned)submitted,
+                    (unsigned)ctx->storage.zdt_status, (unsigned)ctx->storage.zdt_has_response,
+                    ctx->storage.zdt_has_response ? (unsigned)response->kind : 0U);
+                return false;
+            }
+            if (!response->data.motor_status.enabled ||
                 response->data.motor_status.stalled ||
                 response->data.motor_status.stall_protected ||
                 response->data.motor_status.power_loss_latched) {
+                DEPOT_TRACE("[M] TURN FAIL=MOTOR SLOT=%u EN=%u STALL=%u PROTECT=%u POWER=%u\r\n",
+                    (unsigned)(ctx->current_slot + 1U),
+                    (unsigned)response->data.motor_status.enabled,
+                    (unsigned)response->data.motor_status.stalled,
+                    (unsigned)response->data.motor_status.stall_protected,
+                    (unsigned)response->data.motor_status.power_loss_latched);
                 return false;
             }
         } while (!response->data.motor_status.reached);
@@ -1222,7 +1246,22 @@ static bool mission_advance_slot(
             if (fine_used != NULL) *fine_used = fine_steps;
             return true;
         }
-        if (fine_steps >= MISSION_ZDT_FINE_MAX_STEPS) return false;
+        if (fine_steps >= MISSION_ZDT_FINE_MAX_STEPS) {
+            if (!require_gate) {
+                if (fine_used != NULL) *fine_used = fine_steps;
+                DEPOT_TRACE("[M] TURN PB0 UNCONFIRMED SLOT=%u DIR=%u FINE=%u CONTINUE\r\n",
+                    (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
+                    (unsigned)fine_steps);
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+                mission_test_write("TURN PB0 UNCONFIRMED FINE LIMIT CONTINUE\r\n");
+#endif
+                return true;
+            }
+            DEPOT_TRACE("[M] TURN FAIL=PB0 SLOT=%u DIR=%u FINE=%u LIMIT=%u\r\n",
+                (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
+                (unsigned)fine_steps, (unsigned)MISSION_ZDT_FINE_MAX_STEPS);
+            return false;
+        }
         ++fine_steps;
     }
 }
@@ -1242,7 +1281,7 @@ static bool mission_store_ball(
     }
     if (!mission_advance_slot(ctx,
             MISSION_SLOT_USE_CW ? ZDT_TURNTABLE_DIR_CW :
-                                  ZDT_TURNTABLE_DIR_CCW, NULL)) return false;
+                                  ZDT_TURNTABLE_DIR_CCW, NULL, true)) return false;
     /* [lyx] 初始物理1槽对应0；只有PB0确认成功才更新当前位置。 */
     ctx->current_slot = MISSION_SLOT_USE_CW ?
         (uint8_t)((ctx->current_slot + 1U) % 12U) :
@@ -1529,13 +1568,15 @@ static void mission_handle_vision(mission_context_t *ctx)
             (ctx->vision.mail_len > 3U) ? (unsigned)ctx->vision.mail_data[3] : 0U,
             (ctx->vision.mail_len > 4U) ? (unsigned)ctx->vision.mail_data[4] : 0U,
             (unsigned)ctx->vision.next_sequence);
-        /* 上电未收到Nano时继续留在起点，只有匹配本次序号的READY能放行。 */
-        if ((status == NANO_VISION_ERR_TIMEOUT) ||
-            (ctx->state == MISSION_STATE_STOPPING) ||
-            (ctx->state == MISSION_STATE_STOPPED) ||
-            (ctx->state == MISSION_STATE_FAULT)) return;
+        /* 仅起点查询容错；STOP/故障或已出发后，迟到回复不得重新放行。 */
+        if ((ctx->state != MISSION_STATE_WAIT_HOME) &&
+            (ctx->state != MISSION_STATE_WAIT_CHASSIS_READY)) return;
         if (status != NANO_VISION_OK) {
-            mission_fail(ctx, MISSION_FAULT_VISION);
+            ctx->block_model_ready = false;
+            ++ctx->model_query_retries;
+            DEPOT_TRACE("[BOOT] MODEL RETRY=%lu IO=%u RAW=%u\r\n",
+                (unsigned long)ctx->model_query_retries, (unsigned)status,
+                (unsigned)ctx->vision.mail_status);
             return;
         }
         decoded = nano_vision_decode_model_state(ctx->vision.mail_data,
@@ -1543,9 +1584,15 @@ static void mission_handle_vision(mission_context_t *ctx)
         DEPOT_TRACE("[BOOT] MODEL DECODE=%u\r\n", (unsigned)decoded);
         if ((decoded != NANO_VISION_OK) ||
             (ctx->vision.mail_data[4] != ctx->vision.next_sequence)) {
-            mission_fail(ctx, MISSION_FAULT_VISION);
+            ctx->block_model_ready = false;
+            ++ctx->model_query_retries;
+            DEPOT_TRACE("[BOOT] MODEL RETRY=%lu DECODE=%u SEQ=%u EXPECT=%u\r\n",
+                (unsigned long)ctx->model_query_retries, (unsigned)decoded,
+                (ctx->vision.mail_len > 4U) ? (unsigned)ctx->vision.mail_data[4] : 0U,
+                (unsigned)ctx->vision.next_sequence);
             return;
         }
+        ctx->model_query_retries = 0U;
         DEPOT_TRACE("[BOOT] MODEL STATE=%u REASON=%u\r\n",
                     (unsigned)report.state, (unsigned)report.reason);
         if (report.state == NANO_VISION_MODEL_ERROR) {
@@ -2865,11 +2912,11 @@ static void mission_check_timeout(mission_context_t *ctx)
         }
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
         if (ctx->state == MISSION_STATE_DEPOT_SEEK) {
-            /* 复用正式单槽粗转/微调及堵转、超时检测；每完成一槽回到事件循环。 */
+            /* 仓库保留PB0校准，8次未确认也继续；电机到位/故障保护仍有效。 */
             if (ctx->current_slot != ctx->depot_target_slot) {
                 zdt_turntable_direction_t direction = ctx->depot_preparing ?
                     ZDT_TURNTABLE_DIR_CW : ZDT_TURNTABLE_DIR_CCW;
-                if (!mission_advance_slot(ctx, direction, NULL)) {
+                if (!mission_advance_slot(ctx, direction, NULL, false)) {
                     if ((ctx->state != MISSION_STATE_STOPPING) &&
                         (ctx->state != MISSION_STATE_STOPPED)) {
                         mission_fail(ctx, MISSION_FAULT_STORAGE);
@@ -3755,7 +3802,7 @@ static bool mission_test_ball_home_load(mission_context_t *ctx)
         while (moves-- > 0U) {
             if (!mission_advance_slot(ctx,
                     MISSION_SLOT_USE_CW ? ZDT_TURNTABLE_DIR_CW :
-                                          ZDT_TURNTABLE_DIR_CCW, NULL)) {
+                                          ZDT_TURNTABLE_DIR_CCW, NULL, true)) {
                 (void)turn_stop(NULL, NULL);
                 if (!g_wireless_test.stop_requested) {
                     mission_fail(ctx, MISSION_FAULT_STORAGE);
@@ -3836,7 +3883,7 @@ static bool mission_test_seek_ball_slot(mission_context_t *ctx, uint8_t slot)
     while (g_wireless_test.current_slot != slot) {
         fine_used = 0U;
         if (g_wireless_test.stop_requested ||
-            !mission_advance_slot(ctx, ZDT_TURNTABLE_DIR_CCW, &fine_used)) {
+            !mission_advance_slot(ctx, ZDT_TURNTABLE_DIR_CCW, &fine_used, false)) {
             (void)turn_stop(NULL, NULL);
             return false;
         }
@@ -3844,7 +3891,7 @@ static bool mission_test_seek_ball_slot(mission_context_t *ctx, uint8_t slot)
             (g_wireless_test.current_slot == 1U) ? 12U :
             (uint8_t)(g_wireless_test.current_slot - 1U);
         (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
-                       "CCW SLOT=%u PB0=1 FINE=%u\r\n",
+                       "CCW SLOT=%u PB0=OPTIONAL FINE=%u\r\n",
                        (unsigned)g_wireless_test.current_slot,
                        (unsigned)fine_used);
         mission_test_write(g_wireless_test.text);
@@ -4387,7 +4434,7 @@ static void mission_wireless_test_entry(void *argument)
             ok = mission_advance_slot(ctx,
                 (strcmp(command, "TURN CW") == 0) ?
                     ZDT_TURNTABLE_DIR_CW : ZDT_TURNTABLE_DIR_CCW,
-                &fine_used);
+                &fine_used, true);
             if (!ok) {
                 (void)turn_stop(NULL, NULL);
                 if (!g_wireless_test.stop_requested) {

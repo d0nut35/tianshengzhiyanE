@@ -26,6 +26,11 @@ $branchStart = $source.IndexOf('#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED', $gateE
 $branchEnd = $source.IndexOf('#endif', $branchStart)
 if ($gateStart -lt 0 -or $branchStart -lt 0 -or $branchEnd -lt 0) { throw 'Missing depot event branches' }
 $functions += "static void depot_handle_chassis(mission_context_t *ctx, const chassis_mission_event_t *event) {`n" + $source.Substring($gateStart, $gateEnd - $gateStart) + $source.Substring($branchStart, $branchEnd - $branchStart) + "#endif`n}`n"
+# 用实际READY分支设置数字期限，验证从READY计时及3～5秒内结果仍可消费。
+$readyStart = $source.IndexOf('    /* 仓库位已停车，不需要向底盘发送扫描放行命令。 */')
+$readyEnd = $source.IndexOf('    /* 4) 圆盘开始监听', $readyStart)
+if ($readyStart -lt 0 -or $readyEnd -lt 0) { throw 'Missing depot READY branch' }
+$functions += "static void depot_ready(mission_context_t *ctx) {`n" + $source.Substring($readyStart,$readyEnd-$readyStart) + "}`n"
 [IO.File]::WriteAllText((Join-Path $buildDir 'depot_under_test.inc'), ($functions -join "`n"), [Text.UTF8Encoding]::new($false))
 $core = Join-Path $projectRoot '03_Middleware/ball_manifest'
 foreach ($minimal in @(0, 1)) {

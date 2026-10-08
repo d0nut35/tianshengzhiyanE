@@ -199,8 +199,15 @@ int main(void)
     now += 999; mission_check_timeout(&c); assert(last_command == 0);
     ++now; mission_check_timeout(&c);
     assert(last_command == MISSION_CMD_DEPOT_OK && c.state == MISSION_STATE_DEPOT_WAIT_HOME);
-    reset(&c); mission_enter_state(&c, MISSION_STATE_DEPOT_WAIT_DIGIT, 3000);
-    now += 3000; mission_check_timeout(&c);
+    reset(&c); c.state = MISSION_STATE_DEPOT_WAIT_DIGIT; depot_ready(&c);
+    now += 4000; mission_check_timeout(&c);
+    assert(stops == 0 && c.state == MISSION_STATE_DEPOT_WAIT_DIGIT);
+    c.depot_position = 1; digit(&c, 2); /* 超过旧3秒，但新期限内仍可接收第一遍数字。 */
+    assert(c.depot_first_digit == 2 && sessions == 1 && c.state == MISSION_STATE_DEPOT_WAIT_DIGIT);
+    reset(&c); c.state = MISSION_STATE_DEPOT_WAIT_DIGIT; depot_ready(&c);
+    now += 4999; mission_check_timeout(&c);
+    assert(stops == 0 && c.state == MISSION_STATE_DEPOT_WAIT_DIGIT);
+    ++now; mission_check_timeout(&c);
     assert(stops == 1 && c.state == MISSION_STATE_DEPOT_DIGIT_STOP);
     /* 蓝方D2～D4的数字排列任意，全部按IC目标列放置；D4不可假定列4。
      * 实际返D1回报前不回家，重复D1不能重进积木或清空档案。 */

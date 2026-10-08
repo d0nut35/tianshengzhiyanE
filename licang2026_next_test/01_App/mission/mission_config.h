@@ -20,7 +20,7 @@
 /* 正式假按钮选色：0=红方，1=蓝方；无线仍由RED/BLUE选择，实体按键尚未接入。 */
 #define MISSION_FORMAL_BLUE_SIDE              0U
 #define MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS 2000U
-#define MISSION_DEPOT_DIGIT_WAIT_MS        3000U
+#define MISSION_DEPOT_DIGIT_WAIT_MS        5000U /* 仓库每次READY后等数字，和积木期限独立。 */
 #define MISSION_WIRELESS_POLL_MS               10U
 
 #define MISSION_HOME_ACTION_GROUP        10U

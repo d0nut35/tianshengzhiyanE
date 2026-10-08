@@ -82,6 +82,19 @@ static void reset(void)
 int main(void)
 {
     mission_context_t c = {0};
+    /* 每个入口槽均应直接选择本列CCW最近球，当前槽有目标球时零步取球。 */
+    for (unsigned slot = 1; slot <= 12; ++slot) {
+        reset(); c.arm_home_ready = true; g_wireless_test.current_slot = slot;
+        unsigned best = 0, distance = 12;
+        for (unsigned i = 0; i < BALL_MANIFEST_CAPACITY; ++i) {
+            if (g_wireless_test.manual_balls[i].ball.column != 1) continue;
+            unsigned steps = (slot + 12 - (i + 1)) % 12;
+            if (steps < distance) { distance = steps; best = i; }
+        }
+        assert(mission_test_run_depot_balls(&c));
+        assert(placed_count == 9 && placed_order[0] == best);
+    }
+    c.arm_home_ready = false;
     reset(); assert(mission_test_run_depot_balls(&c));
     const uint8_t expected[] = {8, 5, 2, 1, 0, 3, 7, 6, 4};
     assert(placed_count == 9 && memcmp(placed_order, expected, sizeof(expected)) == 0);

@@ -138,7 +138,7 @@ int main(void)
     reset(&c); mission_enter_state(&c, MISSION_STATE_PLATFORM_SETTLE, MISSION_PLATFORM_SETTLE_MS);
     now += 199; mission_check_timeout(&c); assert(sessions == 0);
     ++now; mission_check_timeout(&c); assert(sessions == 1 && c.state == MISSION_STATE_PLATFORM_WAIT_VISION);
-    /* 抓取数不能推定为9；空盘、部分抓取、九球和已在12槽均实际走到12槽。 */
+    /* 抓取数不能推定为9；空盘、部分抓取、九球和已在12槽均保留当前槽。 */
     const uint8_t starts[] = {0, 3, 9, 11};
     for (unsigned i = 0; i < sizeof(starts); ++i) {
         reset(&c); c.current_slot = starts[i]; mission_depot_prepare(&c);
@@ -146,13 +146,13 @@ int main(void)
         /* 发送10不算到位，尚未完成时主循环不能转盘。 */
         now += 1; mission_check_timeout(&c); assert(moves == 0);
         finish_arm(&c); seek(&c);
-        assert(c.current_slot == 11 && moves == 11U - starts[i]);
+        assert(c.current_slot == starts[i] && moves == 0);
         assert(group_count == 1 && sessions == 1);
     }
-    /* 小圆盘退出已完成10：入仓不重发，转到12后直接开始数字会话。 */
+    /* 小圆盘退出已完成10：入仓不重发，保留当前槽直接开始数字会话。 */
     reset(&c); c.current_slot = 9; c.arm_home_ready = true;
     mission_depot_prepare(&c); assert(group_count == 0);
-    seek(&c); assert(moves == 2 && sessions == 1 && group_count == 0);
+    seek(&c); assert(moves == 0 && c.current_slot == 9 && sessions == 1 && group_count == 0);
     /* 重复目标与读卡失败留车，正常球按CCW距离；回10前不能提前PLACED。 */
     reset(&c); c.current_slot = 4;
     add_ball(&c, 1, 2, 0); add_ball(&c, 3, 2, 1); add_ball(&c, 3, 2, 2);
@@ -181,7 +181,7 @@ int main(void)
     reset(&c); c.depot_first_digit = 2; c.depot_columns_used = 1U << 2; digit(&c, 2);
     assert(c.state == MISSION_STATE_FAULT);
     /* 电机失败不伪造槽号、不收臂继续；下发机械臂失败不标记PLACED。 */
-    reset(&c); c.current_slot = 9; mission_depot_prepare(&c); finish_arm(&c);
+    reset(&c); c.current_slot = 9; c.depot_column = 1; add_ball(&c, 1, 1, 8); mission_depot_next_ball(&c); finish_arm(&c);
     move_ok = false; seek(&c); assert(c.state == MISSION_STATE_FAULT && c.current_slot == 9);
     reset(&c); add_ball(&c, 2, 1, 0); c.depot_column = 1; arm_ok = false;
     mission_depot_next_ball(&c);
@@ -229,7 +229,7 @@ int main(void)
         }
         mission_depot_prepare(&c);
         assert(c.depot_position == 2 && c.manifest.count == 9 && c.current_slot == 8);
-        seek(&c); assert(c.current_slot == 11 && sessions == 1);
+        seek(&c); assert(c.current_slot == 8 && sessions == 1);
         for (unsigned point = 2; point <= 4; ++point) {
             unsigned column = permutations[p][point - 2];
             digit(&c, (uint8_t)column); digit(&c, (uint8_t)column);

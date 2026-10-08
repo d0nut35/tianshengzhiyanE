@@ -2716,8 +2716,8 @@ static void mission_depot_prepare(mission_context_t *ctx)
     ctx->depot_columns_used = 0U;
     ctx->depot_first_digit = 0U;
     ctx->depot_preparing = true;
-    ctx->depot_target_slot = 11U; /* 物理12槽；必须实际移动，不能伪造当前位置。 */
-    DEPOT_TRACE("[M] DEPOT BEGIN BALLS=%u SKIP=0x%X SLOT=%u TARGET=12\r\n",
+    ctx->depot_target_slot = ctx->current_slot; /* 保留实际槽位；入口不再强制转到12槽。 */
+    DEPOT_TRACE("[M] DEPOT BEGIN BALLS=%u SKIP=0x%X SLOT=%u KEEP_CURRENT\r\n",
                 (unsigned)ctx->manifest.count, (unsigned)ctx->depot_abnormal_mask,
                 (unsigned)(ctx->current_slot + 1U));
     /* 已确认动作10时直接寻槽；其他姿态先等动作10完成，不能只看下发组号。 */
@@ -3793,7 +3793,7 @@ static bool mission_test_ball_home_load(mission_context_t *ctx)
         mission_test_print_ball(ctx,
                                 (uint8_t)(g_wireless_test.manual_count - 1U));
         moves = (g_wireless_test.manual_count == BALL_MANIFEST_CAPACITY) ?
-            3U : 1U;
+            0U : 1U; /* 最后一球读完保留当前槽，不再空转到12槽。 */
         while (moves-- > 0U) {
             if (!mission_advance_slot(ctx,
                     MISSION_SLOT_USE_CW ? ZDT_TURNTABLE_DIR_CW :
@@ -3828,7 +3828,10 @@ static bool mission_test_ball_home_load(mission_context_t *ctx)
         return false;
     }
     g_wireless_test.ball_home_ready = true;
-    mission_test_write("BALL HOME READY SLOT=12\r\n");
+    (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                   "BALL HOME READY SLOT=%u\r\n",
+                   (unsigned)g_wireless_test.current_slot);
+    mission_test_write(g_wireless_test.text);
     return true;
 }
 

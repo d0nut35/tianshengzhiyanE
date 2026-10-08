@@ -1,4 +1,5 @@
 /* 与正式关闭日志构建一致：诊断参数不求值。 */
+#define TURN_TRACE(...) ((void)0)
 #define STAIR_TRACE(...) ((void)0)
 #define STAIR_COUNT(...) ((void)0)
 #define STAIR_RESET(...) ((void)0)

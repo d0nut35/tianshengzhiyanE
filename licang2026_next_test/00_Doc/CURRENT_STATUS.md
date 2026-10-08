@@ -1,5 +1,7 @@
 # STM32当前状态
 
+2026-10-09转盘诊断补齐：TURN_TRACE复用MISSION_DEPOT_TRACE_ENABLED，正式和无线均输出USART1。共用转槽函数打印BEGIN（起槽/方向/格数/微调上限/超时）、DONE或PB0未确认继续，以及FAIL=MOVE/STATUS/MOTOR/TIMEOUT细分；存球打印读卡状态/建档失败/实际转槽完成，mission_fail在改为FAULT前输出原状态。仅增加诊断，不放宽电机/通信/STOP保护，不改600RPM、单格10次/放球15次、限球及动作流程。转盘日志开关/失败原因主机断言、圆盘/阶梯收球、仓库/动作10回归通过；无线、红方正式日志开/关Keil均0错误0警告，产物turnlog-wireless.hex、turnlog-red-formal.hex。当前无线1/日志1保留，未烧录现场；本次两球STORED后FAULT=5及Nano SSH断连仍待新日志，不确认根因。Nano高层78..318、中层59..279已推送0ee4ed3。
+
 2026-10-09放球多格更新：红蓝正式与无线放球按CCW最近目标的格数一次粗调（格数×MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG，当前140°/格），仅在末端每次1°微调；MISSION_ZDT_DEPOT_FINE_MAX_STEPS=15，到上限未确认PB0继续。MISSION_ZDT_DEPOT_SLOT_TIMEOUT_MS=8000，总保护按格数相乘；粗/微调600 RPM保持。运动成功后才将当前位置更新为目标槽，零格不动，电机/通信/STOP保护保留；原收球、九球读卡装载、独立TURN仍单格/10次。主机测试覆盖0～11格、15次边界、按格数超时、故障及STOP；正式/无线编译结果见multislot-*-build.log，未烧录实机。
 
 2026-10-09放球入口更新：红蓝正式流程保留ctx->current_slot，不再强制到12槽；动作10实际完成后开始C100识别。无线ROUTE DEPOT BALL的BALL HOME仍从人工对准1槽读九球，末球读完停9槽，取消额外三步到12；READY日志输出实际槽号。后续按当前槽CCW最近球选择、放球动作及转盘保护保持。仓库/无线12种入口槽/动作10主机回归通过，正式与无线Keil均0错误0警告，未烧录、未实机验证。当前源码仍无线1；用户底盘修改和197个Drivers/RTE差异保留。

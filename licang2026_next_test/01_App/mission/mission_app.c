@@ -49,6 +49,13 @@ static char g_depot_trace_text[128];
 #define BLOCK_TRACE(...) DEPOT_TRACE(__VA_ARGS__)
 #endif
 
+/* 转盘与存球诊断共用原日志开关；无线输出USART1，正式沿用DEPOT_TRACE。 */
+#if MISSION_DEPOT_TRACE_ENABLED
+#define TURN_TRACE(...) BLOCK_TRACE(__VA_ARGS__)
+#else
+#define TURN_TRACE(...) ((void)0)
+#endif
+
 #define MISSION_FLAG_COMMAND       (1UL << 1)
 #define MISSION_FLAG_ARM_OK        (1UL << 2)
 #define MISSION_FLAG_ARM_FAIL      (1UL << 3)
@@ -747,7 +754,7 @@ static void mission_fail(mission_context_t *ctx, mission_fault_t fault)
         (void)arm_stop(NULL, NULL);
         ctx->active_arm_group = 0U;
     }
-    DEPOT_TRACE("[M] FAULT=%u STATE=%u ARM_LAST=%lu V=%u IO=%u\r\n",
+    TURN_TRACE("[M] FAULT=%u STATE=%u ARM_LAST=%lu V=%u IO=%u\r\n",
                 (unsigned)fault, (unsigned)ctx->state,
                 (unsigned long)ctx->arm_last_action_report,
                 (unsigned)ctx->vision.phase, (unsigned)ctx->vision.mail_status);
@@ -1153,6 +1160,9 @@ static bool mission_advance_slots(
     mission_user_command_t command;
 #endif
 
+    TURN_TRACE("[M] TURN BEGIN SLOT=%u DIR=%u STEPS=%u LIMIT=%u TIMEOUT=%lu\r\n",
+        (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
+        (unsigned)slots, (unsigned)fine_limit, (unsigned long)timeout_ms);
     for (;;) {
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
         /* 同步转槽事务间仍响应正式STOP，不依赖无线命令轮询。 */
@@ -1185,7 +1195,7 @@ static bool mission_advance_slots(
         if (!completed ||
             ((response->kind != ZDT_TURNTABLE_REPLY_ACK) &&
              (response->kind != ZDT_TURNTABLE_REPLY_REACHED))) {
-            DEPOT_TRACE("[M] TURN FAIL=MOVE SLOT=%u DIR=%u FINE=%u SUBMIT=%u IO=%u HAS=%u KIND=%u\r\n",
+            TURN_TRACE("[M] TURN FAIL=MOVE SLOT=%u DIR=%u FINE=%u SUBMIT=%u IO=%u HAS=%u KIND=%u\r\n",
                 (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
                 (unsigned)fine_steps, (unsigned)submitted,
                 (unsigned)ctx->storage.zdt_status, (unsigned)ctx->storage.zdt_has_response,
@@ -1212,7 +1222,7 @@ static bool mission_advance_slots(
 #endif
             if ((osKernelGetTickCount() - started_tick) >=
                 mission_ms_to_ticks(timeout_ms)) {
-                DEPOT_TRACE("[M] TURN FAIL=TIMEOUT SLOT=%u DIR=%u FINE=%u\r\n",
+                TURN_TRACE("[M] TURN FAIL=TIMEOUT SLOT=%u DIR=%u FINE=%u\r\n",
                     (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
                     (unsigned)fine_steps);
                 return false;
@@ -1223,7 +1233,7 @@ static bool mission_advance_slots(
             submitted = turn_query_status(mission_zdt_done, ctx);
             completed = (submitted == ZDT_TURNTABLE_OK) && mission_wait_zdt(ctx);
             if (!completed || (response->kind != ZDT_TURNTABLE_REPLY_STATUS)) {
-                DEPOT_TRACE("[M] TURN FAIL=STATUS SLOT=%u DIR=%u FINE=%u SUBMIT=%u IO=%u HAS=%u KIND=%u\r\n",
+                TURN_TRACE("[M] TURN FAIL=STATUS SLOT=%u DIR=%u FINE=%u SUBMIT=%u IO=%u HAS=%u KIND=%u\r\n",
                     (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
                     (unsigned)fine_steps, (unsigned)submitted,
                     (unsigned)ctx->storage.zdt_status, (unsigned)ctx->storage.zdt_has_response,
@@ -1234,7 +1244,7 @@ static bool mission_advance_slots(
                 response->data.motor_status.stalled ||
                 response->data.motor_status.stall_protected ||
                 response->data.motor_status.power_loss_latched) {
-                DEPOT_TRACE("[M] TURN FAIL=MOTOR SLOT=%u EN=%u STALL=%u PROTECT=%u POWER=%u\r\n",
+                TURN_TRACE("[M] TURN FAIL=MOTOR SLOT=%u EN=%u STALL=%u PROTECT=%u POWER=%u\r\n",
                     (unsigned)(ctx->current_slot + 1U),
                     (unsigned)response->data.motor_status.enabled,
                     (unsigned)response->data.motor_status.stalled,
@@ -1246,11 +1256,13 @@ static bool mission_advance_slots(
 
         if (mission_gate_is_stably_high()) {
             if (fine_used != NULL) *fine_used = fine_steps;
+            TURN_TRACE("[M] TURN DONE PB0=1 FINE=%u MS=%lu\r\n", (unsigned)fine_steps,
+                (unsigned long)(osKernelGetTickCount() - started_tick));
             return true;
         }
         if (fine_steps >= fine_limit) {
             if (fine_used != NULL) *fine_used = fine_steps;
-            DEPOT_TRACE("[M] TURN PB0 UNCONFIRMED SLOT=%u DIR=%u FINE=%u CONTINUE\r\n",
+            TURN_TRACE("[M] TURN PB0 UNCONFIRMED SLOT=%u DIR=%u FINE=%u CONTINUE\r\n",
                 (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
                 (unsigned)fine_steps);
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
@@ -1287,7 +1299,14 @@ static bool mission_store_ball(
     mission_context_t *ctx,
     mission_storage_region_t region)
 {
-    if (!mission_read_ball(ctx, region)) return false;
+    if (!mission_read_ball(ctx, region)) {
+        TURN_TRACE("[M] STORE FAIL=RECORD REGION=%u SLOT0=%u IC_STATUS=%u\r\n",
+            (unsigned)region, (unsigned)ctx->storage_slot, (unsigned)ctx->storage.ic_status);
+        return false;
+    }
+    TURN_TRACE("[M] STORE READ REGION=%u SLOT0=%u IC_STATUS=%u BALLS=%u\r\n",
+        (unsigned)region, (unsigned)ctx->storage_slot,
+        (unsigned)ctx->storage.ic_status, (unsigned)ctx->manifest.count);
     if (region == MISSION_STORAGE_REGION_STAIR) {
         STAIR_TRACE(ctx, "TURN FROM0=%u PHYS=%u DIR=%u\r\n", (unsigned)ctx->current_slot,
             (unsigned)(ctx->current_slot + 1U), (unsigned)MISSION_SLOT_USE_CW);
@@ -1303,6 +1322,8 @@ static bool mission_store_ball(
     ctx->current_slot = MISSION_SLOT_USE_CW ?
         (uint8_t)((ctx->current_slot + 1U) % 12U) :
         (uint8_t)((ctx->current_slot + 11U) % 12U);
+    TURN_TRACE("[M] STORE TURN DONE REGION=%u SLOT0=%u CURRENT=%u\r\n",
+        (unsigned)region, (unsigned)ctx->storage_slot, (unsigned)(ctx->current_slot + 1U));
     if (region == MISSION_STORAGE_REGION_STAIR) {
         STAIR_TRACE(ctx, "TURN_DONE PB0=OPTIONAL SLOT0=%u PHYS=%u\r\n",
             (unsigned)ctx->current_slot, (unsigned)(ctx->current_slot + 1U));

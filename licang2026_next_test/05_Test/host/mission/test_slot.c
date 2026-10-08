@@ -8,16 +8,19 @@
 #undef MISSION_CHASSIS_ROUTE_TEST_ENABLED
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED 0
 #if TEST_TRACE
+static char last_failure[128];
 static void trace(const char *format, ...)
 {
     char text[128]; va_list args; va_start(args,format);
     int len = vsnprintf(text,sizeof(text),format,args); va_end(args);
     assert(len >= 0 && (size_t)len < sizeof(text));
+    if (strstr(text, "TURN FAIL=")) strcpy(last_failure, text);
 }
 #define DEPOT_TRACE(...) trace(__VA_ARGS__)
 #else
 #define DEPOT_TRACE(...) ((void)0)
 #endif
+#define TURN_TRACE(...) DEPOT_TRACE(__VA_ARGS__)
 typedef struct {
     mission_state_t state; uint8_t current_slot; void *command_queue;
     struct { zdt_turntable_response_t zdt_response; zdt_turntable_status_t zdt_status;
@@ -88,6 +91,11 @@ int main(void)
             c = reset(1,fail);
             assert(!mission_advance_slot(&c,expected_direction,NULL));
             assert(moves == 1); /* PB0可选也不能跳过到位/电机/通信/超时保护。 */
+#if TEST_TRACE
+            const char *reason = fail <= 2 ? "FAIL=MOVE" :
+                (fail <= 4 ? "FAIL=STATUS" : (fail <= 8 ? "FAIL=MOTOR" : "FAIL=TIMEOUT"));
+            assert(strstr(last_failure, reason));
+#endif
         }
         c = reset(0,0); stop_at = 1;
         assert(!mission_advance_slot(&c,expected_direction,NULL));

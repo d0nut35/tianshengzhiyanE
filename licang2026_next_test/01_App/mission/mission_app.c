@@ -2126,6 +2126,12 @@ static void mission_handle_chassis(
                 (unsigned)event->type, (unsigned)ctx->state);
             return;
         }
+        /* 底盘段号保持LOW/HIGH/MID；蓝方实物层序为中/高/低。
+         * 仅在接收处映射一次，视觉场景与夹取动作共用实际层号。 */
+        if (g_mission_side == MISSION_COLOR_BLUE) {
+            if (layer == MISSION_STAIR_LOW) layer = MISSION_STAIR_MID;
+            else if (layer == MISSION_STAIR_MID) layer = MISSION_STAIR_LOW;
+        }
         ctx->stair_layer = layer;
         if ((ctx->state == MISSION_STATE_STAIR_SCANNING) &&
             (ctx->vision.phase != MISSION_VISION_IDLE)) {
@@ -2137,8 +2143,9 @@ static void mission_handle_chassis(
         } else if (ctx->state != MISSION_STATE_STAIR_WAIT_POSE) {
             mission_start_stair_layer(ctx);
         }
-        STAIR_TRACE(ctx, "LAYER=%u STATE=%u COUNT=%u\r\n",
-            (unsigned)layer, (unsigned)ctx->state, (unsigned)ctx->stair_balls);
+        STAIR_TRACE(ctx, "LAYER=%u RAW=%u SIDE=%u STATE=%u COUNT=%u\r\n",
+            (unsigned)layer, (unsigned)event->type, (unsigned)g_mission_side,
+            (unsigned)ctx->state, (unsigned)ctx->stair_balls);
         return;
     }
     /* 6) 只有底盘确认实际停车后才执行当前层抓取动作组。 */

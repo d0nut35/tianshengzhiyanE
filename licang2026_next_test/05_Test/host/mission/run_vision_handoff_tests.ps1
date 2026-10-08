@@ -28,6 +28,13 @@ $pauseStart = $source.IndexOf('    if ((event->type == CHASSIS_CMD_STAIR_PAUSE)'
 $pauseEnd = $source.IndexOf('    /* 7) 底盘确认恢复', $pauseStart)
 if ($pauseStart -lt 0 -or $pauseEnd -lt 0) { throw 'Missing stair pause branch' }
 $functions += "static void handle_pause(mission_context_t *ctx, const chassis_mission_event_t *event) { uint8_t grasp_group;`n" + $source.Substring($pauseStart, $pauseEnd - $pauseStart) + "}`n"
+# 抽取实际请求/ready门禁与整段层事件处理，避免在夹具中复制红蓝映射。
+$gateStart = $source.IndexOf('    /* 1) 正式流程只接收当前request_id')
+$gateEnd = $source.IndexOf('    /* 2) 全局停车', $gateStart)
+$layerStart = $source.IndexOf('    /* 5) LOW/HIGH/MID切层')
+$layerEnd = $source.IndexOf('    /* 6) 只有底盘确认实际停车', $layerStart)
+if ($gateStart -lt 0 -or $gateEnd -lt 0 -or $layerStart -lt 0 -or $layerEnd -lt 0) { throw 'Missing stair layer/gate branch' }
+$functions += "static void handle_layer(mission_context_t *ctx, const chassis_mission_event_t *event) { mission_stair_layer_t layer;`n" + $source.Substring($gateStart, $gateEnd - $gateStart) + $source.Substring($layerStart, $layerEnd - $layerStart) + "}`n"
 $diagnosticSource = [IO.File]::ReadAllText((Join-Path $projectRoot '01_App/mission/mission_app.c'))
 $diagStart = $diagnosticSource.IndexOf('/* 阶梯诊断只在正式日志开关打开时存在')
 $diagEnd = $diagnosticSource.IndexOf('static mission_context_t g_mission;', $diagStart)

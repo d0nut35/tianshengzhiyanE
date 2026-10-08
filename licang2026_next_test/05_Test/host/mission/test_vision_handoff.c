@@ -33,9 +33,10 @@ typedef enum { MISSION_VISION_SCENE_PLATFORM = 1, MISSION_VISION_SCENE_STAIR,
                MISSION_VISION_SCENE_SMALL_DISC, MISSION_VISION_SCENE_DEPOT_DIGIT,
                MISSION_VISION_SCENE_BLOCK_DIGIT } mission_vision_scene_t;
 enum { MULT_UART_OP_READ, MULT_UART_OP_WRITE_READ };
-enum { MISSION_FAULT_ARM, MISSION_FAULT_PROTOCOL, MISSION_FAULT_QUEUE, MISSION_FAULT_VISION };
-enum { MISSION_CMD_CAM_READY, CHASSIS_CMD_STAIR_PAUSE };
-typedef struct { unsigned type; } chassis_mission_event_t;
+enum { MISSION_FAULT_ARM, MISSION_FAULT_PROTOCOL, MISSION_FAULT_QUEUE, MISSION_FAULT_VISION, MISSION_FAULT_CHASSIS };
+enum { MISSION_CMD_CAM_READY, CHASSIS_CMD_STAIR_PAUSE,
+       CHASSIS_CMD_STAIR_LOW, CHASSIS_CMD_STAIR_HIGH, CHASSIS_CMD_STAIR_MID };
+typedef struct { unsigned type; uint16_t request_id; uint8_t is_ready; } chassis_mission_event_t;
 typedef struct {
     unsigned phase;
     bool inflight, completion_pending;
@@ -77,6 +78,8 @@ static bool mission_send_chassis(unsigned command, uint16_t id)
 { (void)id; CHECK(command == MISSION_CMD_CAM_READY); ++cam_ready; return true; }
 static bool mission_start_arm(mission_context_t *c, uint8_t group, mission_state_t state)
 { ++arms; c->active_arm_group = group; c->state = state; return true; }
+static bool mission_stop_vision(mission_context_t *c)
+{ c->vision.phase = MISSION_VISION_STOPPING; return true; }
 static void mission_fail(mission_context_t *c, unsigned fault) { (void)fault; c->state = MISSION_STATE_FAULT; }
 #include "vision_under_test.inc"
 
@@ -131,7 +134,7 @@ int main(void)
         c.state = MISSION_STATE_STAIR_WAIT_PAUSE; c.vision.phase = MISSION_VISION_ACKING;
         unsigned before_arms = arms;
         mission_vision_process(&c); CHECK(arms == before_arms);
-        chassis_mission_event_t pause = { CHASSIS_CMD_STAIR_PAUSE };
+        chassis_mission_event_t pause = { .type = CHASSIS_CMD_STAIR_PAUSE };
         handle_pause(&c, &pause);
         CHECK(arms == before_arms + 1 && c.active_arm_group == 13 + layer);
         CHECK(c.state == MISSION_STATE_STAIR_WAIT_GRASP);
@@ -146,6 +149,55 @@ int main(void)
         CHECK(arms == before_arms + 1 && c.active_arm_group == 13 + layer);
         handle_pause(&c, &pause); CHECK(arms == before_arms + 1);
     }
+    /* 验证原段号在两方分别选择实际层、视觉场景/颜色及夹取动作。
+     * 切层先停旧会话，重复/迟到通知不能绕过原请求及状态门禁。 */
+    const unsigned raw[] = {CHASSIS_CMD_STAIR_LOW, CHASSIS_CMD_STAIR_HIGH, CHASSIS_CMD_STAIR_MID};
+    const mission_stair_layer_t layers[2][3] = {
+        {MISSION_STAIR_LOW, MISSION_STAIR_HIGH, MISSION_STAIR_MID},
+        {MISSION_STAIR_MID, MISSION_STAIR_HIGH, MISSION_STAIR_LOW}};
+    const nano_vision_scene_t scenes[2][3] = {
+        {NANO_VISION_SCENE_STAIR_LOW, NANO_VISION_SCENE_STAIR_HIGH, NANO_VISION_SCENE_STAIR_MID},
+        {NANO_VISION_SCENE_STAIR_MID, NANO_VISION_SCENE_STAIR_HIGH, NANO_VISION_SCENE_STAIR_LOW}};
+    const unsigned groups[2][3] = {{14,15,16}, {16,15,14}};
+    for (unsigned side = 0; side < 2; ++side) {
+        g_mission_side = side ? MISSION_COLOR_BLUE : MISSION_COLOR_RED;
+        for (unsigned segment = 0; segment < 3; ++segment) {
+            memset(&c, 0, sizeof(c)); c.request_id = 9;
+            c.state = MISSION_STATE_STAIR_WAIT_POSE;
+            chassis_mission_event_t e = {raw[segment], 8, 1};
+            handle_layer(&c, &e); CHECK(c.stair_layer == MISSION_STAIR_NONE);
+            e.request_id = 9;
+            unsigned before_submits = submits;
+            handle_layer(&c, &e);
+            CHECK(c.stair_layer == layers[side][segment] && submits == before_submits);
+            mission_start_stair_layer(&c);
+            CHECK(c.vision.scene == scenes[side][segment]);
+            nano_vision_session_t start;
+            nano_vision_frame_t frame;
+            CHECK(nano_vision_decode_frame(c.vision.tx,
+                NANO_VISION_HEADER_SIZE + NANO_VISION_SESSION_PAYLOAD_SIZE + NANO_VISION_CRC_SIZE,
+                &frame) == NANO_VISION_OK);
+            CHECK(nano_vision_parse_session_start(&frame, &start) == NANO_VISION_OK);
+            CHECK(start.scene == scenes[side][segment]);
+            CHECK(start.target_color == (side ? NANO_VISION_COLOR_BLUE : NANO_VISION_COLOR_RED));
+            c.state = MISSION_STATE_STAIR_SCANNING; c.vision.phase = MISSION_VISION_LISTENING;
+            handle_layer(&c, &e);
+            CHECK(c.state == MISSION_STATE_STAIR_WAIT_LAYER && c.vision.phase == MISSION_VISION_STOPPING);
+            CHECK(c.stair_layer == layers[side][segment]);
+            handle_layer(&c, &e); CHECK(c.stair_layer == layers[side][segment]);
+            c.vision.phase = MISSION_VISION_IDLE; c.vision.inflight = false;
+            mission_start_stair_layer(&c);
+            CHECK(c.vision.scene == scenes[side][segment]);
+            c.state = MISSION_STATE_STAIR_WAIT_PAUSE; c.vision.phase = MISSION_VISION_IDLE;
+            chassis_mission_event_t pause = { .type = CHASSIS_CMD_STAIR_PAUSE };
+            handle_pause(&c, &pause); CHECK(c.active_arm_group == groups[side][segment]);
+            c.state = MISSION_STATE_STOPPED; c.stair_layer = MISSION_STAIR_NONE;
+            handle_layer(&c, &e); CHECK(c.stair_layer == MISSION_STAIR_NONE && c.state == MISSION_STATE_STOPPED);
+            c.state = MISSION_STATE_STAIR_WAIT_LAYER; e.is_ready = 0;
+            handle_layer(&c, &e); CHECK(c.state == MISSION_STATE_FAULT && c.stair_layer == MISSION_STAIR_NONE);
+        }
+    }
+    g_mission_side = MISSION_COLOR_RED;
     memset(&c, 0, sizeof(c));
     mission_start_stair_layer(&c); CHECK(c.state == MISSION_STATE_STAIR_WAIT_LAYER);
     c.stair_layer = MISSION_STAIR_HIGH;

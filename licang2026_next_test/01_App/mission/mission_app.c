@@ -1133,9 +1133,12 @@ static bool mission_read_ball(
 }
 
 /** 所有转槽保留同向PB0校准，微调耗尽后继续；电机/通信故障仍停车。 */
-static bool mission_advance_slot(
+static bool mission_advance_slots(
     mission_context_t *ctx,
     zdt_turntable_direction_t direction,
+    uint8_t slots,
+    uint8_t fine_limit,
+    uint32_t timeout_ms,
     uint8_t *fine_used)
 {
     const zdt_turntable_response_t *response = &ctx->storage.zdt_response;
@@ -1152,7 +1155,7 @@ static bool mission_advance_slot(
 
     for (;;) {
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
-        /* [lyx] 同步单槽事务间仍响应正式STOP，不依赖无线命令轮询。 */
+        /* 同步转槽事务间仍响应正式STOP，不依赖无线命令轮询。 */
         while (osMessageQueueGet(ctx->command_queue, &command, NULL, 0U) == osOK) {
             mission_handle_command(ctx, command);
         }
@@ -1173,7 +1176,7 @@ static bool mission_advance_slot(
                  ctx,
                  coarse ? ((direction == ZDT_TURNTABLE_DIR_CCW) ?
                      MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG :
-                     MISSION_ZDT_COARSE_ANGLE_0P1DEG) :
+                     MISSION_ZDT_COARSE_ANGLE_0P1DEG) * slots :
                           MISSION_ZDT_FINE_ANGLE_0P1DEG,
                  coarse ? MISSION_ZDT_SPEED_RPM :
                           MISSION_ZDT_FINE_SPEED_RPM,
@@ -1208,7 +1211,7 @@ static bool mission_advance_slot(
             if (g_wireless_test.stop_requested) return false;
 #endif
             if ((osKernelGetTickCount() - started_tick) >=
-                mission_ms_to_ticks(MISSION_ZDT_SLOT_TIMEOUT_MS)) {
+                mission_ms_to_ticks(timeout_ms)) {
                 DEPOT_TRACE("[M] TURN FAIL=TIMEOUT SLOT=%u DIR=%u FINE=%u\r\n",
                     (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
                     (unsigned)fine_steps);
@@ -1245,7 +1248,7 @@ static bool mission_advance_slot(
             if (fine_used != NULL) *fine_used = fine_steps;
             return true;
         }
-        if (fine_steps >= MISSION_ZDT_FINE_MAX_STEPS) {
+        if (fine_steps >= fine_limit) {
             if (fine_used != NULL) *fine_used = fine_steps;
             DEPOT_TRACE("[M] TURN PB0 UNCONFIRMED SLOT=%u DIR=%u FINE=%u CONTINUE\r\n",
                 (unsigned)(ctx->current_slot + 1U), (unsigned)direction,
@@ -1259,7 +1262,27 @@ static bool mission_advance_slot(
     }
 }
 
-/** Mission只调用这一个入口：读IC并建档，然后将车载转盘推进到下一槽。 */
+/** 收球、装球及独立TURN保留原单格粗调与微调上限。 */
+static bool mission_advance_slot(mission_context_t *ctx,
+    zdt_turntable_direction_t direction, uint8_t *fine_used)
+{
+    return mission_advance_slots(ctx, direction, 1U, MISSION_ZDT_FINE_MAX_STEPS,
+                                 MISSION_ZDT_SLOT_TIMEOUT_MS, fine_used);
+}
+
+/** 放球专用：一次粗调格数×单格角度，末端统一微调；调用者成功后才更新槽号。 */
+static bool mission_depot_advance(mission_context_t *ctx, uint8_t slots,
+                                  uint8_t *fine_used)
+{
+    if (fine_used != NULL) *fine_used = 0U;
+    if (slots == 0U) return true;
+    if (slots >= 12U) return false;
+    return mission_advance_slots(ctx, ZDT_TURNTABLE_DIR_CCW, slots,
+        MISSION_ZDT_DEPOT_FINE_MAX_STEPS,
+        MISSION_ZDT_DEPOT_SLOT_TIMEOUT_MS * slots, fine_used);
+}
+
+/** 读IC并建档，再按原单格策略推进收球槽。 */
 static bool mission_store_ball(
     mission_context_t *ctx,
     mission_storage_region_t region)
@@ -2909,17 +2932,16 @@ static void mission_check_timeout(mission_context_t *ctx)
         if (ctx->state == MISSION_STATE_DEPOT_SEEK) {
             /* 仓库保留PB0校准，微调耗尽也继续；电机到位/故障保护仍有效。 */
             if (ctx->current_slot != ctx->depot_target_slot) {
-                zdt_turntable_direction_t direction = ctx->depot_preparing ?
-                    ZDT_TURNTABLE_DIR_CW : ZDT_TURNTABLE_DIR_CCW;
-                if (!mission_advance_slot(ctx, direction, NULL)) {
+                uint8_t slots = mission_depot_ccw_steps(ctx->current_slot,
+                                                       ctx->depot_target_slot);
+                if (!mission_depot_advance(ctx, slots, NULL)) {
                     if ((ctx->state != MISSION_STATE_STOPPING) &&
                         (ctx->state != MISSION_STATE_STOPPED)) {
                         mission_fail(ctx, MISSION_FAULT_STORAGE);
                     }
                     return;
                 }
-                ctx->current_slot = (uint8_t)((ctx->current_slot +
-                    ((direction == ZDT_TURNTABLE_DIR_CW) ? 1U : 11U)) % 12U);
+                ctx->current_slot = ctx->depot_target_slot;
             }
             if (ctx->current_slot == ctx->depot_target_slot) {
                 DEPOT_TRACE("[M] SLOT REACHED=%u HOME_READY=%u\r\n",
@@ -3873,21 +3895,21 @@ static bool mission_test_run_arm_group(mission_context_t *ctx, uint8_t group)
     }
 }
 
-/** 卸球从12槽开始逆向逐格定位；每步均用PB0同向微调确认。 */
+/** 从实际当前槽一次逆向转到目标槽，仅在终点进行PB0微调。 */
 static bool mission_test_seek_ball_slot(mission_context_t *ctx, uint8_t slot)
 {
     uint8_t fine_used;
 
-    while (g_wireless_test.current_slot != slot) {
+    if (g_wireless_test.current_slot != slot) {
         fine_used = 0U;
         if (g_wireless_test.stop_requested ||
-            !mission_advance_slot(ctx, ZDT_TURNTABLE_DIR_CCW, &fine_used)) {
+            !mission_depot_advance(ctx, mission_depot_ccw_steps(
+                (uint8_t)(g_wireless_test.current_slot - 1U),
+                (uint8_t)(slot - 1U)), &fine_used)) {
             (void)turn_stop(NULL, NULL);
             return false;
         }
-        g_wireless_test.current_slot =
-            (g_wireless_test.current_slot == 1U) ? 12U :
-            (uint8_t)(g_wireless_test.current_slot - 1U);
+        g_wireless_test.current_slot = slot;
         (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
                        "CCW SLOT=%u PB0=OPTIONAL FINE=%u\r\n",
                        (unsigned)g_wireless_test.current_slot,

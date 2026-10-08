@@ -85,6 +85,8 @@
 #define MISSION_ZDT_FINE_SPEED_RPM             600U /* 用户要求微调与粗调同速，保留PB0校准。 */
 #define MISSION_ZDT_ACCEL                      50U
 #define MISSION_ZDT_FINE_MAX_STEPS             10U
+#define MISSION_ZDT_DEPOT_FINE_MAX_STEPS       15U /* 正式/无线放球：多格粗调后统一微调。 */
+#define MISSION_ZDT_DEPOT_SLOT_TIMEOUT_MS    8000U /* 放球总超时=此值乘目标格数。 */
 #define MISSION_ZDT_STATUS_POLL_MS             50U
 #define MISSION_ZDT_SLOT_TIMEOUT_MS          8000U
 #define MISSION_GATE_CONFIRM_SAMPLES            3U

@@ -25,6 +25,7 @@ typedef struct {
 } mission_context_t;
 enum { osOK, MISSION_FLAG_ZDT_DONE };
 static unsigned moves, gate_at, fault, stop_at;
+static unsigned expected_slots = 1;
 static uint32_t now;
 static zdt_turntable_direction_t expected_direction;
 static uint32_t osKernelGetTickCount(void) { return now; }
@@ -42,7 +43,7 @@ static zdt_turntable_status_t mission_submit_slot_motion(mission_context_t *c, u
 {
     assert(direction == expected_direction);
     assert(angle == (moves == 0 ? (direction == ZDT_TURNTABLE_DIR_CW ?
-        MISSION_ZDT_COARSE_ANGLE_0P1DEG : MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG) : MISSION_ZDT_FINE_ANGLE_0P1DEG));
+        MISSION_ZDT_COARSE_ANGLE_0P1DEG : MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG) * expected_slots : MISSION_ZDT_FINE_ANGLE_0P1DEG));
     assert(speed == 600); ++moves;
     c->storage.zdt_response.kind = ZDT_TURNTABLE_REPLY_ACK;
     c->storage.zdt_status = ZDT_TURNTABLE_OK; c->storage.zdt_has_response = true;
@@ -92,5 +93,25 @@ int main(void)
         assert(!mission_advance_slot(&c,expected_direction,NULL));
         assert(c.state == MISSION_STATE_STOPPING && moves == 1);
     }
-    puts("Slot calibration limit, optional PB0 in all regions and motor/STOP protection passed (host only)");
+    expected_direction = ZDT_TURNTABLE_DIR_CCW;
+    for (unsigned slots = 0; slots < 12; ++slots) {
+        expected_slots = slots;
+        for (unsigned gate = 0; gate <= 16; ++gate) {
+            mission_context_t c = reset(gate,0); uint8_t fine = 99;
+            assert(mission_depot_advance(&c, slots, &fine));
+            assert(moves == (slots == 0 ? 0 : (gate ? gate : 16)));
+            assert(fine == (slots == 0 ? 0 : (gate ? gate - 1 : 15)));
+        }
+        if (slots == 0) continue;
+        for (unsigned fail = 1; fail <= 9; ++fail) {
+            mission_context_t c = reset(1,fail);
+            assert(!mission_depot_advance(&c, slots, NULL));
+            assert(moves == 1);
+            if (fail == 9) assert(now >= MISSION_ZDT_DEPOT_SLOT_TIMEOUT_MS * slots);
+        }
+        mission_context_t c = reset(0,0); stop_at = 1;
+        assert(!mission_depot_advance(&c, slots, NULL));
+        assert(c.state == MISSION_STATE_STOPPING && moves == 1);
+    }
+    puts("Single/multi-slot angles, 10/15 fine limits, scaled timeout and STOP protection passed (host only)");
 }

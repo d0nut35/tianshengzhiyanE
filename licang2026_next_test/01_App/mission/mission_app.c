@@ -2165,9 +2165,15 @@ static void mission_handle_chassis(
     }
     if ((ctx->state == MISSION_STATE_DEPOT_RETURN_ENTRY) &&
         (event->type == CHASSIS_CMD_DEPOT_1_READY)) {
-        /* 蓝方小球收尾返D1实际停车后才允许回家，不重启积木/球档案。 */
+        /* D4收尾返D1实际到位后立即回家，不重启积木/球档案。 */
         ctx->depot_position = 1U;
-        mission_enter_state(ctx, MISSION_STATE_DEPOT_DWELL, 1000U);
+        if (!mission_send_chassis(MISSION_CMD_DEPOT_OK,
+                                  mission_next_request_id(ctx))) {
+            mission_fail(ctx, MISSION_FAULT_QUEUE);
+            return;
+        }
+        mission_enter_state(ctx, MISSION_STATE_DEPOT_WAIT_HOME,
+                            MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
     if ((ctx->state == MISSION_STATE_DEPOT_WAIT_HOME) &&
@@ -2801,19 +2807,14 @@ static void mission_depot_next_ball(mission_context_t *ctx)
         return;
     }
     if (ctx->depot_position == 4U) {
-        if (g_mission_side == MISSION_COLOR_BLUE) {
-            /* 蓝D4是最后数字列；收臂后返回空列D1，等匹配到位再回家。 */
-            if (!mission_send_chassis(MISSION_CMD_GO_DEPOT_1,
-                                      mission_next_request_id(ctx))) {
-                mission_fail(ctx, MISSION_FAULT_QUEUE);
-                return;
-            }
-            mission_enter_state(ctx, MISSION_STATE_DEPOT_RETURN_ENTRY,
-                                MISSION_OPERATION_TIMEOUT_MS);
+        /* 红蓝方D4收尾都先返回D1，实际到位后再停1秒并回家。 */
+        if (!mission_send_chassis(MISSION_CMD_GO_DEPOT_1,
+                                  mission_next_request_id(ctx))) {
+            mission_fail(ctx, MISSION_FAULT_QUEUE);
             return;
         }
-        /* 红D4最后一次收臂完成（无球则到位）后停1秒，直接回家。 */
-        mission_enter_state(ctx, MISSION_STATE_DEPOT_DWELL, 1000U);
+        mission_enter_state(ctx, MISSION_STATE_DEPOT_RETURN_ENTRY,
+                            MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
     ++ctx->depot_position;

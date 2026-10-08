@@ -186,18 +186,23 @@ int main(void)
     reset(&c); add_ball(&c, 2, 1, 0); c.depot_column = 1; arm_ok = false;
     mission_depot_next_ball(&c);
     assert(c.state == MISSION_STATE_FAULT && c.manifest.records[0].state == BALL_MANIFEST_STATE_STORED);
-    /* 二层在D4放置后不运行24；成功收臂才开始1秒计时。 */
+    /* 二层在D4放置后不运行24；成功收臂后先返D1。 */
     reset(&c); add_ball(&c, 2, 4, 0); c.depot_column = 4; c.depot_position = 4;
     mission_depot_next_ball(&c); until_return(&c);
     const unsigned row2[] = {10, 22, 25, 10};
     assert(group_count == 4 && memcmp(groups, row2, sizeof(row2)) == 0);
     assert(c.manifest.records[0].state == BALL_MANIFEST_STATE_STORED);
     finish_arm(&c);
-    assert(c.state == MISSION_STATE_DEPOT_DWELL && c.deadline_tick == now + 1000);
-    /* D4无球也等待完整1秒；随后直接DEPOT_OK，不返D1。 */
+    assert(c.state == MISSION_STATE_DEPOT_RETURN_ENTRY && last_command == MISSION_CMD_GO_DEPOT_1);
+    chassis_mission_event_t return_event = {c.request_id, CHASSIS_CMD_DEPOT_1_READY, 1};
+    return_event.request_id = c.request_id;
+    depot_handle_chassis(&c, &return_event);
+    assert(c.state == MISSION_STATE_DEPOT_WAIT_HOME && last_command == MISSION_CMD_DEPOT_OK);
+    /* D4无球也先返D1；D1到位后立即发送DEPOT_OK回家。 */
     reset(&c); c.depot_position = 4; c.depot_column = 4; mission_depot_next_ball(&c);
-    now += 999; mission_check_timeout(&c); assert(last_command == 0);
-    ++now; mission_check_timeout(&c);
+    assert(last_command == MISSION_CMD_GO_DEPOT_1 && c.state == MISSION_STATE_DEPOT_RETURN_ENTRY);
+    return_event = (chassis_mission_event_t){c.request_id, CHASSIS_CMD_DEPOT_1_READY, 1};
+    depot_handle_chassis(&c, &return_event);
     assert(last_command == MISSION_CMD_DEPOT_OK && c.state == MISSION_STATE_DEPOT_WAIT_HOME);
     reset(&c); c.state = MISSION_STATE_DEPOT_WAIT_DIGIT; depot_ready(&c);
     now += 4000; mission_check_timeout(&c);
@@ -251,10 +256,9 @@ int main(void)
         e.request_id = c.request_id; e.type = CHASSIS_CMD_DEPOT_4_READY;
         depot_handle_chassis(&c, &e); assert(c.state == MISSION_STATE_DEPOT_RETURN_ENTRY);
         e.type = CHASSIS_CMD_DEPOT_1_READY; depot_handle_chassis(&c, &e);
-        assert(c.depot_position == 1 && c.state == MISSION_STATE_DEPOT_DWELL && sessions == before);
-        depot_handle_chassis(&c, &e); assert(c.manifest.count == 9 && sessions == before);
-        now += 999; mission_check_timeout(&c); assert(last_command == MISSION_CMD_GO_DEPOT_1);
-        ++now; mission_check_timeout(&c); assert(last_command == MISSION_CMD_DEPOT_OK);
+        assert(c.depot_position == 1 && c.state == MISSION_STATE_DEPOT_WAIT_HOME &&
+               last_command == MISSION_CMD_DEPOT_OK && sessions == before);
+        assert(c.manifest.count == 9 && sessions == before);
         e.request_id = c.request_id; e.type = CHASSIS_CMD_HOME_READY;
         depot_handle_chassis(&c, &e); assert(c.state == MISSION_STATE_COMPLETE);
     }

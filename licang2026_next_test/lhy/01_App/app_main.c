@@ -66,12 +66,12 @@
 #define APP_CYL_ARC_MS    10839U    /* [lyx] 200mm/s、半径300mm理论绕1.15圈 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
-#define APP_CYL_FIX_VY    (-110.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
+#define APP_CYL_FIX_VY    (-130.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
 #define APP_CYL_FIX_VX    70.0f    /* 找线第二段车体系 x 速度，mm/s */
 #define APP_CYL_EXTRA_MM  20U      /* 第一段末传感器低电平后追加距离，mm */
 #define APP_CYL_FIX_WAIT  1000U    /* 两段找线之间停车等待，ms */
 /* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */
-#define APP_CYL_EXIT_VX_MMS (-200.0f) /* [lyx] 车体 -x 平移速度，mm/s */
+#define APP_CYL_EXIT_VX_MMS (-250.0f) /* [lyx] 车体 -x 平移速度，mm/s */
 #define APP_CYL_EXIT_MS     1800U     /* [lyx] 平移时长，理论位移约180mm */
 
 /* 仓库横移：1 号位找线标定后按里程计 y 在 1~4 号位间开环横移，不再找线；

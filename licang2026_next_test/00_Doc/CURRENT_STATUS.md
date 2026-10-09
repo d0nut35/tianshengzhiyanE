@@ -1,5 +1,22 @@
 # STM32当前状态
 
+## 当前接手检查点（2026-10-09，后续历史条目不代表现状）
+
+用户反馈：当前阶梯高层、中层可行，可能仍需向上微调；本轮冻结参数，不继续移动ROI。Nano参数提交9c1623e：低层y=95..265、中层y=51..271、高层y=66..306；圆度0.50、填充0.65，面积分别6000..24000、6000..45000、8000..100000。该反馈不是红蓝全程或全部故障场景验收，现场Nano精确提交仍须现场核对。
+
+- ROUTE STAIRS：Mission与真实档案均已支持8球（9187c40）；正式阶梯仍2球。第三球IC_STATUS=0但STORE FAIL=RECORD的原因是旧档案仍限2球，不能继续归因转盘或读卡。SSH断连根因未确认。
+- 放球保留当前槽位，按本列CCW最近目标一次粗转对应格数，末端统一微调。**多格一次到位转盘待实机验证**，覆盖正式和无线放球；600 RPM、140°/格、每次1°、放球最多15次微调；收球/装球/独立TURN仍单格10次。PB0稳定高提前完成，达到上限仍未确认则继续，但保留电机实际到位、通信/堵转/掉电/超时/STOP保护。
+- 正式红蓝放球结束均先到D1，到位后直接回家，无额外1秒等待。无线手动HOME与正式自动回家入口区分。
+- 当前构建宏：MISSION_CHASSIS_ROUTE_TEST_ENABLED=1、MISSION_DEPOT_TRACE_ENABLED=1、MISSION_FORMAL_BLUE_SIDE=0。正式需相应正式固件，不将当前无线构建当正式。
+- Nano C100 min_score=0.55、min_margin=0.10、5帧3票；STM32每次READY后等5秒，仍两次独立会话同数字。积木无有效数字1秒且至少15帧、通信保护8秒。
+- 用户既有底盘参数原样保存：APP_CYL_FIX_VY=-150、APP_DEPOT_VY_MMS=-100、ST_VY_MMS=-80（mm/s）。本轮仅保存，不另调速度。
+
+验证分别记录：此前阶梯真实建档/存球、档案Core、仓库和视觉交接主机回归通过；多格转盘0～11格/边界/保护测试通过。stair8-record-wireless.hex与stair8-record-red-formal.hex的Keil构建均0错误0警告。此次只整理上下文和提交既有参数，不重复构建；最新阶梯8球完整运行、直接多格转盘、红蓝正式全程仍需分别验收，不用编译结果替代实机。
+
+下一步先实测多格转盘：零格、相邻格、2格及较远目标，检查实际槽位、PB0微调到上限后的偏差、动作10/放球安全间隙及连续放球累计误差；保留[M] TURN BEGIN/DONE/FAIL及STORE日志。阶梯只按后续现场反馈微调中高层ROI，蓝方路线/视觉、正式实体按键与OLED仍待验证或接入。完整数据训练、导出、Nano引擎已完成，禁止重复工作。
+
+## 以下为历史过程（参数和验证结论按当时版本解释）
+
 2026-10-09修复阶梯8球无线档案遗漏：用户新日志第三次IC_STATUS=0后STORE FAIL=RECORD，源码显示ball_manifest区域完成仍固定阶梯2球，Mission改8不够；独立ROUTE STAIRS现在通过ball_manifest_init_stair_test按MISSION_STAIR_TEST_BALL_COUNT配置本轮阶梯档案上限8。正式默认初始化仍2球，其他区域5/2及档案总容量9、重复槽/校验保护不变，读卡失败记录同样适用测试上限。补STORE RECORD FAIL具体manifest状态码。真实Mission建档/存球推进+真实Core测试覆盖红蓝、正式2/无线8、读卡成功/失败、第三至第八条/第九条拒绝及完整/精简构建；原档案、仓库、视觉交接回归通过。无线和正式固件分别stair8-record-wireless.hex、stair8-record-red-formal.hex，编译结果见同名build日志，未烧录实机。Nano中高层各再上移3，当前中56..276、高75..315、低95..265，79d97c9已推送Gitee。此前将该次FAULT=5按转盘推测不成立，前两次转盘DONE均正常，SSH断连仍是独立待查现象。
 
 2026-10-09转盘诊断补齐：TURN_TRACE复用MISSION_DEPOT_TRACE_ENABLED，正式和无线均输出USART1。共用转槽函数打印BEGIN（起槽/方向/格数/微调上限/超时）、DONE或PB0未确认继续，以及FAIL=MOVE/STATUS/MOTOR/TIMEOUT细分；存球打印读卡状态/建档失败/实际转槽完成，mission_fail在改为FAULT前输出原状态。仅增加诊断，不放宽电机/通信/STOP保护，不改600RPM、单格10次/放球15次、限球及动作流程。转盘日志开关/失败原因主机断言、圆盘/阶梯收球、仓库/动作10回归通过；无线、红方正式日志开/关Keil均0错误0警告，产物turnlog-wireless.hex、turnlog-red-formal.hex。当前无线1/日志1保留，未烧录现场；本次两球STORED后FAULT=5及Nano SSH断连仍待新日志，不确认根因。Nano高层78..318、中层59..279已推送0ee4ed3。

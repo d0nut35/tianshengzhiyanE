@@ -2,7 +2,9 @@
 
 > 本文件保留旧阶段进度和实验记录，不作为当前状态入口。当前STM32状态读取`00_Doc/CURRENT_STATUS.md`；跨工程任务读取`D:\programfile\licang\00_Context\CURRENT_TASK.md`。
 
-## 0. 当前事实覆盖说明（2026-10-09）
+## 0. 历史事实记录（2026-10-09）
+
+当前入口已统一为CURRENT_STATUS.md及个人CURRENT_TASK.md。2026-10-09收尾：阶梯中高层用户反馈可行、先冻结；多格一次到位转盘仍待实机验证。下列参数为各次修改时记录，不能当成最终配置。
 
 2026-10-09修复阶梯8球无线档案遗漏：用户新日志第三次IC_STATUS=0后STORE FAIL=RECORD，源码显示ball_manifest区域完成仍固定阶梯2球，Mission改8不够；独立ROUTE STAIRS现在通过ball_manifest_init_stair_test按MISSION_STAIR_TEST_BALL_COUNT配置本轮阶梯档案上限8。正式默认初始化仍2球，其他区域5/2及档案总容量9、重复槽/校验保护不变，读卡失败记录同样适用测试上限。补STORE RECORD FAIL具体manifest状态码。真实Mission建档/存球推进+真实Core测试覆盖红蓝、正式2/无线8、读卡成功/失败、第三至第八条/第九条拒绝及完整/精简构建；原档案、仓库、视觉交接回归通过。无线和正式固件分别stair8-record-wireless.hex、stair8-record-red-formal.hex，编译结果见同名build日志，未烧录实机。Nano中高层各再上移3，当前中56..276、高75..315、低95..265，79d97c9已推送Gitee。此前将该次FAULT=5按转盘推测不成立，前两次转盘DONE均正常，SSH断连仍是独立待查现象。
 

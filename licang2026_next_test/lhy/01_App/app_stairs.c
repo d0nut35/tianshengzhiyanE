@@ -45,6 +45,8 @@
 #define ST_SETTLE_MS   500U     /* 切层视觉就绪后的原地稳定时间，ms [lyx] */
 #define ST_HIGH_Y_MM   2750     /* 低层结束、高层起点 y，mm [lyx] */
 #define ST_MID_Y_MM    2400     /* 高层结束、中层起点 y，mm [lyx] */
+#define ST_BLUE_HIGH_Y_MM 2750  /* 镜像蓝方：低层结束、高层起点 y，mm */
+#define ST_BLUE_MID_Y_MM  2400  /* 镜像蓝方：高层结束、中层起点 y，mm */
 #define ST_END_ID      1U       /* 线尾检测灰度板上序号，离线即中层结束 */
 #define ST_END_ID_MIRROR 6U     /* 镜像侧线尾灰度：与 1 号关于车体 x 轴对称 */
 
@@ -75,6 +77,7 @@ typedef struct {
     int16_t                end_y_mm; /* END_BY_Y 的结束 y，mm */
 } stair_layer_t;
 
+/* 默认地图层配置。 */
 static const stair_layer_t g_layers[] = {
     { CHASSIS_CMD_STAIR_LOW,  END_BY_Y,    ST_HIGH_Y_MM },
     { CHASSIS_CMD_STAIR_HIGH, END_BY_Y,    ST_MID_Y_MM  },
@@ -82,6 +85,13 @@ static const stair_layer_t g_layers[] = {
 };
 
 #define ST_LAYER_NUM  (sizeof(g_layers) / sizeof(g_layers[0]))
+
+/* 镜像蓝方独立配置，三层数量与默认地图一致。 */
+static const stair_layer_t g_layers_blue[ST_LAYER_NUM] = {
+    { CHASSIS_CMD_STAIR_LOW,  END_BY_Y,    ST_BLUE_HIGH_Y_MM },
+    { CHASSIS_CMD_STAIR_HIGH, END_BY_Y,    ST_BLUE_MID_Y_MM  },
+    { CHASSIS_CMD_STAIR_MID,  END_BY_LINE, 0                 },
+};
 
 static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx);
 static app_status_t layer_done(const stair_layer_t *lay, uint8_t end_id,
@@ -213,6 +223,8 @@ app_status_t stairs_sweep(uint16_t req_id)
     uint32_t     drive_tick;                 /* 最近一次纠偏的 OS tick */
     uint8_t      done = 0U;                  /* 本层到边界标志 */
     uint8_t      i;                          /* 层索引 */
+    const stair_layer_t *layers = (route_side() == ROUTE_SIDE_MIRROR)
+                                  ? g_layers_blue : g_layers; /* 本侧层配置 */
 
     ctx.req_id = req_id;
     ctx.paused = 0U;
@@ -232,7 +244,7 @@ app_status_t stairs_sweep(uint16_t req_id)
             }
             ctx.settling = 1U;
         }
-        ctx.layer_evt = g_layers[i].evt;
+        ctx.layer_evt = layers[i].evt;
         ctx.cam_ready = 0U;
         (void)link_post(ctx.layer_evt, req_id, 1U);
         /* 每层都等视觉会话就绪；低层还要等机械臂先到识别姿态。 [lyx] */
@@ -264,7 +276,7 @@ app_status_t stairs_sweep(uint16_t req_id)
             if (ctx.paused != 0U) {
                 continue;
             }
-            if (layer_done(&g_layers[i], ctx.end_id, &done) != APP_OK) {
+            if (layer_done(&layers[i], ctx.end_id, &done) != APP_OK) {
                 (void)align_stop();
                 ST_LOGE("stair layer %u check fail", (unsigned)i);
                 return APP_ERR;

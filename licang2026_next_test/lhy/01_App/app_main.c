@@ -69,7 +69,8 @@
 #define APP_CYL_FIX_VY    (-150.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
 #define APP_CYL_FIX_VX    70.0f    /* 找线第二段车体系 x 速度，mm/s */
 #define APP_CYL_EXTRA_MM  20U      /* 默认侧第一段末传感器低电平后追加距离，mm */
-#define APP_CYL_BLUE_EXTRA_MM 0U  /* 蓝方第一段末传感器低电平后追加距离，mm */
+#define APP_CYL_BLUE_EXTRA_MM (-10.0f) /* 蓝方第一段末传感器低电平后追加距离，正进负退，mm */
+#define APP_CYL_BACK_WAIT 500U     /* 负距离补偿反向前停车等待，ms */
 #define APP_CYL_CAL_STOP  1U       /* 临时标定：红蓝均停车；正常全程前必须改0。 */
 #define APP_CYL_FIX_WAIT  1000U    /* 两段找线之间停车等待，ms */
 /* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */
@@ -209,8 +210,8 @@ static app_status_t disc_locate(uint8_t formal)
     uint8_t sensor = (mirror != 0U) ? 1U : 6U;  /* 第一段当前检测序号 */
     uint8_t last = (mirror != 0U) ? 6U : 1U;    /* 第一段结束检测序号 */
     uint8_t on_line = 0U;                      /* 1=低电平 */
-    uint32_t extra_mm = (mirror != 0U) ? APP_CYL_BLUE_EXTRA_MM
-                                      : APP_CYL_EXTRA_MM; /* 本侧追加距离，mm */
+    float extra_mm = (mirror != 0U) ? APP_CYL_BLUE_EXTRA_MM
+                                   : APP_CYL_EXTRA_MM; /* 本侧追加距离，正进负退，mm */
     uint32_t extra_ms;                         /* 追加距离对应延时 */
 
     if ((speed <= 0.0f) || (disc_loc_wait(0U, formal) != APP_OK) ||
@@ -232,6 +233,16 @@ static app_status_t disc_locate(uint8_t formal)
         if (disc_loc_wait(APP_CYL_POLL_MS, formal) != APP_OK) {
             goto fail;
         }
+    }
+    /* 负距离先下发零速度并等待停稳，期间响应 STOP，再按距离绝对值反向补偿。 */
+    if (extra_mm < 0.0f) {
+        if ((disc_loc_wait(0U, formal) != APP_OK) ||
+            (csvc_free(0.0f, 0.0f, 0.0f) != CSVC_OK) ||
+            (disc_loc_wait(APP_CYL_BACK_WAIT, formal) != APP_OK) ||
+            (csvc_free(0.0f, -vy, 0.0f) != CSVC_OK)) {
+            goto fail;
+        }
+        extra_mm = -extra_mm;
     }
     extra_ms = (uint32_t)(extra_mm * 1000.0f / speed + 0.5f);
     if ((disc_loc_wait(extra_ms, formal) != APP_OK) ||

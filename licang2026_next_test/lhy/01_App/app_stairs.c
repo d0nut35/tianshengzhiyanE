@@ -45,7 +45,7 @@
 #define ST_SETTLE_MS   500U     /* 切层视觉就绪后的原地稳定时间，ms [lyx] */
 #define ST_HIGH_Y_MM   2750     /* 低层结束、高层起点 y，mm [lyx] */
 #define ST_MID_Y_MM    2400     /* 高层结束、中层起点 y，mm [lyx] */
-#define ST_BLUE_HIGH_Y_MM 2750  /* 蓝方实际中层结束、高层起点 y，mm；底盘首段仍发LOW */
+#define ST_BLUE_HIGH_Y_MM 2780  /* 蓝方实际中层结束、高层起点 y，mm；底盘首段仍发LOW */
 #define ST_BLUE_MID_Y_MM  2400  /* 蓝方实际高层结束、低层起点 y，mm；末段仍发MID */
 #define ST_END_ID      1U       /* 线尾检测灰度板上序号，离线即中层结束 */
 #define ST_END_ID_MIRROR 6U     /* 镜像侧线尾灰度：与 1 号关于车体 x 轴对称 */

@@ -62,7 +62,7 @@
 /* [lyx] 绕圆柱1.15圈：定半径画圆跑固定时长后停车，时长以 2πR/v 理论值起步、实机标定 */
 #define APP_CYL_SETTLE_MS 1000U     /* 到绕圈起点后等底盘稳定，ms */
 #define APP_CYL_V_MMS     200.0f    /* [lyx] 绕圈线速度，mm/s */
-#define APP_CYL_R_MM      (-320.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
+#define APP_CYL_R_MM      (-310.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
 #define APP_CYL_ARC_MS    11562U    /* [lyx] 200mm/s、半径320mm理论绕1.15圈 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U

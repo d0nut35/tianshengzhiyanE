@@ -36,6 +36,7 @@ static const lsh_cfg_t s_cfg[LSENSOR_COUNT] = {
 static lsensor_t      s_sensor[LSENSOR_COUNT]; /* Handler 持有的对象组 */
 static osThreadId_t   s_task = NULL;           /* 周期采样任务句柄 */
 static volatile uint8_t s_ready = 0U;           /* 对象缓存可读标志 */
+static volatile uint8_t s_levels = 0U;          /* 同一 IDR 样本的六路电平位图 */
 
 static const osThreadAttr_t s_task_attr = {
     .name       = "lsensor",
@@ -48,6 +49,7 @@ static void lsh_sample(void)
 {
     uint32_t idr = GPIOC->IDR; /* 同一时刻的六路输入电平快照 */
     uint8_t  i = 0U;           /* 传感器对象下标 */
+    uint8_t levels = 0U;       /* 完成整组后一次发布的快照 */
 
     for (i = 0U; i < LSENSOR_COUNT; i++) {
         uint8_t level; /* 当前 GPIO 原始电平 */
@@ -55,7 +57,9 @@ static void lsh_sample(void)
         level = ((idr & (uint32_t)s_cfg[i].pin) != 0U) ? 1U : 0U;
         s_sensor[i].was_on_line = s_sensor[i].is_on_line;
         s_sensor[i].is_on_line = level;
+        levels |= (uint8_t)(level << i);
     }
+    s_levels = levels;
 }
 
 /** @brief 将毫秒采样周期转换为当前 CMSIS-OS tick 数 */
@@ -128,4 +132,12 @@ lsensor_level_t lsh_get_level(lsensor_id_t id)
     idx = (uint8_t)((uint32_t)id - (uint32_t)LSENSOR_ID_1);
     return (s_sensor[idx].is_on_line != 0U) ?
            LSENSOR_LEVEL_HIGH : LSENSOR_LEVEL_LOW;
+}
+
+uint8_t lsh_get_mask(void)
+{
+    if (s_ready == 0U) {
+        return LSH_MASK_INVALID;
+    }
+    return s_levels;
 }

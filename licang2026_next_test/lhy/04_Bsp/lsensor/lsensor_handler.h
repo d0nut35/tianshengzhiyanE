@@ -16,6 +16,7 @@ extern "C" {
 #include <stdint.h>
 
 #define LSENSOR_COUNT   6U   /* 板载灰度传感器数量 */
+#define LSH_MASK_INVALID 0xFFU /* 快照不可用，正常快照仅使用低六位 */
 
 /* Handler 状态码，OK == 0 */
 typedef enum {
@@ -55,6 +56,13 @@ lsh_status_t lsh_init(void);
  *         LSENSOR_LEVEL_INVALID
  */
 lsensor_level_t lsh_get_level(lsensor_id_t id);
+
+/**
+ * @brief  读取一次采样统一发布的六路电平快照
+ * @retval bit0~5 对应 1~6 号，1=高电平；未初始化返回 LSH_MASK_INVALID
+ * @note   单字节发布/读取，避免多路纠偏混用两次采样结果
+ */
+uint8_t lsh_get_mask(void);
 
 #ifdef __cplusplus
 }

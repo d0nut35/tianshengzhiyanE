@@ -17,10 +17,11 @@ extern "C" {
 #include "app_main.h"   /* app_status_t */
 
 /**
- * @brief  阶梯三层连续横移：低层等 CAM_READY 起步，越层只报事件不停车，
+ * @brief  阶梯三层灰度 P 纠偏横移，切层停车等 CAM_READY 和稳定时间，
  *         中层走完停车并报 STAIRS_FINISHED
  * @param  req_id 阶梯阶段请求编号，回执时原样带回
- * @retval APP_OK / APP_ERR=位姿读取或命令下发失败（已停车）
+ * @retval APP_OK / APP_ERR=全局停止、读取/下发失败或全丢线无历史方向
+ * @note   2/5 压线、3/4 离线为基准；全丢线沿用最近非零纠偏，无历史则停车。
  */
 app_status_t stairs_sweep(uint16_t req_id);
 

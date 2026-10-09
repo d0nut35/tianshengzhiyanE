@@ -14,10 +14,10 @@
 #define LSENSOR_2_X_MM    113     /* 传感器 2 的 X 坐标，mm */
 #define LSENSOR_2_Y_MM    40      /* 传感器 2 的 Y 坐标，mm */
 
-#define LSENSOR_3_X_MM    123     /* 传感器 3 的 X 坐标，mm */
+#define LSENSOR_3_X_MM    138     /* 传感器 3 的 X 坐标，mm */
 #define LSENSOR_3_Y_MM    20      /* 传感器 3 的 Y 坐标，mm */
 
-#define LSENSOR_4_X_MM    123     /* 传感器 4 的 X 坐标，mm */
+#define LSENSOR_4_X_MM    138     /* 传感器 4 的 X 坐标，mm */
 #define LSENSOR_4_Y_MM    (-20)   /* 传感器 4 的 Y 坐标，mm */
 
 #define LSENSOR_5_X_MM    113     /* 传感器 5 的 X 坐标，mm */

@@ -38,10 +38,11 @@
 #define AL_MID_YAW_OFS   (-1.56f)  /* 中值补偿，沿 IMU yaw 正向，deg */
 #define AL_SEEK_VX_MMS   60.0f    /* 找线时的右移速度，mm/s */
 #define AL_SCAN_MS       5U       /* 灰度与 IMU 轮询周期，ms */
-#define AL_STOP_MS       80U      /* 停车后机械稳定时间，ms */
+#define AL_EDGE_CNT      5U       /* 离线边沿确认所需连续高电平次数 */
+#define AL_STOP_MS       200U      /* 停车后机械稳定时间，ms */
 #define AL_SETTLE_MS     20U      /* 找线停车后等控制任务执行，ms */
 #define AL_IMU_TMO_MS    200U     /* 等待有效 IMU 角度超时，ms */
-#define AL_SWEEP_TMO_MS  6000U    /* 单向找线边缘超时，ms */
+#define AL_SWEEP_TMO_MS  60000U    /* 单向找线边缘超时，ms */
 #define AL_TURN_TMO_MS   6000U    /* 回到中值角度超时，ms */
 
 static align_status_t seek_edge(lsensor_id_t id, float wz, float *yaw_deg);
@@ -94,20 +95,18 @@ align_status_t align_on_line(uint8_t id, uint8_t *on_line)
 }
 
 /**
- * @brief  原地旋转至指定灰度传感器由压线变为高电平
+ * @brief  原地旋转至连续高电平确认离线，停车等待后读取航向
  * @param  id      灰度传感器编号
  * @param  wz      旋转角速度，deg/s
- * @param  yaw_deg 高电平触发瞬间的 IMU 原始航向
+ * @param  yaw_deg 边沿确认并停车等待后的 IMU 航向
  * @retval ALIGN_OK / ALIGN_ERR
  */
 static align_status_t seek_edge(lsensor_id_t id, float wz, float *yaw_deg)
 {
     lsensor_level_t level;                   /* 当前传感器电平 */
-    float gyro = 0.0f;                       /* 附带的 Z 轴角速度 */
-    float edge_yaw = 0.0f;                   /* 高电平触发瞬间的航向 */
     uint32_t start = osKernelGetTickCount(); /* 扫描超时起点 */
     uint32_t tmo = util_ms_ticks(AL_SWEEP_TMO_MS); /* 超时 tick 数 */
-    uint8_t yaw_valid = 0U;                  /* 触发角度有效标志 */
+    uint8_t high_cnt = 0U;                   /* 连续高电平计数 */
 
     if (yaw_deg == NULL) {
         return ALIGN_ERR;
@@ -122,17 +121,16 @@ static align_status_t seek_edge(lsensor_id_t id, float wz, float *yaw_deg)
     while ((osKernelGetTickCount() - start) < tmo) {
         level = lsh_get_level(id);
         if (level == LSENSOR_LEVEL_HIGH) {
-            if (hwt101_adp_read(&gyro, &edge_yaw) == HWT101_OK) {
-                *yaw_deg = edge_yaw;
-                yaw_valid = 1U;
+            high_cnt++;
+            if (high_cnt >= AL_EDGE_CNT) {
+                /* 复用停车等待，统一在等待结束后记录航向。 */
+                if (align_stop() != ALIGN_OK) {
+                    return ALIGN_ERR;
+                }
+                return align_yaw_read(yaw_deg);
             }
-            if (align_stop() != ALIGN_OK) {
-                return ALIGN_ERR;
-            }
-            if (yaw_valid != 0U) {
-                return ALIGN_OK;
-            }
-            return align_yaw_read(yaw_deg);
+        } else {
+            high_cnt = 0U;
         }
         if (level == LSENSOR_LEVEL_INVALID) {
             break;

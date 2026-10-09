@@ -59,11 +59,11 @@
 /* 阶梯末层以 1 号灰度离线停车，该处 y 按实机标定；x 与航向沿用里程计 */
 #define APP_STAIR_END_Y_MM 2144
 
-/* [lyx] 绕圆柱1.15圈：定半径画圆跑固定时长后停车，时长以 2πR/v 理论值起步、实机标定 */
+/* [lyx] 绕圆柱约1.187圈：保持310mm/11562ms实测圈数，变半径时按比例调整运动时长。 */
 #define APP_CYL_SETTLE_MS 1000U     /* 到绕圈起点后等底盘稳定，ms */
 #define APP_CYL_V_MMS     200.0f    /* [lyx] 绕圈线速度，mm/s */
-#define APP_CYL_R_MM      (-310.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
-#define APP_CYL_ARC_MS    11562U    /* [lyx] 200mm/s、半径320mm理论绕1.15圈 */
+#define APP_CYL_R_MM      (-307.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
+#define APP_CYL_ARC_MS    11450U    /* [lyx] 200mm/s；11562×307/310取整，保持原约1.187圈 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
 #define APP_CYL_FIX_VY    (-150.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */

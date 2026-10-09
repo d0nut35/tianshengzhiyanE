@@ -68,7 +68,9 @@
 #define APP_CYL_POLL_MS   10U
 #define APP_CYL_FIX_VY    (-150.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
 #define APP_CYL_FIX_VX    70.0f    /* 找线第二段车体系 x 速度，mm/s */
-#define APP_CYL_EXTRA_MM  20U      /* 第一段末传感器低电平后追加距离，mm */
+#define APP_CYL_EXTRA_MM  20U      /* 默认侧第一段末传感器低电平后追加距离，mm */
+#define APP_CYL_BLUE_EXTRA_MM 20U  /* 蓝方第一段末传感器低电平后追加距离，mm */
+#define APP_CYL_CAL_STOP  1U       /* 临时标定：1=追加距离后停住，0=继续找线 */
 #define APP_CYL_FIX_WAIT  1000U    /* 两段找线之间停车等待，ms */
 /* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */
 #define APP_CYL_EXIT_VX_MMS (-250.0f) /* [lyx] 车体 -x 平移速度，mm/s */
@@ -207,6 +209,8 @@ static app_status_t disc_locate(uint8_t formal)
     uint8_t sensor = (mirror != 0U) ? 1U : 6U;  /* 第一段当前检测序号 */
     uint8_t last = (mirror != 0U) ? 6U : 1U;    /* 第一段结束检测序号 */
     uint8_t on_line = 0U;                      /* 1=低电平 */
+    uint32_t extra_mm = (mirror != 0U) ? APP_CYL_BLUE_EXTRA_MM
+                                      : APP_CYL_EXTRA_MM; /* 本侧追加距离，mm */
     uint32_t extra_ms;                         /* 追加距离对应延时 */
 
     if ((speed <= 0.0f) || (disc_loc_wait(0U, formal) != APP_OK) ||
@@ -229,10 +233,18 @@ static app_status_t disc_locate(uint8_t formal)
             goto fail;
         }
     }
-    extra_ms = (uint32_t)(APP_CYL_EXTRA_MM * 1000.0f / speed + 0.5f);
+    extra_ms = (uint32_t)(extra_mm * 1000.0f / speed + 0.5f);
     if ((disc_loc_wait(extra_ms, formal) != APP_OK) ||
-        (align_stop() != ALIGN_OK) ||
-        (disc_loc_wait(APP_CYL_FIX_WAIT, formal) != APP_OK) ||
+        (align_stop() != ALIGN_OK)) {
+        goto fail;
+    }
+#if APP_CYL_CAL_STOP
+    /* 临时标定停点：已停车，阻塞后续流程；让出 CPU 供其他任务运行。 */
+    while (1) {
+        osDelay(1U);
+    }
+#endif
+    if ((disc_loc_wait(APP_CYL_FIX_WAIT, formal) != APP_OK) ||
         (csvc_free(APP_CYL_FIX_VX, 0.0f, 0.0f) != CSVC_OK)) {
         goto fail;
     }

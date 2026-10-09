@@ -14,7 +14,7 @@
  * Mission无线联调开关：1=USART1指令测试任务，0=正式比赛流程。
  * 测试任务支持纯路径分段控制，以及只在指定区域启用完整视觉抓取。
  */
-#define MISSION_CHASSIS_ROUTE_TEST_ENABLED  1U
+#define MISSION_CHASSIS_ROUTE_TEST_ENABLED  0U
 /* 正式仓库/阶梯诊断：USART1输出；现场定位后改0即可关闭。 */
 #define MISSION_DEPOT_TRACE_ENABLED          1U
 /* 正式假按钮选色：0=红方，1=蓝方；无线仍由RED/BLUE选择，实体按键尚未接入。 */

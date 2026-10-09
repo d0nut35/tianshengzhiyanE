@@ -1,5 +1,7 @@
 # licang2026_next_test 历史任务进度
 
+2026-10-09阶梯闭环合并：已接入远端511b53b，合并提交a65e75a。阶梯2～5号灰度P纠偏每10ms更新、KP=3、限幅±3°/s，全丢线沿用最近非零纠偏，无历史方向则停车；全局STOP锁存，恢复后先查边界再纠偏。六路统一采样快照，3/4号传感器X=138mm。保留本地无线1/日志1、半径-310mm、绕行11562ms、速度200mm/s、航向补偿-1.50°；绕行时间仍为原320mm配置值，未擅自同步。阶梯闭环、正式2/无线8档案、视觉交接主机回归通过；stair-closed-loop-wireless.hex及stair-closed-loop-red-formal.hex均0错误0警告，标准HEX无线。红蓝纠偏方向/丢线处理及多格转盘仍待实机验证，Nano无需因本次底盘合并更新。
+
 2026-10-09底盘合并补充：已合并远端0a7c55e（合并提交0b060e8），保留用户本地正式模式MISSION_CHASSIS_ROUTE_TEST_ENABLED=0、日志1、红方0。白线连续5次高电平确认，停车等待80→200ms，停稳后读取边缘航向，单向扫边超时6→60秒；共用align_stop调用处均受200ms影响，实机效果待验证。阶梯真实档案正式2/无线8四组合回归通过；merge-align-red-formal.hex及merge-align-wireless.hex均0错误0警告，标准HEX为红方正式日志版。多格一次到位转盘仍待实机验证。合并前所有未提交文件字节校验一致；同远端RTE生成头和备份patch已单独保存，余196个Drivers原有差异保留。
 
 > 本文件保留旧阶段进度和实验记录，不作为当前状态入口。当前STM32状态读取`00_Doc/CURRENT_STATUS.md`；跨工程任务读取`D:\programfile\licang\00_Context\CURRENT_TASK.md`。

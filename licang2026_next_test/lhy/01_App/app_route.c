@@ -64,7 +64,7 @@ static const route_pt_t g_route[ROUTE_NUM] = {
     /* [lyx] CYL_PRE：圆柱前置点，先直线到此再平推入位，避免斜穿 */
     { CSVC_NAV_LINE, {1550, 2163}, 180.0f, 500.0f, 60.0f,
       {   0,    0}, FIX_NONE },
-    /* [lyx] CYL：绕桩预定位点，到点后由 app_main 两段找线，再按300mm半径绕行 */
+    /* [lyx] CYL：绕桩预定位点，到点后由 app_main 两段找线，再按320mm半径绕行 */
     { CSVC_NAV_LINE, {1550, 2163}, 180.0f, 500.0f, 60.0f,
       {   0,    0}, FIX_NONE },
     /* DEPOT：立体仓库 1 号工作位，找线标定后作为 2~4 号位横移基准 */

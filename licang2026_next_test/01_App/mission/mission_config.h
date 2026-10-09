@@ -33,7 +33,7 @@
 #define MISSION_STAIR_EXIT_GROUP         18U /* 阶梯结束后的撤离过渡姿态 */
 #define MISSION_SMALL_DISC_VISION_GROUP  19U /* 小圆盘绕行识别姿态 */
 #define MISSION_SMALL_DISC_GRASP_GROUP   20U /* 小圆盘抓球并放入车载转盘 */
-#define MISSION_SMALL_DISC_EXIT_GROUP    21U /* 小圆盘结束后的撤离过渡姿态 */
+#define MISSION_SMALL_DISC_EXIT_GROUP    21U /* 历史小圆盘撤离过渡；当前流程退出后直接10，不调用21。 */
 #define MISSION_DEPOT_PICK_GROUP         22U /* 仓库从车载转盘取球 */
 #define MISSION_DEPOT_ROW3_GROUP         23U /* 三层放球，用户已将撤离过渡包含在动作内 */
 #define MISSION_DEPOT_ROW2_GROUP         25U /* 二层放球及撤离 */

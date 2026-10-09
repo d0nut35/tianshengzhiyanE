@@ -3,7 +3,7 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 $build = Join-Path $PSScriptRoot '.build'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 $source = [IO.File]::ReadAllText((Join-Path $root '01_App/mission/mission_app.c'))
-$functions = foreach ($name in @('mission_start_arm', 'mission_read_ball', 'mission_store_ball', 'mission_platform_prepare_storage', 'mission_finish_platform', 'mission_handle_storage')) {
+$functions = foreach ($name in @('mission_start_arm', 'mission_read_ball', 'mission_store_ball', 'mission_platform_prepare_storage', 'mission_finish_platform', 'mission_handle_storage', 'mission_start_small_disc_exit')) {
     $match = [regex]::Match($source, "static (?:bool|void) $name\([^;]*?\)\s*\{")
     if (!$match.Success) { throw "Missing function $name" }
     $end = $source.IndexOf('{', $match.Index) + 1

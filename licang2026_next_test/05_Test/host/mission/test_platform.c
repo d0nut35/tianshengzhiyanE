@@ -124,7 +124,15 @@ int main(void)
     memset(&c, 0, sizeof(c)); move_success = false;
     attempt(&c, true);
     assert(c.state == MISSION_STATE_FAULT && c.platform_balls == 0 && c.current_slot == 0);
+    /* 正式/无线小圆盘底盘退出后只提交10；仍等待动作回报，失败必须停车。 */
+    memset(&c, 0, sizeof(c));
+    previous_arms = arm_commands;
+    mission_start_small_disc_exit(&c);
+    assert(arm_commands == previous_arms + 1 && last_arm == 10);
+    assert(c.state == MISSION_STATE_SMALL_DISC_WAIT_SAFE && !c.arm_home_ready);
     arm_success = false;
+    mission_start_small_disc_exit(&c);
+    assert(c.state == MISSION_STATE_FAULT);
     before = c.platform_attempts;
     assert(!mission_start_arm(&c, 12, MISSION_STATE_PLATFORM_WAIT_GRASP));
     assert(c.platform_attempts == before);

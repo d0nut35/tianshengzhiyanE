@@ -80,11 +80,12 @@ static uint8_t      g_nav_fin = 1U;  /* 导航完成标志，1=空闲 */
 static route_side_t g_side = ROUTE_SIDE_DEFAULT; /* 场地侧，仅底盘任务读写 */
 
 static app_status_t nav_wait(const route_pt_t *pt);
-static app_status_t pose_fix(const route_pt_t *pt);
+static app_status_t pose_fix(const route_pt_t *pt, route_id_t id);
 
 /**
  * @brief  发起导航并阻塞等待到点
  * @param  pt 任务点表项
+ * @param  id 路线区域，用于选择白线标定补偿
  * @retval APP_OK / APP_ERR=命令被拒
  */
 static app_status_t nav_wait(const route_pt_t *pt)
@@ -107,9 +108,10 @@ static app_status_t nav_wait(const route_pt_t *pt)
  * @param  pt 任务点表项
  * @retval APP_OK / APP_ERR
  */
-static app_status_t pose_fix(const route_pt_t *pt)
+static app_status_t pose_fix(const route_pt_t *pt, route_id_t id)
 {
     float yaw = 0.0f; /* IMU 原始航向，deg */
+    align_site_t site;
 
     if (pt->fix == FIX_NONE) {
         return APP_OK;
@@ -118,7 +120,14 @@ static app_status_t pose_fix(const route_pt_t *pt)
         return APP_ERR;
     }
     if (pt->fix == FIX_LINE) {
-        return (align_white_line(pt->fix_pt, pt->yaw_deg) == ALIGN_OK)
+        if (id == ROUTE_STAIRS) {
+            site = (g_side == ROUTE_SIDE_MIRROR) ? AL_BLUE_STAIR : AL_RED_STAIR;
+        } else if (id == ROUTE_DEPOT) {
+            site = (g_side == ROUTE_SIDE_MIRROR) ? AL_BLUE_DEPOT : AL_RED_DEPOT;
+        } else {
+            return APP_ERR;
+        }
+        return (align_white_line(pt->fix_pt, pt->yaw_deg, site) == ALIGN_OK)
                ? APP_OK : APP_ERR;
     }
     if (align_yaw_read(&yaw) != ALIGN_OK) {
@@ -146,7 +155,7 @@ app_status_t route_go(route_id_t id)
         RT_LOGE("route %d nav fail", (int)id);
         return APP_ERR;
     }
-    if (pose_fix(&pt) != APP_OK) {
+    if (pose_fix(&pt, id) != APP_OK) {
         RT_LOGE("route %d fix fail", (int)id);
         return APP_ERR;
     }

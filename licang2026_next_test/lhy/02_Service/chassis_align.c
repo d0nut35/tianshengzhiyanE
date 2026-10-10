@@ -36,6 +36,10 @@
 #define AL_TURN_W_DEG    8.0f     /* 回到中值的角速度，deg/s */
 #define AL_YAW_TOL_DEG   0.8f     /* 回中角度容差，deg */
 #define AL_MID_YAW_OFS   (-1.42f)  /* 中值补偿，沿 IMU yaw 正向，deg */
+#define AL_RED_STAIR_OFS  0.0f    /* 红方阶梯追加补偿，deg */
+#define AL_RED_DEPOT_OFS  0.0f    /* 红方仓库追加补偿，deg */
+#define AL_BLUE_STAIR_OFS 0.0f    /* 蓝方阶梯追加补偿，deg */
+#define AL_BLUE_DEPOT_OFS 0.0f    /* 蓝方仓库追加补偿，deg */
 #define AL_SEEK_VX_MMS   60.0f    /* 找线时的右移速度，mm/s */
 #define AL_SCAN_MS       5U       /* 灰度与 IMU 轮询周期，ms */
 #define AL_EDGE_CNT      5U       /* 离线边沿确认所需连续高电平次数 */
@@ -239,11 +243,21 @@ align_status_t align_seek_line(void)
 }
 
 /** @copydoc align_white_line */
-align_status_t align_white_line(map_point_t pos, float yaw_deg)
+align_status_t align_white_line(map_point_t pos, float yaw_deg,
+                                align_site_t site)
 {
     float cw_yaw = 0.0f;   /* 5 号离线时的顺时针边缘角度 */
     float ccw_yaw = 0.0f;  /* 2 号离线时的逆时针边缘角度 */
     float mid_yaw;         /* 两个边缘的环形角度中值 */
+    float yaw_ofs;         /* 当前场景追加的 IMU 航向补偿 */
+
+    switch (site) {
+        case AL_RED_STAIR: yaw_ofs = AL_RED_STAIR_OFS; break;
+        case AL_RED_DEPOT: yaw_ofs = AL_RED_DEPOT_OFS; break;
+        case AL_BLUE_STAIR: yaw_ofs = AL_BLUE_STAIR_OFS; break;
+        case AL_BLUE_DEPOT: yaw_ofs = AL_BLUE_DEPOT_OFS; break;
+        default: return ALIGN_ERR;
+    }
 
     if (seek_edge(LSENSOR_ID_5, AL_CW_W_DEG, &cw_yaw) != ALIGN_OK) {
         AL_LOGE("sensor 5 edge fail");
@@ -255,7 +269,7 @@ align_status_t align_white_line(map_point_t pos, float yaw_deg)
     }
     mid_yaw = util_ang_norm(cw_yaw +
                             (0.5f * util_ang_norm(ccw_yaw - cw_yaw)) +
-                            AL_MID_YAW_OFS);
+                            AL_MID_YAW_OFS + yaw_ofs);
     AL_LOGI("line yaw cw=%d ccw=%d mid=%d",
             (int)cw_yaw, (int)ccw_yaw, (int)mid_yaw);
     if (turn_mid(mid_yaw) != ALIGN_OK) {

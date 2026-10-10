@@ -23,6 +23,14 @@ typedef enum {
     ALIGN_ERR = 1,  /* 传感器无效、超时或命令下发失败（已停车） */
 } align_status_t;
 
+/* 按场地侧与区域选择独立补偿，正方向均沿 IMU yaw。 */
+typedef enum {
+    AL_RED_STAIR = 0,
+    AL_RED_DEPOT,
+    AL_BLUE_STAIR,
+    AL_BLUE_DEPOT,
+} align_site_t;
+
 /**
  * @brief  投递停车命令并等待底盘机械稳定
  * @retval ALIGN_OK / ALIGN_ERR
@@ -55,9 +63,11 @@ align_status_t align_seek_line(void);
  * @brief  扫取白线两侧边缘、回中并按指定位姿软件标定航向
  * @param  pos     对齐完成后的世界系标定坐标
  * @param  yaw_deg 对齐完成后的世界系航向，deg
+ * @param  site    红蓝方阶梯或仓库，选择基础补偿之外的追加偏置
  * @retval ALIGN_OK / ALIGN_ERR
  */
-align_status_t align_white_line(map_point_t pos, float yaw_deg);
+align_status_t align_white_line(map_point_t pos, float yaw_deg,
+                                align_site_t site);
 
 #ifdef __cplusplus
 }

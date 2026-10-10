@@ -38,8 +38,8 @@
 #define AL_MID_YAW_OFS   (-1.42f)  /* 中值补偿，沿 IMU yaw 正向，deg */
 #define AL_RED_STAIR_OFS  0.0f    /* 红方阶梯追加补偿，deg */
 #define AL_RED_DEPOT_OFS  0.0f    /* 红方仓库追加补偿，deg */
-#define AL_BLUE_STAIR_OFS 0.0f    /* 蓝方阶梯追加补偿，deg */
-#define AL_BLUE_DEPOT_OFS 0.0f    /* 蓝方仓库追加补偿，deg */
+#define AL_BLUE_STAIR_OFS -1.0f    /* 蓝方阶梯追加补偿，deg */
+#define AL_BLUE_DEPOT_OFS -1.15f    /* 蓝方仓库追加补偿，deg */
 #define AL_SEEK_VX_MMS   60.0f    /* 找线时的右移速度，mm/s */
 #define AL_SCAN_MS       5U       /* 灰度与 IMU 轮询周期，ms */
 #define AL_EDGE_CNT      5U       /* 离线边沿确认所需连续高电平次数 */

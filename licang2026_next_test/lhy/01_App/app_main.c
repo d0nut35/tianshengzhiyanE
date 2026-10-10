@@ -62,16 +62,16 @@
 /* [lyx] 绕圆柱约1.187圈：保持310mm/11562ms实测圈数，变半径时按比例调整运动时长。 */
 #define APP_CYL_SETTLE_MS 1000U     /* 到绕圈起点后等底盘稳定，ms */
 #define APP_CYL_V_MMS     200.0f    /* [lyx] 绕圈线速度，mm/s */
-#define APP_CYL_R_MM      (-307.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
-#define APP_CYL_ARC_MS    11450U    /* [lyx] 200mm/s；11562×307/310取整，保持原约1.187圈 */
+#define APP_CYL_R_MM      (-305.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
+#define APP_CYL_ARC_MS    11375U    /* [lyx] 200mm/s；11562×305/310取整，保持原约1.187圈 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
-#define APP_CYL_FIX_VY    (-100.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
+#define APP_CYL_FIX_VY    (-150.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
 #define APP_CYL_FIX_VX    70.0f    /* 找线第二段车体系 x 速度，mm/s */
 #define APP_CYL_EXTRA_MM  20U      /* 默认侧第一段末传感器低电平后追加距离，mm */
-#define APP_CYL_BLUE_EXTRA_MM (-10.0f) /* 蓝方第一段末传感器低电平后追加距离，正进负退，mm */
+#define APP_CYL_BLUE_EXTRA_MM (-8.0f) /* 蓝方第一段末传感器低电平后追加距离，正进负退，mm */
 #define APP_CYL_BACK_WAIT 500U     /* 负距离补偿反向前停车等待，ms */
-#define APP_CYL_CAL_STOP  1U       /* 临时标定：红蓝均停车；正常全程前必须改0。 */
+#define APP_CYL_CAL_STOP  0U       /* 临时标定：红蓝均停车；正常全程前必须改0。 */
 #define APP_CYL_FIX_WAIT  1000U    /* 两段找线之间停车等待，ms */
 /* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */
 #define APP_CYL_EXIT_VX_MMS (-250.0f) /* [lyx] 车体 -x 平移速度，mm/s */

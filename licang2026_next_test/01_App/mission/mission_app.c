@@ -2096,11 +2096,11 @@ static void mission_start_stair_exit(mission_context_t *ctx)
     }
 }
 
-/** 小圆盘完整绕行后先执行21撤离，再由动作完成分支回到动作组10。 */
+/** 小圆盘底盘退出且视觉会话停止后直接回10，正式/无线共用并等待完成回报。 */
 static void mission_start_small_disc_exit(mission_context_t *ctx)
 {
-    if (!mission_start_arm(ctx, MISSION_SMALL_DISC_EXIT_GROUP,
-                           MISSION_STATE_SMALL_DISC_WAIT_EXIT)) {
+    if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
+                           MISSION_STATE_SMALL_DISC_WAIT_SAFE)) {
         mission_fail(ctx, MISSION_FAULT_ARM);
     }
 }
@@ -2382,7 +2382,7 @@ static void mission_handle_chassis(
                             MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
-    /* 12) 抓球数量不改变完整绕圈条件；结束后按21、10进入仓库。 */
+    /* 12) 抓球数量不改变完整绕圈条件；底盘退出后直接10，再进入仓库。 */
     if ((ctx->state == MISSION_STATE_SMALL_DISC_RUNNING) &&
         (event->type == CHASSIS_CMD_SMALL_DISC_FINISHED)) {
         if (ctx->vision.phase != MISSION_VISION_IDLE) {
@@ -2470,7 +2470,6 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_POSE) &&
         (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_GRASP) &&
         (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_RETURN) &&
-        (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_EXIT) &&
         (ctx->state != MISSION_STATE_SMALL_DISC_WAIT_SAFE)) {
         return;
     }
@@ -2607,14 +2606,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         }
         return;
     }
-    /* 12) 完整绕圈后由21过渡到10，再下发已有仓库1号位命令。 */
-    if (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_EXIT) {
-        if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
-                               MISSION_STATE_SMALL_DISC_WAIT_SAFE)) {
-            mission_fail(ctx, MISSION_FAULT_ARM);
-        }
-        return;
-    }
+    /* 12) 底盘退出后直接10；收到完成回报才下发仓库1号位命令。 */
     if (ctx->state == MISSION_STATE_SMALL_DISC_WAIT_SAFE) {
         (void)mission_next_request_id(ctx);
         if (!mission_send_chassis(MISSION_CMD_GO_DEPOT_1, ctx->request_id)) {

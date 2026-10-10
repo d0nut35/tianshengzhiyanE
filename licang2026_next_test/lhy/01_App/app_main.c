@@ -83,8 +83,8 @@
  * 镜像侧航向 0°，经 route_lat_sign 取反后仍沿地图 +y。 */
 #define APP_DEPOT_VY_MMS  (-100.0f)  /* 正向横移速度，车体系 vy，mm/s，默认侧 */
 #define APP_DEPOT_POLL_MS 10U       /* 横移中位姿轮询周期，ms */
-#define APP_DEPOT_KP      3.0f      /* 单位归一化灰度偏差对应角速度，deg/s */
-#define APP_DEPOT_W_MAX   3.0f      /* 仓库纠偏角速度绝对值上限，deg/s */
+#define APP_DEPOT_KP      2.5f      /* 单位归一化灰度偏差对应角速度，deg/s */
+#define APP_DEPOT_W_MAX   2.0f      /* 仓库纠偏角速度绝对值上限，deg/s */
 #define APP_DEPOT_ERR_K   0.5f      /* 两对差分之和 [-2,2] 归一化至 [-1,1] */
 #define APP_DEPOT_MASK    0x1EU     /* 六路快照中 2~5 号对应的位 */
 #define APP_DEPOT_FIX_MS  20000U    /* 仓库反向找线超时，ms */
@@ -99,10 +99,10 @@ static const struct {
     int16_t                y_mm; /* 该工作位地图 y，mm */
     chassis_command_type_t rsp;  /* 到位后回执的事件类型 */
 } g_depot_tbl[] = {
-    { MISSION_CMD_GO_DEPOT_1, 2208, CHASSIS_CMD_DEPOT_1_READY },
-    { MISSION_CMD_GO_DEPOT_2, 2405, CHASSIS_CMD_DEPOT_2_READY },
-    { MISSION_CMD_GO_DEPOT_3, 2606, CHASSIS_CMD_DEPOT_3_READY },
-    { MISSION_CMD_GO_DEPOT_4, 2793, CHASSIS_CMD_DEPOT_4_READY },
+    { MISSION_CMD_GO_DEPOT_1, 2308, CHASSIS_CMD_DEPOT_1_READY },
+    { MISSION_CMD_GO_DEPOT_2, 2507, CHASSIS_CMD_DEPOT_2_READY },
+    { MISSION_CMD_GO_DEPOT_3, 2706, CHASSIS_CMD_DEPOT_3_READY },
+    { MISSION_CMD_GO_DEPOT_4, 2896, CHASSIS_CMD_DEPOT_4_READY },
 };
 
 #define DEPOT_TBL_NUM  (sizeof(g_depot_tbl) / sizeof(g_depot_tbl[0]))

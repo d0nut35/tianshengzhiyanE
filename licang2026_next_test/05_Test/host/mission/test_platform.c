@@ -60,8 +60,8 @@ static void attempt(mission_context_t *c, bool ok)
     unsigned previous_reads = reads, previous_turns = turns;
     mission_platform_prepare_storage(c);
     assert(reads == previous_reads && turns == previous_turns && !c->arm_home_ready);
-    assert(c->active_arm_group == ((c->platform_balls == 4) ? 10 : 11));
-    assert(c->state == ((c->platform_balls == 4) ? MISSION_STATE_PLATFORM_WAIT_AVOID : MISSION_STATE_PLATFORM_WAIT_RETURN));
+    assert(c->active_arm_group == ((c->platform_attempts == 5) ? 10 : 11));
+    assert(c->state == ((c->platform_attempts == 5) ? MISSION_STATE_PLATFORM_WAIT_AVOID : MISSION_STATE_PLATFORM_WAIT_RETURN));
     /* 模拟收到所等动作的完成回报，再进入实际读卡/转槽函数。 */
     c->arm_home_ready = c->active_arm_group == 10;
     c->state = MISSION_STATE_PLATFORM_WAIT_STORAGE;
@@ -79,37 +79,36 @@ static void assert_finished(const mission_context_t *c, unsigned previous_stairs
 int main(void)
 {
     mission_context_t c = {0};
+    unsigned previous_stairs = stairs_commands;
     attempt(&c, false);
     assert(reads == 5 && records == 0 && turns == 0 && c.platform_balls == 0 && c.storage_slot == 0);
     assert(c.platform_attempts == 1 && c.state == MISSION_STATE_PLATFORM_SETTLE && visions == 0);
     for (unsigned i = 0; i < 4; ++i) attempt(&c, true);
     assert(c.platform_balls == 4 && c.platform_attempts == 5 && c.current_slot == 4);
-    attempt(&c, false);
-    assert(c.platform_balls == 4 && c.current_slot == 4 && last_arm == 11);
-    assert(c.state == MISSION_STATE_PLATFORM_WAIT_POSE); /* 10后失败必须回11。 */
-    unsigned previous_arms = arm_commands, previous_stairs = stairs_commands;
-    attempt(&c, true);
-    assert(c.platform_balls == 5 && c.platform_attempts == 7 && turns == 5 && records == 5);
-    assert(last_arm == 10 && arm_commands == previous_arms + 2); /* 12→10，不重复10。 */
+    assert(last_arm == 10);
+#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    assert(c.state == MISSION_STATE_COMPLETE);
+#else
+    assert(c.state == MISSION_STATE_WAIT_STAIRS);
+#endif
+    unsigned previous_arms = arm_commands;
     assert_finished(&c, previous_stairs);
     memset(&c, 0, sizeof(c));
     unsigned before = turns;
-    for (unsigned i = 0; i < 7; ++i) attempt(&c, false);
-    assert(c.platform_balls == 0 && turns == before && c.platform_attempts == 7);
-    assert(c.state == MISSION_STATE_PLATFORM_WAIT_DEPARTURE_POSE);
+    for (unsigned i = 0; i < 5; ++i) attempt(&c, false);
+    assert(c.platform_balls == 0 && turns == before && c.platform_attempts == 5);
+    assert(c.state == MISSION_STATE_WAIT_STAIRS);
     memset(&c, 0, sizeof(c));
     previous_stairs = stairs_commands;
     for (unsigned i = 0; i < 5; ++i) attempt(&c, true);
     assert(c.platform_attempts == 5); assert_finished(&c, previous_stairs);
-    /* 已收4球，最后球连续读卡失败至第7次：不占槽，已回10就直接结束。 */
+    /* 已收4球，第5次读卡失败也不追加第6次，直接结束。 */
     memset(&c, 0, sizeof(c));
     for (unsigned i = 0; i < 4; ++i) attempt(&c, true);
-    attempt(&c, false); attempt(&c, false);
-    previous_arms = arm_commands; previous_stairs = stairs_commands; before = turns;
     attempt(&c, false);
-    assert(c.platform_balls == 4 && c.platform_attempts == 7 && turns == before);
-    assert(arm_commands == previous_arms + 2); assert_finished(&c, previous_stairs);
-    /* 非圆盘仍保留读卡失败记录并推进，不引入7次限制。 */
+    assert(c.platform_balls == 4 && c.platform_attempts == 5 &&
+           c.state == MISSION_STATE_WAIT_STAIRS);
+    /* 非圆盘仍保留读卡失败记录并推进。 */
     read_success = false;
     before = turns;
     assert(mission_store_ball(&c, MISSION_STORAGE_REGION_STAIR));

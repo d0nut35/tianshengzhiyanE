@@ -158,7 +158,7 @@ typedef struct {
 
     /* 比赛流程数据由mission_task_entry唯一写入。 */
     uint8_t platform_balls;
-    uint8_t platform_attempts; /* 动作12成功入队计一次，最多7次；成功收球仍最多5个。 */
+    uint8_t platform_attempts; /* 动作12成功入队计一次，固定最多5次。 */
     bool platform_read_ok;
     uint8_t stair_balls;
     uint8_t small_disc_balls;
@@ -2399,10 +2399,10 @@ static void mission_handle_chassis(
     }
 }
 
-/** 12完成后前四球回11继续识别，最后球直接回10再读卡转槽。 */
+/** 12完成后前四次回11继续识别，第五次直接回10再读卡转槽。 */
 static void mission_platform_prepare_storage(mission_context_t *ctx)
 {
-    bool last_ball = (uint8_t)(ctx->platform_balls + 1U) >= MISSION_PLATFORM_BALL_COUNT;
+    bool last_ball = ctx->platform_attempts >= MISSION_PLATFORM_MAX_ATTEMPTS;
     if (!mission_start_arm(ctx,
             last_ball ? MISSION_HOME_ACTION_GROUP : MISSION_PLATFORM_VISION_GROUP,
             last_ball ? MISSION_STATE_PLATFORM_WAIT_AVOID : MISSION_STATE_PLATFORM_WAIT_RETURN)) {
@@ -2634,7 +2634,7 @@ static void mission_handle_storage(mission_context_t *ctx)
     if ((completed_state != MISSION_STATE_PLATFORM_WAIT_STORAGE) ||
         ctx->platform_read_ok) ++ctx->storage_slot;
     if (completed_state == MISSION_STATE_PLATFORM_WAIT_STORAGE) {
-        /* 2) 圆盘读卡成功才计球；满5球或已尝试7次均收臂结束，不再重试。 */
+        /* 2) 圆盘固定最多抓5次；读卡失败不追加第6次尝试。 */
         if (ctx->platform_read_ok) ++ctx->platform_balls;
         PLATFORM_TRACE("[P] T=%lu RESULT TRY=%u OK=%u NEXT_SLOT=%u\r\n",
             (unsigned long)osKernelGetTickCount(), (unsigned)ctx->platform_attempts,
@@ -4557,7 +4557,7 @@ static void mission_wireless_test_entry(void *argument)
                 continue;
             }
             g_wireless_test.mode = MISSION_TEST_MODE_TARGET;
-            PLATFORM_TRACE("[P] DIAG ON TICK_HZ=%lu MAX_BALLS=5 MAX_TRIES=7\r\n",
+            PLATFORM_TRACE("[P] DIAG ON TICK_HZ=%lu MAX_BALLS=5 MAX_TRIES=5\r\n",
                            (unsigned long)osKernelGetTickFreq());
             ctx->platform_balls = 0U;
             ctx->platform_attempts = 0U;

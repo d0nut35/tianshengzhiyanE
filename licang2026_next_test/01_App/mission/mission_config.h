@@ -40,8 +40,8 @@
 #define MISSION_DEPOT_ROW1_GROUP         26U /* 一层放球 */
 
 #define MISSION_PLATFORM_BALL_COUNT       5U
-#define MISSION_PLATFORM_MAX_ATTEMPTS     7U /* 仅圆盘：读卡失败不占槽，允许再抓。 */
-#define MISSION_PLATFORM_SETTLE_MS      200U /* 仅圆盘，开视觉前等待机械晃动消退。 */
+#define MISSION_PLATFORM_MAX_ATTEMPTS     5U /* 仅圆盘：固定执行5次抓取，不因读卡结果追加尝试。 */
+#define MISSION_PLATFORM_SETTLE_MS      100U /* 仅圆盘，开视觉前等待机械晃动消退。 */
 #define MISSION_STAIR_BALL_COUNT          2U
 #define MISSION_STAIR_TEST_BALL_COUNT     8U /* ROUTE STAIRS无线测试允许抓8球。 */
 #define MISSION_STAIR_BALL_LIMIT          (MISSION_CHASSIS_ROUTE_TEST_ENABLED ? MISSION_STAIR_TEST_BALL_COUNT : MISSION_STAIR_BALL_COUNT)

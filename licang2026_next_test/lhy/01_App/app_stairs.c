@@ -36,7 +36,7 @@
 
 /* 横移参数：默认侧航向 0°，车体系 vy 为负即沿地图 -y 前进；
  * 镜像侧航向 180°，经 route_lat_sign 取反后仍沿地图 -y */
-#define ST_VY_MMS      (-80.0f) /* 横移速度，车体系 vy，mm/s（默认侧取值） */
+#define ST_VY_MMS      (-100.0f) /* 横移速度，车体系 vy，mm/s（默认侧取值） */
 #define ST_POLL_MS     10U      /* 横移中命令/位姿轮询周期，ms */
 #define ST_END_HIGH_N  5U       /* 线尾确认所需连续高电平次数 */
 #define ST_LINE_KP     3.0f     /* 单位归一化灰度偏差对应角速度，deg/s */

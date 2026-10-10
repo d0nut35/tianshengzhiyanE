@@ -62,9 +62,9 @@
 
 /* [lyx] 绕圆柱约1.187圈：保持310mm/11562ms实测圈数，变半径时按比例调整运动时长。 */
 #define APP_CYL_SETTLE_MS 1000U     /* 到绕圈起点后等底盘稳定，ms */
-#define APP_CYL_V_MMS     200.0f    /* [lyx] 绕圈线速度，mm/s */
+#define APP_CYL_V_MMS     220.0f    /* [lyx] 绕圈线速度，mm/s，待实机验证 */
 #define APP_CYL_R_MM      (-305.0f) /* [lyx] 底盘中心轨迹半径，符号定转向，mm */
-#define APP_CYL_ARC_MS    11375U    /* [lyx] 200mm/s；11562×305/310取整，保持原约1.187圈 */
+#define APP_CYL_ARC_MS    10341U    /* [lyx] 220mm/s；按原弧长同比缩短，待实机验证 */
 /* [lyx] 小圆盘绕行期间短周期接收视觉触发后的停车和恢复命令。 */
 #define APP_CYL_POLL_MS   10U
 #define APP_CYL_FIX_VY    (-150.0f) /* 找线第一段车体系 y 速度，mm/s，默认侧 */
@@ -75,8 +75,8 @@
 #define APP_CYL_CAL_STOP  0U       /* 临时标定：红蓝均停车；正常全程前必须改0。 */
 #define APP_CYL_FIX_WAIT  1000U    /* 两段找线之间停车等待，ms */
 /* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */
-#define APP_CYL_EXIT_VX_MMS (-250.0f) /* [lyx] 车体 -x 平移速度，mm/s */
-#define APP_CYL_EXIT_MS     1800U     /* [lyx] 平移时长，理论位移约180mm */
+#define APP_CYL_EXIT_VX_MMS (-280.0f) /* [lyx] 车体 -x 平移速度，mm/s，待实机验证 */
+#define APP_CYL_EXIT_MS     1607U     /* [lyx] 按原退出位移同比缩短，待实机验证 */
 
 /* 仓库横移：按里程计 y 在 1~4 号位间判停，2~5 号灰度 P 纠偏航向；
  * [lyx] 航向 180° 时车体系 vy 为负即沿地图 +y 前进，反向时取相反速度；

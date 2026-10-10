@@ -183,11 +183,14 @@ uint8_t link_poll(link_hook_t hook, void *ctx, uint32_t tmo)
     } else if (step == 7U) {
         assert(cmd_wz == 1.5f);
         sample_mask(0x0CU); /* Reacquisition zeros rotation, not history. */
-    } else {
+    } else if (step == 8U) {
         assert(step == 8U && cmd_wz == 0.0f);
         pose_y = (events == 1U) ? 2700 : 2300;
         end_on = 0U;
         sample_mask(0x1EU); /* Layer boundary must take precedence over loss. */
+    } else {
+        assert(events == 3U && step <= 12U);
+        assert(cmd_wz == 1.5f); /* Keep driving until the fifth high sample. */
     }
     return 0U;
 }
@@ -262,9 +265,48 @@ static void test_sweep(test_case_t which, route_side_t selected, uint32_t hz)
     assert(stops > 0U);
     if (which == RUN_OK) {
         assert(ret == APP_OK && events == 3U && finished == 1U);
-        assert(drives == 15U); /* Five active updates per layer, no paused update. */
+        assert(drives == 19U); /* Four more end-line confirmation periods. */
     } else {
         assert(ret == APP_ERR && finished == 0U);
+    }
+}
+
+static void test_end_filter(void)
+{
+    stair_ctx_t sc = {0}; /* Counter belongs to this sweep, not static state. */
+    uint8_t done;         /* Actual production boundary result. */
+    unsigned i;          /* Consecutive sample index. */
+    chassis_mission_command_t cmd = {0}; /* Pause resets the confirmation. */
+
+    for (side = ROUTE_SIDE_DEFAULT; side <= ROUTE_SIDE_MIRROR; side++) {
+        sc.end_id = side == ROUTE_SIDE_MIRROR ? 6U : 1U;
+        sc.req_id = 17U;
+        sc.high_cnt = 0U;
+        fail_line = 0U;
+        end_on = 0U;
+        for (i = 1U; i <= 4U; i++) {
+            assert(layer_done(&g_layers[2], &sc, &done) == APP_OK);
+            assert(!done && sc.high_cnt == i);
+        }
+        end_on = 1U;
+        assert(layer_done(&g_layers[2], &sc, &done) == APP_OK);
+        assert(!done && sc.high_cnt == 0U);
+        end_on = 0U;
+        for (i = 1U; i <= 5U; i++) {
+            assert(layer_done(&g_layers[2], &sc, &done) == APP_OK);
+            assert(done == (i == 5U));
+        }
+        assert(layer_done(&g_layers[2], &sc, &done) == APP_OK);
+        assert(done && sc.high_cnt == 5U); /* Saturate instead of overflow. */
+        cmd.type = MISSION_CMD_STAIR_STOP;
+        assert(stair_hook(&cmd, &sc) == 1U && sc.high_cnt == 0U);
+        for (i = 1U; i <= 5U; i++) {
+            assert(layer_done(&g_layers[2], &sc, &done) == APP_OK);
+            assert(done == (i == 5U));
+        }
+        fail_line = 1U;
+        assert(layer_done(&g_layers[2], &sc, &done) == APP_ERR);
+        fail_line = 0U;
     }
 }
 
@@ -273,6 +315,7 @@ int main(void)
     test_case_t which; /* Failure and state-transition scenarios. */
     test_snapshot();
     test_control();
+    test_end_filter();
     for (which = RUN_OK; which <= BAD_END; which++) {
         test_sweep(which, ROUTE_SIDE_DEFAULT, 1000U);
         test_sweep(which, ROUTE_SIDE_MIRROR, 1000U);
@@ -281,5 +324,6 @@ int main(void)
     test_sweep(RUN_OK, ROUTE_SIDE_MIRROR, 100U);
     puts("PASS: 64 snapshots, 16 patterns, both sides, loss/history, pause/resume,");
     puts("      layer boundaries, STOP in all waits, IO failures, tick rates/wrap.");
+    puts("      End-line five highs, low reset, pause reset, saturation, both sides.");
     return 0;
 }

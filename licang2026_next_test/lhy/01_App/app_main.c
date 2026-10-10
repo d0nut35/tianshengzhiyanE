@@ -82,6 +82,8 @@
  * 镜像侧航向 0°，经 route_lat_sign 取反后仍沿地图 +y。 */
 #define APP_DEPOT_VY_MMS  (-100.0f)  /* 正向横移速度，车体系 vy，mm/s，默认侧 */
 #define APP_DEPOT_POLL_MS 10U       /* 横移中位姿轮询周期，ms */
+#define APP_DEPOT_FIX_MS  20000U    /* 仓库反向找线超时，ms */
+#define APP_DEPOT_HIGH_N  5U        /* 线尾确认所需连续高电平次数 */
 
 static osThreadId_t g_task = NULL;  /* 底盘任务 */
 static uint8_t      g_app_up = 0U;  /* 应用启动标志，1=资源就绪 */
@@ -171,7 +173,7 @@ static uint8_t disc_loc_hook(const chassis_mission_command_t *cmd, void *ctx)
 }
 
 /**
- * @brief 定位等待期间响应 STOP；测试模式只延时，不消费 Mission 命令
+ * @brief 定位或仓库横移等待期间响应 STOP；测试模式只延时
  * @param ms 等待时间，0=仅检查当前命令
  * @param formal 1=正式流程，0=独立测试
  * @retval APP_OK / APP_ERR=收到 STOP
@@ -412,7 +414,9 @@ static app_status_t depot_shift(int16_t y_mm)
     float       vy_up;           /* 沿地图 +y 前进的车体系 vy，已按侧取号 */
     uint8_t     up;              /* 1=目标在地图 +y 方向 */
 
-    if (csvc_get_pose(&pos, &yaw) != CSVC_OK) {
+    if ((disc_loc_wait(0U, 1U) != APP_OK) ||
+        (csvc_get_pose(&pos, &yaw) != CSVC_OK)) {
+        (void)align_stop();
         return APP_ERR;
     }
     if (pos.y_mm == y_mm) {
@@ -421,17 +425,83 @@ static app_status_t depot_shift(int16_t y_mm)
     up = (pos.y_mm < y_mm) ? 1U : 0U;
     vy_up = route_lat_sign() * APP_DEPOT_VY_MMS;
     if (csvc_free(0.0f, (up != 0U) ? vy_up : -vy_up, 0.0f) != CSVC_OK) {
+        (void)align_stop();
         return APP_ERR;
     }
     do {
-        osDelay(APP_DEPOT_POLL_MS);
-        if (csvc_get_pose(&pos, &yaw) != CSVC_OK) {
+        if ((disc_loc_wait(APP_DEPOT_POLL_MS, 1U) != APP_OK) ||
+            (csvc_get_pose(&pos, &yaw) != CSVC_OK)) {
             (void)align_stop();
             return APP_ERR;
         }
     } while (((up != 0U) && (pos.y_mm < y_mm)) ||
              ((up == 0U) && (pos.y_mm > y_mm)));
     return (align_stop() == ALIGN_OK) ? APP_OK : APP_ERR;
+}
+
+/**
+ * @brief  角度修正后反向寻找仓库线尾，只校准 Y，再返回 D1
+ * @retval APP_OK / APP_ERR=超时、STOP、传感器或底盘失败，已请求停车
+ * @note   红方 6 号、蓝方 1 号连续高电平确认；线尾 Y 与阶梯结束一致
+ */
+static app_status_t depot_locate(void)
+{
+    map_point_t pos = { 0, 0 };              /* 停稳后的里程计坐标 */
+    float yaw = 0.0f;                        /* 保留刚修正的航向 */
+    float vy = -route_lat_sign() * APP_DEPOT_VY_MMS; /* 与 D2 方向相反 */
+    uint32_t start = osKernelGetTickCount(); /* 找线超时起点 */
+    uint32_t tmo = util_ms_ticks(APP_DEPOT_FIX_MS); /* 找线时限 */
+    uint8_t sensor = (route_side() == ROUTE_SIDE_MIRROR) ? 1U : 6U; /* 镜像线尾 */
+    uint8_t on_line = 0U;                    /* 1=低电平压线 */
+    uint8_t high_cnt = 0U;                   /* 连续高电平计数 */
+    uint8_t moving = 0U;                     /* 1=已下发反向横移 */
+
+    while ((osKernelGetTickCount() - start) < tmo) {
+        if ((disc_loc_wait(0U, 1U) != APP_OK) ||
+            (align_on_line(sensor, &on_line) != ALIGN_OK)) {
+            goto fail;
+        }
+        if (on_line == 0U) {
+            high_cnt++;
+            if (high_cnt >= APP_DEPOT_HIGH_N) {
+                break;
+            }
+        } else {
+            high_cnt = 0U;
+            /* 初始已高时原地确认，只有读到低电平才启动找线。 */
+            if (moving == 0U) {
+                if (csvc_free(0.0f, vy, 0.0f) != CSVC_OK) {
+                    goto fail;
+                }
+                moving = 1U;
+            }
+        }
+        if (disc_loc_wait(APP_DEPOT_POLL_MS, 1U) != APP_OK) {
+            goto fail;
+        }
+    }
+    if (high_cnt < APP_DEPOT_HIGH_N) {
+        APP_LOGE("depot line timeout");
+        goto fail;
+    }
+    if ((align_stop() != ALIGN_OK) ||
+        (disc_loc_wait(0U, 1U) != APP_OK) ||
+        (csvc_get_pose(&pos, &yaw) != CSVC_OK)) {
+        goto fail;
+    }
+    /* 与阶梯线尾一致：停稳后只修 Y，保留 X 和航向。 */
+    APP_LOGI("depot end y=%d -> %d", (int)pos.y_mm, APP_STAIR_END_Y_MM);
+    pos.y_mm = (int16_t)APP_STAIR_END_Y_MM;
+    if ((csvc_set_pose(pos, yaw) == CSVC_OK) &&
+        (depot_shift(g_depot_tbl[0].y_mm) == APP_OK)) {
+        return APP_OK;
+    }
+fail:
+    APP_LOGE("depot locate fail");
+    if (align_stop() != ALIGN_OK) {
+        APP_LOGE("depot locate stop fail");
+    }
+    return APP_ERR;
 }
 
 /* 仓库命令分发上下文 */
@@ -535,9 +605,16 @@ static void app_task(void *arg)
 
     /* [lyx] 小圆盘退出姿态完成后，等待上层下发已有的仓库1号位命令。 */
     (void)link_wait(MISSION_CMD_GO_DEPOT_1, &id, osWaitForever);
-    /* 仓库：1 号位找线标定作为横移基准，到位后由 Mission 逐点驱动横移；
-     * 1 号位失败则位姿不可信，不盲横移直接回家 */
+    /* 仓库：1 号位修正角度后反向找线校准 Y，返回 D1 才回报到位；
+     * 原导航失败仍回家，新增线尾校正失败则保持停车。 */
     ok = (route_go(ROUTE_DEPOT) == APP_OK) ? 1U : 0U;
+    if ((ok != 0U) && (depot_locate() != APP_OK)) {
+        (void)link_post(CHASSIS_CMD_DEPOT_1_READY, id, 0U);
+        /* 超时或校正失败不能继续横移、回家，仅保留 STOP 响应。 */
+        for (;;) {
+            (void)link_poll(NULL, NULL, util_ms_ticks(APP_IDLE_MS));
+        }
+    }
     (void)link_post(CHASSIS_CMD_DEPOT_1_READY, id, ok);
     if (ok != 0U) {
         depot_ctx_t dctx; /* 仓库命令分发上下文 */
@@ -556,7 +633,7 @@ static void app_task(void *arg)
             ok = 0U;
             for (i = 0U; i < DEPOT_TBL_NUM; i++) {
                 if (g_depot_tbl[i].cmd == dctx.cmd) {
-                    /* [lyx] 首次1号位由route_go标定，后续1~4号位统一双向横移。 */
+                    /* 首次1号位已完成线尾校正，后续1~4号位统一双向横移。 */
                     ok = (depot_shift(g_depot_tbl[i].y_mm) == APP_OK)
                          ? 1U : 0U;
                     (void)link_post(g_depot_tbl[i].rsp, dctx.id, ok);

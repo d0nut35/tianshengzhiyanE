@@ -2,7 +2,7 @@
  * @file    app_stairs.c
  * @brief   阶梯三层横移状态机：按里程计 y 分层，暂停/恢复与层事件解耦
  * @note    - 沿地图 -y 慢速横移，层边界待实机标定
- *          - 末层不看 y，以 1 号灰度离线（高电平）作为线尾停车条件
+ *          - 末层不看 y，以 1 号灰度连续 5 次离线（高电平）作为线尾停车条件
  *          - 镜像侧航向反向：车体系 vy 取反，线尾灰度换到对称位置的 6 号
  *          - 横移中每周期先分发命令再查边界；暂停期间不判边界
  *          - 切层时停车等待视觉就绪，再按 ST_SETTLE_MS 稳定后继续横移 [lyx]
@@ -38,6 +38,7 @@
  * 镜像侧航向 180°，经 route_lat_sign 取反后仍沿地图 -y */
 #define ST_VY_MMS      (-80.0f) /* 横移速度，车体系 vy，mm/s（默认侧取值） */
 #define ST_POLL_MS     10U      /* 横移中命令/位姿轮询周期，ms */
+#define ST_END_HIGH_N  5U       /* 线尾确认所需连续高电平次数 */
 #define ST_LINE_KP     3.0f     /* 单位归一化灰度偏差对应角速度，deg/s */
 #define ST_W_MAX       3.0f     /* 纠偏角速度绝对值上限，deg/s */
 #define ST_ERR_SCALE   0.5f     /* 两对差分之和 [-2,2] 归一化至 [-1,1] */
@@ -57,6 +58,7 @@ typedef struct {
     float                  vy_mms;    /* 本侧横移速度，车体系 vy，mm/s */
     float                  last_wz;   /* 最近一次非零纠偏，整次扫描内保留 */
     uint8_t                end_id;    /* 本侧线尾检测灰度序号 */
+    uint8_t                high_cnt;  /* 线尾连续高电平计数，暂停后重新确认 */
     uint8_t                moving;    /* 1=低层已放行，全程横移不再清零 */
     uint8_t                paused;    /* 1=收到 STAIR_STOP 尚未恢复 */
     uint8_t                cam_ready; /* 1=本层事件已被 CAM_READY 确认 */
@@ -94,7 +96,7 @@ static const stair_layer_t g_layers_blue[ST_LAYER_NUM] = {
 };
 
 static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx);
-static app_status_t layer_done(const stair_layer_t *lay, uint8_t end_id,
+static app_status_t layer_done(const stair_layer_t *lay, stair_ctx_t *sc,
                                uint8_t *done);
 
 /**
@@ -161,6 +163,7 @@ static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx)
             sc->cam_ready = 1U;
             break;
         case MISSION_CMD_STAIR_STOP:
+            sc->high_cnt = 0U;
             if ((sc->moving != 0U) && (sc->paused == 0U)) {
                 (void)align_stop();
             }
@@ -187,12 +190,12 @@ static uint8_t stair_hook(const chassis_mission_command_t *cmd, void *ctx)
 /**
  * @brief  判断当前层是否走到边界
  * @param  lay    当前层表项
- * @param  end_id 本侧线尾检测灰度序号
+ * @param  sc     本侧线尾检测灰度及连续确认计数
  * @param  done   输出 1=已到边界
  * @retval APP_OK / APP_ERR=位姿或灰度读取失败
- * @note   末层以线尾灰度离线为准，不受横移段里程计累计误差影响
+ * @note   末层需连续 5 次高电平，低电平清零，不受里程计累计误差影响
  */
-static app_status_t layer_done(const stair_layer_t *lay, uint8_t end_id,
+static app_status_t layer_done(const stair_layer_t *lay, stair_ctx_t *sc,
                                uint8_t *done)
 {
     map_point_t pos = { 0, 0 }; /* 里程计坐标 */
@@ -200,10 +203,15 @@ static app_status_t layer_done(const stair_layer_t *lay, uint8_t end_id,
     uint8_t     on_line = 0U;   /* 线尾灰度压线标志 */
 
     if (lay->end == END_BY_LINE) {
-        if (align_on_line(end_id, &on_line) != ALIGN_OK) {
+        if (align_on_line(sc->end_id, &on_line) != ALIGN_OK) {
             return APP_ERR;
         }
-        *done = (on_line == 0U) ? 1U : 0U;
+        if (on_line != 0U) {
+            sc->high_cnt = 0U;
+        } else if (sc->high_cnt < ST_END_HIGH_N) {
+            sc->high_cnt++;
+        }
+        *done = (sc->high_cnt >= ST_END_HIGH_N) ? 1U : 0U;
         return APP_OK;
     }
     if (csvc_get_pose(&pos, &yaw) != CSVC_OK) {
@@ -237,6 +245,7 @@ app_status_t stairs_sweep(uint16_t req_id)
     ctx.end_id = (route_side() == ROUTE_SIDE_MIRROR) ? ST_END_ID_MIRROR
                                                      : ST_END_ID;
     for (i = 0U; i < ST_LAYER_NUM; i++) {
+        ctx.high_cnt = 0U;
         if (ctx.moving != 0U) {
             /* [lyx] 高/中层切入前先停车，消除视觉会话切换期间的盲移。 */
             if (align_stop() != ALIGN_OK) {
@@ -276,7 +285,12 @@ app_status_t stairs_sweep(uint16_t req_id)
             if (ctx.paused != 0U) {
                 continue;
             }
-            if (layer_done(&layers[i], ctx.end_id, &done) != APP_OK) {
+            /* 命令提前唤醒时不重复计数同一周期，线尾仍每 10ms 确认一次。 */
+            if ((layers[i].end == END_BY_LINE) &&
+                ((osKernelGetTickCount() - drive_tick) < poll)) {
+                continue;
+            }
+            if (layer_done(&layers[i], &ctx, &done) != APP_OK) {
                 (void)align_stop();
                 ST_LOGE("stair layer %u check fail", (unsigned)i);
                 return APP_ERR;

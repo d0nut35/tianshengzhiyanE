@@ -17,7 +17,6 @@
 #include "app_util.h" /* [lyx] 小圆盘绕行使用统一tick换算。 */
 #include "chassis_align.h"
 #include "chassis_service.h"
-#include "lsensor/lsensor_handler.h"
 #include "hwt101_adaption.h"
 #include "system_assembly.h"
 /* Mission 红蓝方 g_mission_side；目录不在 include path，同 freertos.c 相对引用 */
@@ -78,15 +77,11 @@
 #define APP_CYL_EXIT_VX_MMS (-280.0f) /* [lyx] 车体 -x 平移速度，mm/s，待实机验证 */
 #define APP_CYL_EXIT_MS     1607U     /* [lyx] 按原退出位移同比缩短，待实机验证 */
 
-/* 仓库横移：按里程计 y 在 1~4 号位间判停，2~5 号灰度 P 纠偏航向；
+/* 仓库横移：按里程计 y 在 1~4 号位间判停；
  * [lyx] 航向 180° 时车体系 vy 为负即沿地图 +y 前进，反向时取相反速度；
  * 镜像侧航向 0°，经 route_lat_sign 取反后仍沿地图 +y。 */
 #define APP_DEPOT_VY_MMS  (-100.0f)  /* 正向横移速度，车体系 vy，mm/s，默认侧 */
 #define APP_DEPOT_POLL_MS 10U       /* 横移中位姿轮询周期，ms */
-#define APP_DEPOT_KP      2.5f      /* 单位归一化灰度偏差对应角速度，deg/s */
-#define APP_DEPOT_W_MAX   2.0f      /* 仓库纠偏角速度绝对值上限，deg/s */
-#define APP_DEPOT_ERR_K   0.5f      /* 两对差分之和 [-2,2] 归一化至 [-1,1] */
-#define APP_DEPOT_MASK    0x1EU     /* 六路快照中 2~5 号对应的位 */
 #define APP_DEPOT_FIX_MS  20000U    /* 仓库反向找线超时，ms */
 #define APP_DEPOT_HIGH_N  5U        /* 线尾确认所需连续高电平次数 */
 
@@ -406,58 +401,13 @@ static app_status_t small_disc_round(uint16_t req_id)
 }
 
 /**
- * @brief  仓库横移叠加与阶梯相同的两对灰度 P 纠偏
- * @param  vy      本段车体系平移速度，mm/s
- * @param  last_wz 本段最近非零纠偏，初值 0，不跨点位保留
- * @retval APP_OK / APP_ERR=灰度无效或命令下发失败
- * @note   e=(H5-H2+H3-H4)/2，负角速度顺时针；红蓝及往返均不翻转符号。
- *         全高沿用历史角速度，无历史则零旋转继续平移，不作为停车条件。
- */
-static app_status_t depot_drive(float vy, float *last_wz)
-{
-    uint8_t levels = lsh_get_mask(); /* 同一次采样的六路电平快照 */
-    int8_t err;                     /* 两对灰度高电平差分之和 */
-    float wz;                       /* 本次纠偏角速度，deg/s */
-
-    if ((last_wz == NULL) || (levels == LSH_MASK_INVALID)) {
-        return APP_ERR;
-    }
-    if ((levels & APP_DEPOT_MASK) == APP_DEPOT_MASK) {
-        wz = *last_wz;
-    } else {
-        err = (int8_t)((levels >> 4U) & 1U) -
-              (int8_t)((levels >> 1U) & 1U) +
-              (int8_t)((levels >> 2U) & 1U) -
-              (int8_t)((levels >> 3U) & 1U);
-        wz = APP_DEPOT_KP * APP_DEPOT_ERR_K * (float)err;
-        if (wz > APP_DEPOT_W_MAX) {
-            wz = APP_DEPOT_W_MAX;
-        } else if (wz < -APP_DEPOT_W_MAX) {
-            wz = -APP_DEPOT_W_MAX;
-        }
-    }
-    if (csvc_free(0.0f, vy, wz) != CSVC_OK) {
-        return APP_ERR;
-    }
-    if (wz != 0.0f) {
-        *last_wz = wz;
-    }
-    return APP_OK;
-}
-
-/**
- * @brief  [lyx] 根据当前里程计 y 双向横移到指定仓库位置后停车
- * @param  y_mm 目标 y，mm
- * @retval APP_OK / APP_ERR=命令下发或位姿读取失败（已停车）
- * @note   按里程计 y 判停、灰度纠偏航向；从线尾返回 D1 也立即启用。
- *         方向按地图 y 判定，车体系 vy 符号由场地侧决定；每段纠偏历史清零。
+ * @brief  根据当前里程计 y 双向横移到指定仓库位置后停车
  */
 static app_status_t depot_shift(int16_t y_mm)
 {
     map_point_t pos = { 0, 0 };  /* 里程计坐标 */
     float       yaw = 0.0f;      /* 里程计航向，附带量 */
     float       vy_up;           /* 沿地图 +y 前进的车体系 vy，已按侧取号 */
-    float       last_wz = 0.0f;  /* 本段最近非零纠偏，无历史时全高仍直行 */
     uint8_t     up;              /* 1=目标在地图 +y 方向 */
 
     if ((disc_loc_wait(0U, 1U) != APP_OK) ||
@@ -471,7 +421,7 @@ static app_status_t depot_shift(int16_t y_mm)
     up = (pos.y_mm < y_mm) ? 1U : 0U;
     vy_up = route_lat_sign() * APP_DEPOT_VY_MMS;
     do {
-        if ((depot_drive((up != 0U) ? vy_up : -vy_up, &last_wz) != APP_OK) ||
+        if ((csvc_free(0.0f, (up != 0U) ? vy_up : -vy_up, 0.0f) != CSVC_OK) ||
             (disc_loc_wait(APP_DEPOT_POLL_MS, 1U) != APP_OK) ||
             (csvc_get_pose(&pos, &yaw) != CSVC_OK)) {
             (void)align_stop();

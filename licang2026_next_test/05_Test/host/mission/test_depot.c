@@ -134,9 +134,9 @@ int main(void)
     mission_depot_next_ball(&c); assert(c.depot_sequence == 2);
     c.depot_abnormal_mask = 1U << 2;
     mission_depot_next_ball(&c); assert(c.depot_sequence == 0);
-    /* 阶段1稳定期间不启动视觉；200ms到期只启动一次。 */
+    /* 阶段1稳定期间不启动视觉；100ms到期只启动一次。 */
     reset(&c); mission_enter_state(&c, MISSION_STATE_PLATFORM_SETTLE, MISSION_PLATFORM_SETTLE_MS);
-    now += 199; mission_check_timeout(&c); assert(sessions == 0);
+    now += 99; mission_check_timeout(&c); assert(sessions == 0);
     ++now; mission_check_timeout(&c); assert(sessions == 1 && c.state == MISSION_STATE_PLATFORM_WAIT_VISION);
     /* 抓取数不能推定为9；空盘、部分抓取、九球和已在12槽均保留当前槽。 */
     const uint8_t starts[] = {0, 3, 9, 11};

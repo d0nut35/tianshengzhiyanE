@@ -74,8 +74,8 @@
 #define APP_CYL_CAL_STOP  0U       /* 临时标定：红蓝均停车；正常全程前必须改0。 */
 #define APP_CYL_FIX_WAIT  1000U    /* 两段找线之间停车等待，ms */
 /* [lyx] 绕完后沿车体 -x 退出圆柱障碍膨胀区，参数待实机标定。 */
-#define APP_CYL_EXIT_VX_MMS (-280.0f) /* [lyx] 车体 -x 平移速度，mm/s，待实机验证 */
-#define APP_CYL_EXIT_MS     1607U     /* [lyx] 按原退出位移同比缩短，待实机验证 */
+#define APP_CYL_EXIT_VX_MMS (-320.0f) /* [lyx] 车体 -x 平移速度，mm/s，待实机验证 */
+#define APP_CYL_EXIT_MS     1406U     /* [lyx] 按原退出位移同比缩短，待实机验证 */
 
 /* 仓库横移：按里程计 y 在 1~4 号位间判停；
  * [lyx] 航向 180° 时车体系 vy 为负即沿地图 +y 前进，反向时取相反速度；

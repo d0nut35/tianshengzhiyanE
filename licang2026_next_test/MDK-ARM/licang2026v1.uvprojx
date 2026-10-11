@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F756xx,RTT_USE_ASM=0,LICANG_RELEASE_MINIMAL=1</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../02_Service/lsc16;../04_Bsp/lsc16;../02_Service/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../02_Service/ic_card;../04_Bsp/ic_card;../02_Service/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/common;../05_Test;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
+              <IncludePath>../Core/Inc;../02_Service/lsc16;../04_Bsp/lsc16;../02_Service/mult_uart;../03_Middleware/nano_vision;../03_Middleware/ball_manifest;../04_Bsp/mult_uart;../04_Bsp/uart_dispatch;../04_Bsp/oled;../02_Service/ic_card;../04_Bsp/ic_card;../02_Service/zdt_turntable;../04_Bsp/zdt_turntable;../04_Bsp/photo_gate;../05_Test/common;../05_Test;../02_Service/chassis_bridge;../lhy/01_App;../lhy/02_Service;../lhy/03_Middleware;../lhy/03_Middleware/chassis;../lhy/03_Middleware/map;../lhy/03_Middleware/pid;../lhy/04_Bsp;../lhy/04_Bsp/zdt_motor;../lhy/04_Bsp/hwt101;../lhy/99_Utils;../lhy/99_Utils/rtt;../Drivers/STM32F7xx_HAL_Driver/Inc;../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F7xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM7/r0p1</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -1610,6 +1610,26 @@
         <Group>
           <GroupName>04_Bsp</GroupName>
           <Files>
+            <File>
+              <FileName>OLED.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../04_Bsp/oled/OLED.c</FilePath>
+            </File>
+            <File>
+              <FileName>OLED.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../04_Bsp/oled/OLED.h</FilePath>
+            </File>
+            <File>
+              <FileName>OLED_Data.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../04_Bsp/oled/OLED_Data.c</FilePath>
+            </File>
+            <File>
+              <FileName>OLED_Data.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../04_Bsp/oled/OLED_Data.h</FilePath>
+            </File>
             <File>
               <FileName>mux_bsp.c</FileName>
               <FileType>1</FileType>

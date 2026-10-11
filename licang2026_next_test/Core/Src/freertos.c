@@ -44,6 +44,7 @@
 #endif
 
 #include "arm.h"
+#include "OLED.h"
 
 #if LSC16_FREERTOS_TEST_ENABLED
 #include "lsc16_freertos_test.h"
@@ -251,6 +252,18 @@ void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
   (void)argument;
+
+  /* I2C1已由main初始化。先亮屏，再进入可能等待四轮握手的底盘装配。
+   * OLED缺席/通信失败仅跳过显示，不影响机器人原有启动流程。
+   */
+  osDelay(100);
+  OLED_Init();
+  if (OLED_IsReady()) {
+    OLED_ShowString(0, 0, "LICANG 2026", OLED_8X16);
+    OLED_ShowString(0, 16, "OLED I2C1", OLED_8X16);
+    OLED_ShowString(0, 32, "0123456789", OLED_8X16);
+    OLED_Update();
+  }
 
 #if LICANG_ACTIVE_TEST == LICANG_TEST_NONE
   /* app_init()阻塞到四轮握手完成，失败不影响其他子系统，因此不进Error_Handler。 */

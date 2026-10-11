@@ -20,7 +20,6 @@
 
 #include "i2c.h"
 #include "OLED.h"
-#include "SEGGER_RTT.h"
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
@@ -92,6 +91,25 @@ uint8_t OLED_DisplayBuf[8][128];
 #define OLED_I2C_ADDRESS       (0x3CU << 1)
 #define OLED_I2C_TIMEOUT_MS    30U
 static HAL_StatusTypeDef OLED_I2C_Status = HAL_ERROR;
+static oled_boot_diagnostic_t OLED_BootDiagnostic;
+static volatile uint8_t OLED_BootDiagnosticReady;
+
+void OLED_FinishBootDiagnostic(uint8_t init_ready)
+{
+    OLED_BootDiagnostic.init_ready = init_ready;
+    OLED_BootDiagnostic.display_ready = OLED_IsReady();
+    __DMB();
+    OLED_BootDiagnosticReady = 1U;
+}
+
+uint8_t OLED_GetBootDiagnostic(oled_boot_diagnostic_t *result)
+{
+    if (!OLED_BootDiagnosticReady || result == NULL) return 0U;
+    __DMB();
+    *result = OLED_BootDiagnostic;
+    return 1U;
+}
+
 
 uint8_t OLED_IsReady(void)
 {
@@ -105,9 +123,10 @@ void OLED_WriteCommand(uint8_t Command)
     OLED_I2C_Status = HAL_I2C_Mem_Write(&hi2c1, OLED_I2C_ADDRESS,
         0x00U, I2C_MEMADD_SIZE_8BIT, &Command, 1U, OLED_I2C_TIMEOUT_MS);
     if (OLED_I2C_Status != HAL_OK) {
-        SEGGER_RTT_printf(0, "[OLED] CMD=%u STATUS=%u ERROR=0x%X\r\n",
-            (unsigned)Command, (unsigned)OLED_I2C_Status,
-            (unsigned)HAL_I2C_GetError(&hi2c1));
+        OLED_BootDiagnostic.write_kind = 1U;
+        OLED_BootDiagnostic.write_value = Command;
+        OLED_BootDiagnostic.write_status = (uint8_t)OLED_I2C_Status;
+        OLED_BootDiagnostic.write_error = HAL_I2C_GetError(&hi2c1);
     }
 }
 
@@ -117,9 +136,10 @@ void OLED_WriteData(uint8_t *Data, uint8_t Count)
     OLED_I2C_Status = HAL_I2C_Mem_Write(&hi2c1, OLED_I2C_ADDRESS,
         0x40U, I2C_MEMADD_SIZE_8BIT, Data, Count, OLED_I2C_TIMEOUT_MS);
     if (OLED_I2C_Status != HAL_OK) {
-        SEGGER_RTT_printf(0, "[OLED] DATA=%u STATUS=%u ERROR=0x%X\r\n",
-            (unsigned)Count, (unsigned)OLED_I2C_Status,
-            (unsigned)HAL_I2C_GetError(&hi2c1));
+        OLED_BootDiagnostic.write_kind = 2U;
+        OLED_BootDiagnostic.write_value = Count;
+        OLED_BootDiagnostic.write_status = (uint8_t)OLED_I2C_Status;
+        OLED_BootDiagnostic.write_error = HAL_I2C_GetError(&hi2c1);
     }
 }
 
@@ -133,16 +153,16 @@ void OLED_WriteData(uint8_t *Data, uint8_t Count)
   */
 void OLED_Init(void)
 {
-    /* Bounded boot-only probes; keep configured address even if 0x3D responds. */
-    SEGGER_RTT_printf(0, "[OLED] DIAG I2C1 PB8_SCL=%u PB9_SDA=%u ADDR=0x3C\r\n",
-        (unsigned)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8),
-        (unsigned)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9));
+    /* Record only; Mission owns USART1 output. No automatic address change. */
+    OLED_BootDiagnosticReady = 0U;
+    memset(&OLED_BootDiagnostic, 0, sizeof(OLED_BootDiagnostic));
+    OLED_BootDiagnostic.scl = (uint8_t)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8);
+    OLED_BootDiagnostic.sda = (uint8_t)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9);
     for (uint16_t address = 0x3CU; address <= 0x3DU; ++address) {
         HAL_StatusTypeDef status = HAL_I2C_IsDeviceReady(
             &hi2c1, address << 1, 1U, OLED_I2C_TIMEOUT_MS);
-        SEGGER_RTT_printf(0, "[OLED] PROBE=0x%X STATUS=%u ERROR=0x%X\r\n",
-            (unsigned)address, (unsigned)status,
-            (unsigned)HAL_I2C_GetError(&hi2c1));
+        OLED_BootDiagnostic.probe_status[address - 0x3CU] = (uint8_t)status;
+        OLED_BootDiagnostic.probe_error[address - 0x3CU] = HAL_I2C_GetError(&hi2c1);
     }
 	OLED_I2C_Status = HAL_OK; /* 调用前I2C1须已初始化，且屏幕供电稳定。 */
 	

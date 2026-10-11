@@ -21,6 +21,7 @@
 #include "chassis_mission_link.h"
 #include "arm.h"
 #include "mission_config.h"
+#include "OLED.h"
 #include "mux_service.h"
 #include "nano_vision_core.h"
 #include "gate.h"
@@ -867,6 +868,28 @@ static void mission_reset_vision(mission_context_t *ctx)
 }
 
 /** 起点状态查询与识别会话互斥，共用单份DMA缓冲区及回调邮箱。 */
+/* Print once from the existing USART1 owner after OLED publishes its snapshot. */
+static void mission_oled_boot_trace(void)
+{
+#if MISSION_DEPOT_TRACE_ENABLED || MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    static bool printed;
+    oled_boot_diagnostic_t d;
+    if (printed || !OLED_GetBootDiagnostic(&d)) return;
+    printed = true;
+    BLOCK_TRACE("[OLED] BOOT WAIT=500MS I2C1 PB8_SCL=%u PB9_SDA=%u ADDR=0x3C\r\n",
+        (unsigned)d.scl, (unsigned)d.sda);
+    for (unsigned i = 0U; i < 2U; ++i) {
+        BLOCK_TRACE("[OLED] PROBE=0x%X STATUS=%u ERROR=0x%lX\r\n",
+            0x3CU + i, (unsigned)d.probe_status[i], (unsigned long)d.probe_error[i]);
+    }
+    BLOCK_TRACE("[OLED] WRITE KIND=%u VALUE=%u STATUS=%u ERROR=0x%lX\r\n",
+        (unsigned)d.write_kind, (unsigned)d.write_value,
+        (unsigned)d.write_status, (unsigned long)d.write_error);
+    BLOCK_TRACE("[OLED] INIT_READY=%u DISPLAY_READY=%u\r\n",
+        (unsigned)d.init_ready, (unsigned)d.display_ready);
+#endif
+}
+
 static void mission_model_process(mission_context_t *ctx)
 {
     size_t tx_len;
@@ -3103,6 +3126,7 @@ static void mission_task_entry(void *argument)
 #if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
         mission_boot_trace(ctx, &boot_trace_next_tick);
 #endif
+        mission_oled_boot_trace();
         mission_model_process(ctx);
         flags = osThreadFlagsWait(
             MISSION_ALL_FLAGS,
@@ -4407,6 +4431,7 @@ static void mission_wireless_test_entry(void *argument)
 
     /* 先由无线指令选色，再允许底盘开始握手；本轮颜色此后保持不变。 */
     while (g_mission_side == MISSION_COLOR_NONE) {
+        mission_oled_boot_trace();
         if (mission_test_take_command(command, sizeof(command))) {
             if (strcmp(command, "RED") == 0) {
                 g_mission_side = MISSION_COLOR_RED;
@@ -4431,6 +4456,7 @@ static void mission_wireless_test_entry(void *argument)
     mission_enter_state(ctx, MISSION_STATE_WAIT_CHASSIS_READY, 0U);
     mission_test_write("WAIT ARM 10 + CHASSIS + BLOCK MODEL\r\n");
     while ((chassis_ready == 0U) || !ctx->arm_home_ready || !ctx->block_model_ready) {
+        mission_oled_boot_trace();
         mission_model_process(ctx);
         flags = osThreadFlagsWait(
             CHASSIS_MISSION_FLAG_EVENT | MISSION_FLAG_ARM_OK |

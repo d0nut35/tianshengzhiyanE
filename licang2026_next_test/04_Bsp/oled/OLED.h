@@ -25,6 +25,16 @@ void OLED_Init(void);
 /* 最近初始化/刷新是否成功；失败时可检查接线后重新初始化。 */
 uint8_t OLED_IsReady(void);
 
+/* Boot-only snapshot: published after initial display, read by Mission UART1. */
+typedef struct {
+    uint32_t probe_error[2], write_error;
+    uint8_t scl, sda, probe_status[2], write_status, write_kind, write_value;
+    uint8_t init_ready, display_ready;
+} oled_boot_diagnostic_t;
+void OLED_FinishBootDiagnostic(uint8_t init_ready);
+uint8_t OLED_GetBootDiagnostic(oled_boot_diagnostic_t *result);
+
+
 /*更新函数*/
 void OLED_Update(void);
 void OLED_UpdateArea(int16_t X, int16_t Y, uint8_t Width, uint8_t Height);

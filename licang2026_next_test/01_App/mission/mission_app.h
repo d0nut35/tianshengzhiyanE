@@ -105,7 +105,7 @@ typedef enum {
     MISSION_STATE_BLOCK_WAIT_D4,     /* 保留原编号/名称：等空列停车，红D4/蓝D1。 */
     MISSION_STATE_BLOCK_WAIT_PLACE,
     MISSION_STATE_BLOCK_FINISH,      /* 三层结束，等待实际动作10。 */
-    MISSION_STATE_BLOCK_RETURN_DEPOT,/* 正式小球入口红D1/蓝D2；无线D1回家。 */
+    MISSION_STATE_BLOCK_RETURN_DEPOT,/* 正式小球入口红D4/蓝D2；红方随后D3/D2/D1递减放球，蓝方无线D1回家。 */
     MISSION_STATE_BLOCK_WAIT_HOME,   /* 无线搬运测试等待实际回家。 */
     MISSION_STATE_DEPOT_RETURN_ENTRY,/* 蓝方小球结束返D1，禁止重进首次积木入口。 */
 } mission_state_t;

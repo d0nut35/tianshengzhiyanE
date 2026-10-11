@@ -110,7 +110,7 @@ int main(void)
 {
     mission_context_t c;
     /* 按当前位置而非固定12槽排序：12→9→6→3，层序为2→1→3。 */
-    reset(&c); c.current_slot = 11; c.depot_column = 2; c.depot_position = 1;
+    reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.current_slot = 11; c.depot_column = 2; c.depot_position = 2;
     add_ball(&c, 3, 2, 2); add_ball(&c, 2, 2, 8); add_ball(&c, 1, 2, 5);
     const uint8_t nearest[] = {1, 2, 0};
     unsigned total_steps = 0;
@@ -123,7 +123,7 @@ int main(void)
         finish_arm(&c);
         assert(c.manifest.records[nearest[i]].state == BALL_MANIFEST_STATE_PLACED);
     }
-    assert(total_steps == 9 && moves == 9 && c.depot_position == 2);
+    assert(total_steps == 9 && moves == 9 && c.depot_position == 3);
     /* 后续列保留真实槽号；当前槽零步优先，CCW可跨1→12且不改方向。 */
     reset(&c); c.current_slot = 0; c.depot_column = 1;
     add_ball(&c, 3, 1, 10); add_ball(&c, 1, 1, 0); add_ball(&c, 2, 1, 11);
@@ -141,7 +141,7 @@ int main(void)
     /* 抓取数不能推定为9；空盘、部分抓取、九球和已在12槽均保留当前槽。 */
     const uint8_t starts[] = {0, 3, 9, 11};
     for (unsigned i = 0; i < sizeof(starts); ++i) {
-        reset(&c); c.current_slot = starts[i]; mission_depot_prepare(&c);
+        reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.current_slot = starts[i]; mission_depot_prepare(&c);
         assert(groups[0] == 10 && sessions == 0 && moves == 0);
         /* 发送10不算到位，尚未完成时主循环不能转盘。 */
         now += 1; mission_check_timeout(&c); assert(moves == 0);
@@ -150,11 +150,11 @@ int main(void)
         assert(group_count == 1 && sessions == 1);
     }
     /* 小圆盘退出已完成10：入仓不重发，保留当前槽直接开始数字会话。 */
-    reset(&c); c.current_slot = 9; c.arm_home_ready = true;
+    reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.current_slot = 9; c.arm_home_ready = true;
     mission_depot_prepare(&c); assert(group_count == 0);
     seek(&c); assert(moves == 0 && c.current_slot == 9 && sessions == 1 && group_count == 0);
     /* 重复目标与读卡失败留车，正常球按CCW距离；回10前不能提前PLACED。 */
-    reset(&c); c.current_slot = 4;
+    reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.current_slot = 4; c.depot_position = 2;
     add_ball(&c, 1, 2, 0); add_ball(&c, 3, 2, 1); add_ball(&c, 3, 2, 2);
     assert(ball_manifest_append_read_failed(&c.manifest, BALL_MANIFEST_REGION_TURNTABLE,
         BALL_MANIFEST_COLOR_RED, 3) == BALL_MANIFEST_OK);
@@ -174,7 +174,7 @@ int main(void)
     assert(c.manifest.records[0].state == BALL_MANIFEST_STATE_PLACED);
     assert(c.manifest.records[2].state == BALL_MANIFEST_STATE_STORED);
     assert(c.manifest.records[3].state == BALL_MANIFEST_STATE_READ_FAILED);
-    assert(c.depot_position == 2 && last_command == MISSION_CMD_GO_DEPOT_1 + 1);
+    assert(c.depot_position == 3 && last_command == MISSION_CMD_GO_DEPOT_1 + 2);
     /* 数字不一致/重复列都拒绝放球。 */
     reset(&c); c.depot_position = 1; c.depot_first_digit = 1; digit(&c, 2);
     assert(c.state == MISSION_STATE_FAULT && group_count == 0);
@@ -187,7 +187,7 @@ int main(void)
     mission_depot_next_ball(&c);
     assert(c.state == MISSION_STATE_FAULT && c.manifest.records[0].state == BALL_MANIFEST_STATE_STORED);
     /* 二层在D4放置后不运行24；成功收臂后先返D1。 */
-    reset(&c); add_ball(&c, 2, 4, 0); c.depot_column = 4; c.depot_position = 4;
+    reset(&c); g_mission_side = MISSION_COLOR_BLUE; add_ball(&c, 2, 4, 0); c.depot_column = 4; c.depot_position = 4;
     mission_depot_next_ball(&c); until_return(&c);
     const unsigned row2[] = {10, 22, 25, 10};
     assert(group_count == 4 && memcmp(groups, row2, sizeof(row2)) == 0);
@@ -199,7 +199,7 @@ int main(void)
     depot_handle_chassis(&c, &return_event);
     assert(c.state == MISSION_STATE_DEPOT_WAIT_HOME && last_command == MISSION_CMD_DEPOT_OK);
     /* D4无球也先返D1；D1到位后立即发送DEPOT_OK回家。 */
-    reset(&c); c.depot_position = 4; c.depot_column = 4; mission_depot_next_ball(&c);
+    reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.depot_position = 4; c.depot_column = 4; mission_depot_next_ball(&c);
     assert(last_command == MISSION_CMD_GO_DEPOT_1 && c.state == MISSION_STATE_DEPOT_RETURN_ENTRY);
     return_event = (chassis_mission_event_t){c.request_id, CHASSIS_CMD_DEPOT_1_READY, 1};
     depot_handle_chassis(&c, &return_event);
@@ -214,6 +214,22 @@ int main(void)
     assert(stops == 0 && c.state == MISSION_STATE_DEPOT_WAIT_DIGIT);
     ++now; mission_check_timeout(&c);
     assert(stops == 1 && c.state == MISSION_STATE_DEPOT_DIGIT_STOP);
+    /* 红方积木停D4后，仓库按D3、D2、D1递减；D4不启动数字会话。 */
+    reset(&c); g_mission_side = MISSION_COLOR_RED; c.current_slot = 5; c.arm_home_ready = true;
+    mission_depot_prepare(&c); seek(&c);
+    assert(c.depot_position == 3 && c.state == MISSION_STATE_DEPOT_WAIT_POSITION &&
+           last_command == (MISSION_CMD_GO_DEPOT_1 + 2) && sessions == 0);
+    chassis_mission_event_t red_event = {c.request_id, CHASSIS_CMD_DEPOT_3_READY, 1};
+    depot_handle_chassis(&c, &red_event); assert(sessions == 1 && c.state == MISSION_STATE_DEPOT_WAIT_DIGIT);
+    digit(&c, 1); digit(&c, 1);
+    assert(c.depot_position == 2 && last_command == (MISSION_CMD_GO_DEPOT_1 + 1));
+    red_event.request_id = c.request_id; red_event.type = CHASSIS_CMD_DEPOT_2_READY;
+    depot_handle_chassis(&c, &red_event); digit(&c, 2); digit(&c, 2);
+    assert(c.depot_position == 1 && last_command == MISSION_CMD_GO_DEPOT_1);
+    red_event.request_id = c.request_id; red_event.type = CHASSIS_CMD_DEPOT_1_READY;
+    depot_handle_chassis(&c, &red_event); digit(&c, 3); digit(&c, 3);
+    assert(c.state == MISSION_STATE_DEPOT_WAIT_HOME && last_command == MISSION_CMD_DEPOT_OK);
+
     /* 蓝方D2～D4的数字排列任意，全部按IC目标列放置；D4不可假定列4。
      * 实际返D1回报前不回家，重复D1不能重进积木或清空档案。 */
     const uint8_t permutations[][3] = {{1,2,3},{1,3,2},{2,1,3},{2,3,1},{3,1,2},{3,2,1}};

@@ -1489,12 +1489,12 @@ static void mission_block_arm_done(mission_context_t *ctx)
         mission_block_next_layer(ctx);
         break;
     case MISSION_STATE_BLOCK_FINISH:
-        /* 蓝方正式从D1去有数字的D2；无线两方仍到D1回家、不放小球。 */
+        /* 红方积木占用D4，随后从D4进入仓库按D3、D2、D1放球；蓝方仍从D2进入。 */
         mission_block_move(ctx,
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
             1U,
 #else
-            (g_mission_side == MISSION_COLOR_BLUE) ? 2U : 1U,
+            (g_mission_side == MISSION_COLOR_BLUE) ? 2U : 4U,
 #endif
             MISSION_STATE_BLOCK_RETURN_DEPOT);
         break;
@@ -2209,14 +2209,8 @@ static void mission_handle_chassis(
     if ((ctx->state == MISSION_STATE_DEPOT_WAIT_POSITION) &&
         (event->type == (uint8_t)(CHASSIS_CMD_DEPOT_1_READY +
                                   ctx->depot_position - 1U))) {
-        /* 红D4无数字；蓝D4有数字，必须按C100实测逻辑列放球。 */
-        if ((ctx->depot_position == 4U) && (g_mission_side != MISSION_COLOR_BLUE)) {
-            ctx->depot_column = 4U;
-            mission_depot_next_ball(ctx);
-        } else {
-            ctx->depot_first_digit = 0U;
-            mission_depot_start_digit(ctx);
-        }
+        ctx->depot_first_digit = 0U;
+        mission_depot_start_digit(ctx);
         return;
     }
     if ((ctx->state == MISSION_STATE_DEPOT_RETURN_ENTRY) &&
@@ -2743,9 +2737,15 @@ static void mission_depot_prepare(mission_context_t *ctx)
             (record.storage_slot >= 12U) ||
             (record.target_row < 1U) || (record.target_row > 3U) ||
             (record.target_column < 1U) || (record.target_column > 4U) ||
+            ((g_mission_side == MISSION_COLOR_RED) && (record.target_column == 4U)) ||
             (record.ic_code != (uint8_t)((record.target_row << 4) |
                                          record.target_column))) {
             ctx->depot_abnormal_mask |= (uint16_t)(1U << i);
+            if ((g_mission_side == MISSION_COLOR_RED) &&
+                (record.target_column == 4U)) {
+                DEPOT_TRACE("[M] DEPOT SKIP BALL=%u COL=4 REASON=BLOCK_COLUMN\r\n",
+                    (unsigned)i);
+            }
             continue;
         }
         target_bit = (uint16_t)(1U << ((record.target_row - 1U) * 4U +
@@ -2759,8 +2759,8 @@ static void mission_depot_prepare(mission_context_t *ctx)
         targets |= target_bit;
         slots |= slot_bit;
     }
-    /* 入口已确认红D1/蓝D2到位，蓝方不得把真实D2改记为D1。 */
-    if (g_mission_side != MISSION_COLOR_BLUE) ctx->depot_position = 1U;
+    /* 入口已确认红D4/蓝D2到位；红方D4由积木占用。 */
+    ctx->depot_position = (g_mission_side == MISSION_COLOR_BLUE) ? 2U : 4U;
     ctx->depot_columns_used = 0U;
     ctx->depot_first_digit = 0U;
     ctx->depot_preparing = true;
@@ -2854,8 +2854,9 @@ static void mission_depot_next_ball(mission_context_t *ctx)
         }
         return;
     }
-    if (ctx->depot_position == 4U) {
-        /* 红蓝方D4收尾都先返回D1，实际到位后再停1秒并回家。 */
+    if ((g_mission_side == MISSION_COLOR_BLUE) &&
+        (ctx->depot_position == 4U)) {
+        /* 蓝方D4收尾后返回D1；红方从D4递减至D1。 */
         if (!mission_send_chassis(MISSION_CMD_GO_DEPOT_1,
                                   mission_next_request_id(ctx))) {
             mission_fail(ctx, MISSION_FAULT_QUEUE);
@@ -2865,7 +2866,22 @@ static void mission_depot_next_ball(mission_context_t *ctx)
                             MISSION_OPERATION_TIMEOUT_MS);
         return;
     }
-    ++ctx->depot_position;
+    if (g_mission_side == MISSION_COLOR_RED) {
+        if (ctx->depot_position > 1U) {
+            --ctx->depot_position;
+        } else {
+            if (!mission_send_chassis(MISSION_CMD_DEPOT_OK,
+                                      mission_next_request_id(ctx))) {
+                mission_fail(ctx, MISSION_FAULT_QUEUE);
+                return;
+            }
+            mission_enter_state(ctx, MISSION_STATE_DEPOT_WAIT_HOME,
+                                MISSION_OPERATION_TIMEOUT_MS);
+            return;
+        }
+    } else {
+        ++ctx->depot_position;
+    }
     if (!mission_send_chassis(
             (mission_command_type_t)(MISSION_CMD_GO_DEPOT_1 +
                                       ctx->depot_position - 1U),
@@ -2891,7 +2907,20 @@ static void mission_depot_arm_done(mission_context_t *ctx)
     case MISSION_STATE_DEPOT_SAFE:
         if (ctx->depot_preparing) {
             ctx->depot_preparing = false;
-            mission_depot_start_digit(ctx);
+            if (g_mission_side == MISSION_COLOR_RED) {
+                ctx->depot_position = 3U;
+                if (!mission_send_chassis(
+                        (mission_command_type_t)(MISSION_CMD_GO_DEPOT_1 +
+                                                  ctx->depot_position - 1U),
+                        mission_next_request_id(ctx))) {
+                    mission_fail(ctx, MISSION_FAULT_QUEUE);
+                    return;
+                }
+                mission_enter_state(ctx, MISSION_STATE_DEPOT_WAIT_POSITION,
+                                    MISSION_OPERATION_TIMEOUT_MS);
+            } else {
+                mission_depot_start_digit(ctx);
+            }
             return;
         }
         group = MISSION_DEPOT_PICK_GROUP;

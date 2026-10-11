@@ -84,8 +84,8 @@
 /* 反向粗角独立保留；先与正向相同，实机测得偏差后单独调整。 */
 #define MISSION_ZDT_REVERSE_COARSE_ANGLE_0P1DEG 1400U
 #define MISSION_ZDT_FINE_ANGLE_0P1DEG         10U
-#define MISSION_ZDT_SPEED_RPM                 600U
-#define MISSION_ZDT_FINE_SPEED_RPM             600U /* 用户要求微调与粗调同速，保留PB0校准。 */
+#define MISSION_ZDT_SPEED_RPM                 650U
+#define MISSION_ZDT_FINE_SPEED_RPM             650U /* 用户要求微调与粗调同速，保留PB0校准。 */
 #define MISSION_ZDT_ACCEL                      50U
 #define MISSION_ZDT_FINE_MAX_STEPS             10U
 #define MISSION_ZDT_DEPOT_FINE_MAX_STEPS       15U /* 正式/无线放球：多格粗调后统一微调。 */

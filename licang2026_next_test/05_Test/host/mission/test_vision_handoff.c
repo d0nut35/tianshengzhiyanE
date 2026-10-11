@@ -158,7 +158,7 @@ int main(void)
     const nano_vision_scene_t scenes[2][3] = {
         {NANO_VISION_SCENE_STAIR_LOW, NANO_VISION_SCENE_STAIR_HIGH, NANO_VISION_SCENE_STAIR_MID},
         {NANO_VISION_SCENE_STAIR_MID, NANO_VISION_SCENE_STAIR_HIGH, NANO_VISION_SCENE_STAIR_LOW}};
-    const unsigned groups[2][3] = {{14,15,16}, {16,15,14}};
+    const unsigned groups[2][3] = {{14,15,16}, {16,37,14}};
     for (unsigned side = 0; side < 2; ++side) {
         g_mission_side = side ? MISSION_COLOR_BLUE : MISSION_COLOR_RED;
         for (unsigned segment = 0; segment < 3; ++segment) {

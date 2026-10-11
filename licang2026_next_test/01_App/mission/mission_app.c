@@ -2082,7 +2082,8 @@ static uint8_t mission_stair_grasp_group(mission_stair_layer_t layer)
         return MISSION_STAIR_LOW_GROUP;
     }
     if (layer == MISSION_STAIR_HIGH) {
-        return MISSION_STAIR_HIGH_GROUP;
+        return (g_mission_side == MISSION_COLOR_BLUE) ?
+            MISSION_STAIR_BLUE_HIGH_GROUP : MISSION_STAIR_HIGH_GROUP;
     }
     if (layer == MISSION_STAIR_MID) {
         return MISSION_STAIR_MID_GROUP;

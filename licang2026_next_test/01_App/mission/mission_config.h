@@ -28,7 +28,8 @@
 #define MISSION_PLATFORM_GRASP_GROUP     12U
 #define MISSION_STAIR_VISION_GROUP       13U
 #define MISSION_STAIR_LOW_GROUP          14U
-#define MISSION_STAIR_HIGH_GROUP         15U
+#define MISSION_STAIR_HIGH_GROUP         15U /* 红方高层 */
+#define MISSION_STAIR_BLUE_HIGH_GROUP    37U /* 蓝方高层 */
 #define MISSION_STAIR_MID_GROUP          16U
 #define MISSION_STAIR_EXIT_GROUP         18U /* 阶梯结束后的撤离过渡姿态 */
 #define MISSION_SMALL_DISC_VISION_GROUP  19U /* 小圆盘绕行识别姿态 */

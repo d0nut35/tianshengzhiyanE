@@ -106,8 +106,92 @@ static void until_return(mission_context_t *c)
     }
 }
 
+/* 红蓝、六种数字排列、无/全/部分未知：用实际状态机完整取放九槽。 */
+static void test_fallback_routes(void)
+{
+    const uint8_t order[6][3] = {{1,2,3},{1,3,2},{2,1,3},{2,3,1},{3,1,2},{3,2,1}};
+    for (unsigned side = 0; side < 2; ++side) {
+        for (unsigned kind = 0; kind < 3; ++kind) {
+            for (unsigned p = 0; p < 6; ++p) {
+                mission_context_t c;
+                reset(&c); g_mission_side = side ? MISSION_COLOR_BLUE : MISSION_COLOR_RED;
+                c.current_slot = 9; c.arm_home_ready = true;
+                for (uint8_t i = 0; i < 9; ++i) {
+                    ball_manifest_region_t region = i < 5 ? BALL_MANIFEST_REGION_TURNTABLE :
+                        (i < 7 ? BALL_MANIFEST_REGION_STAIR : BALL_MANIFEST_REGION_PILLAR);
+                    bool unknown = kind == 1 || (kind == 2 && i % 2 == 0);
+                    if (unknown) {
+                        assert(ball_manifest_append_read_failed(&c.manifest, region,
+                            side ? BALL_MANIFEST_COLOR_BLUE : BALL_MANIFEST_COLOR_RED, i) == BALL_MANIFEST_OK);
+                    } else {
+                        assert(ball_manifest_append(&c.manifest, region,
+                            side ? BALL_MANIFEST_COLOR_BLUE : BALL_MANIFEST_COLOR_RED,
+                            (uint8_t)(((i / 3 + 1) << 4) | (i % 3 + 1)), i / 3 + 1, i % 3 + 1, i) == BALL_MANIFEST_OK);
+                    }
+                }
+                mission_depot_prepare(&c);
+                assert(c.depot_abnormal_mask == 0 && c.state == MISSION_STATE_DEPOT_SEEK);
+                ball_manifest_t planned = c.manifest;
+                unsigned occupied = 0;
+                for (unsigned i = 0; i < 9; ++i) {
+                    ball_manifest_record_t r = planned.records[i];
+                    bool unknown = r.state == BALL_MANIFEST_STATE_READ_FAILED;
+                    unsigned row = unknown ? r.fallback_row : r.target_row;
+                    unsigned col = unknown ? r.fallback_column : r.target_column;
+                    assert(row >= 1 && row <= 3 && col >= 1 && col <= 3);
+                    unsigned bit = 1U << ((row - 1) * 3 + col - 1);
+                    assert(!(occupied & bit)); occupied |= bit;
+                    if (unknown) assert(r.ic_code == 0 && r.target_row == 0 && r.target_column == 0);
+                    else assert(r.target_row == i / 3 + 1 && r.target_column == i % 3 + 1);
+                }
+                assert(occupied == 0x1FF);
+                now += 4567; mission_depot_prepare(&c);
+                assert(memcmp(&planned, &c.manifest, sizeof(planned)) == 0);
+                seek(&c);
+                for (unsigned stop = 0; stop < 3; ++stop) {
+                    if (c.state == MISSION_STATE_DEPOT_WAIT_POSITION) {
+                        chassis_mission_event_t e = {c.request_id,
+                            (uint8_t)(CHASSIS_CMD_DEPOT_1_READY + c.depot_position - 1), 1};
+                        depot_handle_chassis(&c, &e);
+                    }
+                    assert(c.state == MISSION_STATE_DEPOT_WAIT_DIGIT);
+                    digit(&c, order[p][stop]); digit(&c, order[p][stop]);
+                    for (unsigned j = 0; j < 3; ++j) {
+                        unsigned seq = c.depot_sequence;
+                        until_return(&c);
+                        assert(c.manifest.records[seq].state == planned.records[seq].state);
+                        finish_arm(&c);
+                        assert(c.manifest.records[seq].state == BALL_MANIFEST_STATE_PLACED);
+                    }
+                }
+                assert(c.state == (side ? MISSION_STATE_DEPOT_RETURN_ENTRY : MISSION_STATE_DEPOT_WAIT_HOME));
+                for (unsigned i = 0; i < 9; ++i) {
+                    assert(c.manifest.records[i].state == BALL_MANIFEST_STATE_PLACED);
+                    assert(c.manifest.records[i].ic_code == planned.records[i].ic_code);
+                }
+                /* 已完成目标仍占用，重建计划不能重新随机或复活已放置记录。 */
+                planned = c.manifest;
+                assert(ball_manifest_plan_fallback(&c.manifest, 0) == BALL_MANIFEST_OK);
+                assert(memcmp(&planned, &c.manifest, sizeof(planned)) == 0);
+            }
+        }
+    }
+    /* 未知球下发动作失败也保留未完成状态；非法物理槽在准备阶段停车。 */
+    mission_context_t c; reset(&c);
+    assert(ball_manifest_append_read_failed(&c.manifest, BALL_MANIFEST_REGION_TURNTABLE,
+        BALL_MANIFEST_COLOR_RED, 0) == BALL_MANIFEST_OK);
+    mission_depot_prepare(&c); c.depot_column = c.manifest.records[0].fallback_column;
+    arm_ok = false; mission_depot_next_ball(&c);
+    assert(c.state == MISSION_STATE_FAULT && c.manifest.records[0].state == BALL_MANIFEST_STATE_READ_FAILED);
+    reset(&c);
+    assert(ball_manifest_append_read_failed(&c.manifest, BALL_MANIFEST_REGION_TURNTABLE,
+        BALL_MANIFEST_COLOR_RED, 12) == BALL_MANIFEST_OK);
+    mission_depot_prepare(&c); assert(c.state == MISSION_STATE_FAULT && group_count == 0);
+}
+
 int main(void)
 {
+    test_fallback_routes();
     mission_context_t c;
     /* 按当前位置而非固定12槽排序：12→9→6→3，层序为2→1→3。 */
     reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.current_slot = 11; c.depot_column = 2; c.depot_position = 2;
@@ -153,12 +237,10 @@ int main(void)
     reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.current_slot = 9; c.arm_home_ready = true;
     mission_depot_prepare(&c); assert(group_count == 0);
     seek(&c); assert(moves == 0 && c.current_slot == 9 && sessions == 1 && group_count == 0);
-    /* 重复目标与读卡失败留车，正常球按CCW距离；回10前不能提前PLACED。 */
+    /* 已知重复目标仍跳过，正常球按CCW距离；回10前不能提前PLACED。 */
     reset(&c); g_mission_side = MISSION_COLOR_BLUE; c.current_slot = 4; c.depot_position = 2;
     add_ball(&c, 1, 2, 0); add_ball(&c, 3, 2, 1); add_ball(&c, 3, 2, 2);
-    assert(ball_manifest_append_read_failed(&c.manifest, BALL_MANIFEST_REGION_TURNTABLE,
-        BALL_MANIFEST_COLOR_RED, 3) == BALL_MANIFEST_OK);
-    mission_depot_prepare(&c); assert(c.depot_abnormal_mask == 12);
+    mission_depot_prepare(&c); assert(c.depot_abnormal_mask == 4);
     finish_arm(&c); seek(&c);
     digit(&c, 2); assert(sessions == 2); digit(&c, 2);
     assert(c.depot_sequence == 1 && c.depot_row == 3);
@@ -173,7 +255,6 @@ int main(void)
     until_return(&c); finish_arm(&c);
     assert(c.manifest.records[0].state == BALL_MANIFEST_STATE_PLACED);
     assert(c.manifest.records[2].state == BALL_MANIFEST_STATE_STORED);
-    assert(c.manifest.records[3].state == BALL_MANIFEST_STATE_READ_FAILED);
     assert(c.depot_position == 3 && last_command == MISSION_CMD_GO_DEPOT_1 + 2);
     /* 数字不一致/重复列都拒绝放球。 */
     reset(&c); c.depot_position = 1; c.depot_first_digit = 1; digit(&c, 2);

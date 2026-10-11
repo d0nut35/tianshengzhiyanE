@@ -1090,7 +1090,7 @@ static bool mission_record_ball(
 }
 
 /**
- * IC最多读五次；圆盘读失败不建档，阶梯/小圆盘仍记录READ_FAILED继续存球。
+ * IC最多读五次；各阶段读失败均记录READ_FAILED并转槽，放球前分配保底目标。
  */
 static bool mission_read_ball(
     mission_context_t *ctx,
@@ -1129,12 +1129,11 @@ static bool mission_read_ball(
     }
     if (region == MISSION_STORAGE_REGION_PLATFORM) {
         ctx->platform_read_ok = read_ok;
-        PLATFORM_TRACE("[P] T=%lu IC=%s TRY=%u READS=%u SLOT=%u TURN=%u\r\n",
+        PLATFORM_TRACE("[P] T=%lu IC=%s TRY=%u READS=%u SLOT=%u\r\n",
             (unsigned long)osKernelGetTickCount(), read_ok ? "OK" : "FAIL",
             (unsigned)ctx->platform_attempts,
             (unsigned)(read_ok ? attempt + 1U : MISSION_IC_MAX_ATTEMPTS),
-            (unsigned)(ctx->storage_slot + 1U), (unsigned)read_ok);
-        if (!read_ok) return true; /* 可重试的夹空/未读卡，不是设备存储故障。 */
+            (unsigned)(ctx->storage_slot + 1U));
     }
     if (region == MISSION_STORAGE_REGION_STAIR) {
         if (read_ok) STAIR_COUNT(ic_ok); else STAIR_COUNT(ic_failed);
@@ -1315,9 +1314,6 @@ static bool mission_store_ball(
     if (region == MISSION_STORAGE_REGION_STAIR) {
         STAIR_TRACE(ctx, "TURN FROM0=%u PHYS=%u DIR=%u\r\n", (unsigned)ctx->current_slot,
             (unsigned)(ctx->current_slot + 1U), (unsigned)MISSION_SLOT_USE_CW);
-    }
-    if ((region == MISSION_STORAGE_REGION_PLATFORM) && !ctx->platform_read_ok) {
-        return true; /* 仅圆盘保留同一空槽，其他区域行为不变。 */
     }
     /* 圆盘/阶梯/绕桩均保留微调，达到上限后不再强制等待PB0。 */
     if (!mission_advance_slot(ctx,
@@ -2631,9 +2627,8 @@ static void mission_handle_storage(mission_context_t *ctx)
         (completed_state != MISSION_STATE_SMALL_DISC_WAIT_STORAGE)) {
         return;
     }
-    /* 1) 每次读卡和转盘推进成功后占用一个新槽位。 */
-    if ((completed_state != MISSION_STATE_PLATFORM_WAIT_STORAGE) ||
-        ctx->platform_read_ok) ++ctx->storage_slot;
+    /* 1) 每次建档和转盘推进成功后占用一个新槽位，包括读卡失败记录。 */
+    ++ctx->storage_slot; /* 读卡失败也已保留槽位并完成转槽，不能复用。 */
     if (completed_state == MISSION_STATE_PLATFORM_WAIT_STORAGE) {
         /* 2) 圆盘固定最多抓5次；读卡失败不追加第6次尝试。 */
         if (ctx->platform_read_ok) ++ctx->platform_balls;
@@ -2728,18 +2723,36 @@ static void mission_depot_prepare(mission_context_t *ctx)
         mission_fail(ctx, MISSION_FAULT_STORAGE);
         return;
     }
+    if (ball_manifest_plan_fallback(&ctx->manifest, osKernelGetTickCount()) != BALL_MANIFEST_OK) {
+        DEPOT_TRACE("[M] DEPOT PLAN FAIL STORAGE_OR_TARGET_CONFLICT\r\n");
+        mission_fail(ctx, MISSION_FAULT_STORAGE);
+        return;
+    }
     ctx->depot_abnormal_mask = 0U;
     for (i = 0U; i < ctx->manifest.count; ++i) {
         uint16_t target_bit;
         uint16_t slot_bit;
-        if ((ball_manifest_get(&ctx->manifest, i, &record) != BALL_MANIFEST_OK) ||
-            (record.state != BALL_MANIFEST_STATE_STORED) ||
+        if (ball_manifest_get(&ctx->manifest, i, &record) != BALL_MANIFEST_OK) {
+            mission_fail(ctx, MISSION_FAULT_STORAGE);
+            return;
+        }
+        /* 只在局部副本中使用保底目标；不改真实IC字段或读卡失败状态。 */
+        if (record.state == BALL_MANIFEST_STATE_READ_FAILED) {
+            record.target_row = record.fallback_row;
+            record.target_column = record.fallback_column;
+            DEPOT_TRACE("[M] DEPOT FALLBACK SEQ=%u REGION=%u SLOT=%u ROW=%u COL=%u IC=READ_FAILED\r\n",
+                (unsigned)i, (unsigned)record.region, (unsigned)(record.storage_slot + 1U),
+                (unsigned)record.target_row, (unsigned)record.target_column);
+        }
+        if (((record.state != BALL_MANIFEST_STATE_STORED) &&
+             (record.state != BALL_MANIFEST_STATE_READ_FAILED)) ||
             (record.storage_slot >= 12U) ||
             (record.target_row < 1U) || (record.target_row > 3U) ||
             (record.target_column < 1U) || (record.target_column > 4U) ||
             ((g_mission_side == MISSION_COLOR_RED) && (record.target_column == 4U)) ||
-            (record.ic_code != (uint8_t)((record.target_row << 4) |
-                                         record.target_column))) {
+            ((record.state == BALL_MANIFEST_STATE_STORED) &&
+             (record.ic_code != (uint8_t)((record.target_row << 4) |
+                                         record.target_column)))) {
             ctx->depot_abnormal_mask |= (uint16_t)(1U << i);
             if ((g_mission_side == MISSION_COLOR_RED) &&
                 (record.target_column == 4U)) {
@@ -2829,7 +2842,13 @@ static void mission_depot_next_ball(mission_context_t *ctx)
             mission_fail(ctx, MISSION_FAULT_STORAGE);
             return;
         }
-        if ((record.state != BALL_MANIFEST_STATE_STORED) ||
+        if (record.state == BALL_MANIFEST_STATE_READ_FAILED) {
+            record.target_row = record.fallback_row;
+            record.target_column = record.fallback_column;
+        }
+        if (((record.state != BALL_MANIFEST_STATE_STORED) &&
+             (record.state != BALL_MANIFEST_STATE_READ_FAILED)) ||
+            (record.target_row < 1U) || (record.target_row > 3U) ||
             (record.target_column != ctx->depot_column)) continue;
         steps = mission_depot_ccw_steps(ctx->current_slot, record.storage_slot);
         if (steps < best_steps) {
@@ -2942,6 +2961,9 @@ static void mission_depot_arm_done(mission_context_t *ctx)
             mission_fail(ctx, MISSION_FAULT_STORAGE);
             return;
         }
+        DEPOT_TRACE("[M] BALL PLACED SEQ=%u SLOT=%u ROW=%u COL=%u\r\n",
+            (unsigned)ctx->depot_sequence, (unsigned)(ctx->depot_target_slot + 1U),
+            (unsigned)ctx->depot_row, (unsigned)ctx->depot_column);
         mission_depot_next_ball(ctx);
         return;
     default:

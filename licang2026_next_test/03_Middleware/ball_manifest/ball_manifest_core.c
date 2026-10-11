@@ -60,6 +60,8 @@ static uint16_t ball_manifest_record_checksum(
     crc = ball_manifest_crc16_update(crc, record->target_row);
     crc = ball_manifest_crc16_update(crc, record->target_column);
     crc = ball_manifest_crc16_update(crc, record->storage_slot);
+    crc = ball_manifest_crc16_update(crc, record->fallback_row);
+    crc = ball_manifest_crc16_update(crc, record->fallback_column);
     crc = ball_manifest_crc16_update(crc, (uint8_t)record->state);
     return crc;
 }
@@ -222,6 +224,65 @@ ball_manifest_status_t ball_manifest_append_read_failed(
     return BALL_MANIFEST_OK;
 }
 
+/** 先占住真实目标和已有保底目标，再抽剩余格；副本保证错误时不半分配。 */
+ball_manifest_status_t ball_manifest_plan_fallback(ball_manifest_t *manifest, uint32_t seed)
+{
+    ball_manifest_t planned;
+    uint16_t targets = 0U, slots = 0U;
+    uint8_t i;
+
+    if (ball_manifest_validate(manifest) != BALL_MANIFEST_OK) return BALL_MANIFEST_ERR_CORRUPT;
+    planned = *manifest;
+    for (i = 0U; i < planned.count; ++i) {
+        const ball_manifest_record_t *r = &planned.records[i];
+        if (r->storage_slot >= 12U) return BALL_MANIFEST_ERR_PARAM;
+        if ((slots & (1U << r->storage_slot)) != 0U) return BALL_MANIFEST_ERR_STORAGE_SLOT_DUPLICATE;
+        slots |= (uint16_t)(1U << r->storage_slot);
+        if ((r->ic_code != 0U) && (r->target_row >= 1U) && (r->target_row <= 3U) &&
+            (r->target_column >= 1U) && (r->target_column <= 3U) &&
+            (r->ic_code == (uint8_t)((r->target_row << 4) | r->target_column))) {
+            targets |= (uint16_t)(1U << ((r->target_row - 1U) * 3U + r->target_column - 1U));
+        }
+    }
+    for (i = 0U; i < planned.count; ++i) {
+        const ball_manifest_record_t *r = &planned.records[i];
+        uint16_t bit;
+        if ((r->fallback_row == 0U) && (r->fallback_column == 0U)) continue;
+        if ((r->fallback_row < 1U) || (r->fallback_row > 3U) ||
+            (r->fallback_column < 1U) || (r->fallback_column > 3U) ||
+            (r->ic_code != 0U) || (r->target_row != 0U) || (r->target_column != 0U) ||
+            ((r->state != BALL_MANIFEST_STATE_READ_FAILED) &&
+             (r->state != BALL_MANIFEST_STATE_PLACED))) return BALL_MANIFEST_ERR_PARAM;
+        bit = (uint16_t)(1U << ((r->fallback_row - 1U) * 3U + r->fallback_column - 1U));
+        if ((targets & bit) != 0U) return BALL_MANIFEST_ERR_PARAM;
+        targets |= bit;
+    }
+    if (seed == 0U) seed = 1U;
+    for (i = 0U; i < planned.count; ++i) {
+        ball_manifest_record_t *r = &planned.records[i];
+        uint8_t free_cells[9], count = 0U, cell;
+        if ((r->state != BALL_MANIFEST_STATE_READ_FAILED) || (r->fallback_row != 0U)) continue;
+        if ((r->ic_code != 0U) || (r->target_row != 0U) || (r->target_column != 0U))
+            return BALL_MANIFEST_ERR_PARAM;
+        for (cell = 0U; cell < 9U; ++cell) {
+            if ((targets & (1U << cell)) == 0U) free_cells[count++] = cell;
+        }
+        if (count == 0U) return BALL_MANIFEST_ERR_FULL;
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        cell = free_cells[seed % count];
+        r->fallback_row = (uint8_t)(cell / 3U + 1U);
+        r->fallback_column = (uint8_t)(cell % 3U + 1U);
+        targets |= (uint16_t)(1U << cell);
+#if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
+        r->checksum = ball_manifest_record_checksum(r);
+#endif
+    }
+    *manifest = planned;
+    return BALL_MANIFEST_OK;
+}
+
 ball_manifest_status_t ball_manifest_mark_placed(
     ball_manifest_t *manifest,
     uint8_t sequence)
@@ -237,7 +298,9 @@ ball_manifest_status_t ball_manifest_mark_placed(
     }
 #endif
     record = &manifest->records[sequence];
-    if (record->state == BALL_MANIFEST_STATE_READ_FAILED) {
+    if ((record->state == BALL_MANIFEST_STATE_READ_FAILED) &&
+        ((record->fallback_row < 1U) || (record->fallback_row > 3U) ||
+         (record->fallback_column < 1U) || (record->fallback_column > 3U))) {
         return BALL_MANIFEST_ERR_TARGET_UNKNOWN;
     }
 #if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE

@@ -4,11 +4,14 @@
 #include <string.h>
 #include "mission_app.h"
 #include "mission_config.h"
+#include "ball_manifest_core.h"
 #undef MISSION_CHASSIS_ROUTE_TEST_ENABLED
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED TEST_MODE
 #define DEPOT_TRACE(...) ((void)0)
 #include "stair_trace_disabled.h"
 #define PLATFORM_TRACE(...) ((void)0)
+#define TURN_TRACE(...) ((void)0)
+volatile mission_color_t g_mission_side = MISSION_COLOR_RED;
 enum { IC_CARD_OK, IC_CARD_ERR_BUSY, IC_READ_TIMEOUT_MS = 1000, MISSION_FLAG_IC_DONE = 1 };
 enum { LSC16_OK, LSC16_FAIL };
 enum { MISSION_FAULT_ARM, MISSION_FAULT_VISION, MISSION_FAULT_QUEUE };
@@ -23,9 +26,10 @@ typedef struct {
     uint8_t storage_slot, current_slot, active_arm_group;
     uint16_t request_id;
     bool platform_read_ok, arm_home_ready;
-    struct { unsigned ic_status; } storage;
+    ball_manifest_t manifest;
+    struct { unsigned ic_status; struct { uint8_t code, row, column; } ic_ball; } storage;
 } mission_context_t;
-static unsigned reads, records, turns, last_arm, visions;
+static unsigned reads, turns, last_arm, visions;
 static unsigned arm_commands, stairs_commands;
 static bool read_success, move_success = true, arm_success = true;
 static unsigned osThreadFlagsClear(unsigned f) { return f; }
@@ -34,10 +38,9 @@ static void osDelay(unsigned ms) { (void)ms; }
 static void mission_ic_done(void) {}
 static void mission_arm_tx_done(void) {}
 static unsigned ic_read(bool prompt, void (*done)(void), mission_context_t *c)
-{ (void)prompt; (void)done; ++reads; c->storage.ic_status = read_success ? IC_CARD_OK : IC_CARD_ERR_BUSY; return IC_CARD_OK; }
+{ (void)prompt; (void)done; ++reads; c->storage.ic_status = read_success ? IC_CARD_OK : IC_CARD_ERR_BUSY;
+  c->storage.ic_ball.code = 0x11; c->storage.ic_ball.row = 1; c->storage.ic_ball.column = 1; return IC_CARD_OK; }
 static bool mission_wait_device(unsigned flag, unsigned ms) { (void)flag; (void)ms; return true; }
-static bool mission_record_ball(mission_context_t *c, mission_storage_region_t r, bool ok)
-{ (void)c; (void)r; (void)ok; ++records; return true; }
 static bool mission_advance_slot(mission_context_t *c, unsigned dir, uint8_t *fine)
 { (void)c; (void)dir; (void)fine; ++turns; return move_success; }
 static unsigned arm_run(uint8_t group, unsigned count, void (*done)(void), mission_context_t *c)
@@ -81,10 +84,11 @@ int main(void)
     mission_context_t c = {0};
     unsigned previous_stairs = stairs_commands;
     attempt(&c, false);
-    assert(reads == 5 && records == 0 && turns == 0 && c.platform_balls == 0 && c.storage_slot == 0);
+    assert(reads == 5 && c.manifest.count == 1 && turns == 1 && c.platform_balls == 0 && c.storage_slot == 1);
+    assert(c.manifest.records[0].state == BALL_MANIFEST_STATE_READ_FAILED);
     assert(c.platform_attempts == 1 && c.state == MISSION_STATE_PLATFORM_SETTLE && visions == 0);
     for (unsigned i = 0; i < 4; ++i) attempt(&c, true);
-    assert(c.platform_balls == 4 && c.platform_attempts == 5 && c.current_slot == 4);
+    assert(c.platform_balls == 4 && c.platform_attempts == 5 && c.current_slot == 5 && c.manifest.count == 5);
     assert(last_arm == 10);
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     assert(c.state == MISSION_STATE_COMPLETE);
@@ -95,34 +99,49 @@ int main(void)
     assert_finished(&c, previous_stairs);
     memset(&c, 0, sizeof(c));
     unsigned before = turns;
+    previous_stairs = stairs_commands;
     for (unsigned i = 0; i < 5; ++i) attempt(&c, false);
-    assert(c.platform_balls == 0 && turns == before && c.platform_attempts == 5);
-    assert(c.state == MISSION_STATE_WAIT_STAIRS);
+    assert(c.platform_balls == 0 && turns == before + 5 && c.platform_attempts == 5);
+    assert(c.storage_slot == 5 && c.current_slot == 5 && c.manifest.count == 5);
+    for (unsigned i = 0; i < 5; ++i) {
+        assert(c.manifest.records[i].storage_slot == i);
+        assert(c.manifest.records[i].state == BALL_MANIFEST_STATE_READ_FAILED);
+    }
+    assert(ball_manifest_validate(&c.manifest) == BALL_MANIFEST_OK);
+    assert_finished(&c, previous_stairs);
     memset(&c, 0, sizeof(c));
     previous_stairs = stairs_commands;
     for (unsigned i = 0; i < 5; ++i) attempt(&c, true);
     assert(c.platform_attempts == 5); assert_finished(&c, previous_stairs);
     /* 已收4球，第5次读卡失败也不追加第6次，直接结束。 */
     memset(&c, 0, sizeof(c));
+    previous_stairs = stairs_commands;
     for (unsigned i = 0; i < 4; ++i) attempt(&c, true);
     attempt(&c, false);
-    assert(c.platform_balls == 4 && c.platform_attempts == 5 &&
-           c.state == MISSION_STATE_WAIT_STAIRS);
+    assert(c.platform_balls == 4 && c.platform_attempts == 5 && c.manifest.count == 5);
+    assert_finished(&c, previous_stairs);
     /* 非圆盘仍保留读卡失败记录并推进。 */
     read_success = false;
     before = turns;
     assert(mission_store_ball(&c, MISSION_STORAGE_REGION_STAIR));
+    ++c.storage_slot;
     assert(mission_store_ball(&c, MISSION_STORAGE_REGION_SMALL_DISC));
+    ++c.storage_slot;
     assert(turns == before + 2);
     /* PB0可选不能忽略通信/电机失败，也不能在失败时更新槽号。 */
     move_success = false;
     uint8_t prior_slot = c.current_slot;
     assert(!mission_store_ball(&c, MISSION_STORAGE_REGION_STAIR));
+    ++c.storage_slot;
     assert(!mission_store_ball(&c, MISSION_STORAGE_REGION_SMALL_DISC));
     assert(c.current_slot == prior_slot);
     memset(&c, 0, sizeof(c)); move_success = false;
     attempt(&c, true);
     assert(c.state == MISSION_STATE_FAULT && c.platform_balls == 0 && c.current_slot == 0);
+    memset(&c, 0, sizeof(c));
+    attempt(&c, false);
+    assert(c.state == MISSION_STATE_FAULT && c.storage_slot == 0 && c.current_slot == 0);
+    assert(c.manifest.count == 1 && c.manifest.records[0].state == BALL_MANIFEST_STATE_READ_FAILED);
     /* 正式/无线小圆盘底盘退出后只提交10；仍等待动作回报，失败必须停车。 */
     memset(&c, 0, sizeof(c));
     previous_arms = arm_commands;

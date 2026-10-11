@@ -40,7 +40,7 @@ typedef enum {
     BALL_MANIFEST_STATE_INVALID = 0,
     BALL_MANIFEST_STATE_STORED,
     BALL_MANIFEST_STATE_PLACED,
-    /** 已抓取但IC读取失败；物理槽位保留，目标位置未知。 */
+    /** 存球动作已完成但IC读取失败；槽位可能有球，真实目标未知。 */
     BALL_MANIFEST_STATE_READ_FAILED,
 } ball_manifest_state_t;
 
@@ -62,6 +62,9 @@ typedef struct {
     uint8_t target_row;
     uint8_t target_column;
     uint8_t storage_slot;
+    /* 保底目标独立保存，不改原始IC及target_row/column的读卡事实。 */
+    uint8_t fallback_row;
+    uint8_t fallback_column;
     ball_manifest_state_t state;
 #if BALL_MANIFEST_RUNTIME_GUARDS_ENABLE
     uint16_t checksum;
@@ -120,7 +123,12 @@ ball_manifest_status_t ball_manifest_append_read_failed(
     ball_manifest_color_t color,
     uint8_t storage_slot);
 
-/** 把指定记录更新为已入库；不允许修改球的身份、来源或IC目标信息。 */
+/** 放球前为未知槽分配1～3层/列的剩余目标；已分配不重抽，失败不改档案。
+ * seed只用于本轮伪随机顺序。已知和已放置目标优先保留；物理槽冲突报错。
+ */
+ball_manifest_status_t ball_manifest_plan_fallback(ball_manifest_t *manifest, uint32_t seed);
+
+/** 把指定记录更新为已入库；未知球须先分配保底目标，原IC信息不变。 */
 ball_manifest_status_t ball_manifest_mark_placed(
     ball_manifest_t *manifest,
     uint8_t sequence);

@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "ball_manifest_core.h"
 
@@ -126,6 +127,56 @@ static void test_mark_placed_updates_only_lifecycle(void)
     assert(manifest.count == 1U);
 }
 
+static void test_fallback_history_and_conflicts(void)
+{
+    ball_manifest_t m, before;
+    ball_manifest_record_t r;
+    ball_manifest_init(&m);
+    assert(ball_manifest_append_read_failed(&m, BALL_MANIFEST_REGION_TURNTABLE,
+        BALL_MANIFEST_COLOR_RED, 0) == BALL_MANIFEST_OK);
+    assert(ball_manifest_mark_placed(&m, 0) == BALL_MANIFEST_ERR_TARGET_UNKNOWN);
+    append_ball(&m, BALL_MANIFEST_REGION_TURNTABLE, 1, 0x11);
+    assert(ball_manifest_plan_fallback(&m, 0) == BALL_MANIFEST_OK);
+    assert(ball_manifest_get(&m, 0, &r) == BALL_MANIFEST_OK);
+    assert(r.ic_code == 0 && r.target_row == 0 && r.target_column == 0);
+    assert(r.fallback_row != 1 || r.fallback_column != 1);
+    before = m;
+    assert(ball_manifest_plan_fallback(&m, 9999) == BALL_MANIFEST_OK);
+    assert(memcmp(&before, &m, sizeof(m)) == 0);
+    assert(ball_manifest_mark_placed(&m, 0) == BALL_MANIFEST_OK);
+    assert(m.records[0].state == BALL_MANIFEST_STATE_PLACED && m.records[0].ic_code == 0);
+    assert(ball_manifest_validate(&m) == BALL_MANIFEST_OK);
+    /* 已固定保底位置被后追加真实目标占用：报冲突，不能重抽或半写入。 */
+    append_ball(&m, BALL_MANIFEST_REGION_STAIR, 2,
+        (uint8_t)((r.fallback_row << 4) | r.fallback_column));
+    before = m;
+    assert(ball_manifest_plan_fallback(&m, 42) == BALL_MANIFEST_ERR_PARAM);
+    assert(memcmp(&before, &m, sizeof(m)) == 0);
+    m.records[0].fallback_row = 0;
+    assert(ball_manifest_validate(&m) == BALL_MANIFEST_ERR_CORRUPT);
+    /* 多种随机种子下，全未知九槽均覆盖九格，原始读卡字段始终为零。 */
+    for (uint32_t seed = 0; seed < 100; ++seed) {
+        ball_manifest_init(&m);
+        for (uint8_t i = 0; i < 9; ++i) {
+            assert(ball_manifest_append_read_failed(&m,
+                i < 5 ? BALL_MANIFEST_REGION_TURNTABLE :
+                (i < 7 ? BALL_MANIFEST_REGION_STAIR : BALL_MANIFEST_REGION_PILLAR),
+                BALL_MANIFEST_COLOR_BLUE, i) == BALL_MANIFEST_OK);
+        }
+        assert(ball_manifest_plan_fallback(&m, seed) == BALL_MANIFEST_OK);
+        unsigned used = 0;
+        for (uint8_t i = 0; i < 9; ++i) {
+            assert(ball_manifest_get(&m, i, &r) == BALL_MANIFEST_OK);
+            assert(r.fallback_row >= 1 && r.fallback_row <= 3);
+            assert(r.fallback_column >= 1 && r.fallback_column <= 3);
+            unsigned bit = 1U << ((r.fallback_row - 1) * 3 + r.fallback_column - 1);
+            assert(!(used & bit)); used |= bit;
+            assert(r.ic_code == 0 && r.target_row == 0 && r.target_column == 0);
+        }
+        assert(used == 0x1FF);
+    }
+}
+
 int main(void)
 {
     test_rule_counts();
@@ -134,6 +185,7 @@ int main(void)
     test_rejected_append_does_not_modify_history();
     test_corruption_is_detected();
     test_mark_placed_updates_only_lifecycle();
+    test_fallback_history_and_conflicts();
     puts("ball_manifest_core tests passed");
     return 0;
 }

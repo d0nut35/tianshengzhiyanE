@@ -20,6 +20,7 @@
 
 #include "i2c.h"
 #include "OLED.h"
+#include "SEGGER_RTT.h"
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
@@ -103,6 +104,11 @@ void OLED_WriteCommand(uint8_t Command)
     if (OLED_I2C_Status != HAL_OK) return;
     OLED_I2C_Status = HAL_I2C_Mem_Write(&hi2c1, OLED_I2C_ADDRESS,
         0x00U, I2C_MEMADD_SIZE_8BIT, &Command, 1U, OLED_I2C_TIMEOUT_MS);
+    if (OLED_I2C_Status != HAL_OK) {
+        SEGGER_RTT_printf(0, "[OLED] CMD=%u STATUS=%u ERROR=0x%X\r\n",
+            (unsigned)Command, (unsigned)OLED_I2C_Status,
+            (unsigned)HAL_I2C_GetError(&hi2c1));
+    }
 }
 
 void OLED_WriteData(uint8_t *Data, uint8_t Count)
@@ -110,6 +116,11 @@ void OLED_WriteData(uint8_t *Data, uint8_t Count)
     if ((OLED_I2C_Status != HAL_OK) || (Data == NULL) || (Count == 0U)) return;
     OLED_I2C_Status = HAL_I2C_Mem_Write(&hi2c1, OLED_I2C_ADDRESS,
         0x40U, I2C_MEMADD_SIZE_8BIT, Data, Count, OLED_I2C_TIMEOUT_MS);
+    if (OLED_I2C_Status != HAL_OK) {
+        SEGGER_RTT_printf(0, "[OLED] DATA=%u STATUS=%u ERROR=0x%X\r\n",
+            (unsigned)Count, (unsigned)OLED_I2C_Status,
+            (unsigned)HAL_I2C_GetError(&hi2c1));
+    }
 }
 
 /*硬件配置*********************/
@@ -122,6 +133,17 @@ void OLED_WriteData(uint8_t *Data, uint8_t Count)
   */
 void OLED_Init(void)
 {
+    /* Bounded boot-only probes; keep configured address even if 0x3D responds. */
+    SEGGER_RTT_printf(0, "[OLED] DIAG I2C1 PB8_SCL=%u PB9_SDA=%u ADDR=0x3C\r\n",
+        (unsigned)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8),
+        (unsigned)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9));
+    for (uint16_t address = 0x3CU; address <= 0x3DU; ++address) {
+        HAL_StatusTypeDef status = HAL_I2C_IsDeviceReady(
+            &hi2c1, address << 1, 1U, OLED_I2C_TIMEOUT_MS);
+        SEGGER_RTT_printf(0, "[OLED] PROBE=0x%X STATUS=%u ERROR=0x%X\r\n",
+            (unsigned)address, (unsigned)status,
+            (unsigned)HAL_I2C_GetError(&hi2c1));
+    }
 	OLED_I2C_Status = HAL_OK; /* 调用前I2C1须已初始化，且屏幕供电稳定。 */
 	
 	/*写入一系列的命令，对OLED进行初始化配置*/

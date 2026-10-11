@@ -45,6 +45,7 @@
 
 #include "arm.h"
 #include "OLED.h"
+#include "SEGGER_RTT.h"
 
 #if LSC16_FREERTOS_TEST_ENABLED
 #include "lsc16_freertos_test.h"
@@ -258,11 +259,13 @@ void StartDefaultTask(void *argument)
    */
   osDelay(100);
   OLED_Init();
+  SEGGER_RTT_printf(0, "[OLED] INIT READY=%u\r\n", (unsigned)OLED_IsReady());
   if (OLED_IsReady()) {
     OLED_ShowString(0, 0, "LICANG 2026", OLED_8X16);
     OLED_ShowString(0, 16, "OLED I2C1", OLED_8X16);
     OLED_ShowString(0, 32, "0123456789", OLED_8X16);
     OLED_Update();
+    SEGGER_RTT_printf(0, "[OLED] DISPLAY READY=%u\r\n", (unsigned)OLED_IsReady());
   }
 
 #if LICANG_ACTIVE_TEST == LICANG_TEST_NONE

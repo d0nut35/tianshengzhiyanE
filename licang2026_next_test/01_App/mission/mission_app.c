@@ -3373,6 +3373,7 @@ static bool mission_test_handle_aux_command(
             "DEPOT: HOME HOME_DIRECT\r\n"
             "TARGET: ROUTE PLATFORM|STAIRS|DISC|DEPOT\r\n"
             "ROUTE DEPOT: AUTO D1-D4 DIGIT\r\n"
+            "ROUTE DEPOT PATH: FULL CHASSIS PATH, DEPOT 4 ROUNDS 500MS, HOME\r\n"
             "ROUTE BLOCK DIGIT: PURE PATH THEN 28/29/30 SCAN, D4, HOME\r\n"
             "ROUTE BLOCK MOVE: SCAN/GRASP/PLACE, D1, HOME; NO BALL PLACE\r\n"
             "BALL HOME: AT D1 AFTER ROUTE DEPOT BALL\r\n"
@@ -3431,12 +3432,12 @@ static bool mission_test_handle_aux_command(
     return false;
 }
 
-/** @copydoc mission_test_pause */
-static bool mission_test_pause(mission_context_t *ctx)
+/** 可响应STOP的停车等待；仓库纯路径单独使用500ms，不改变原测试等待。 */
+static bool mission_test_pause_ms(mission_context_t *ctx, uint32_t pause_ms)
 {
     char command[DEBUG_UART1_RX_BUFFER_SIZE];
     uint32_t deadline = osKernelGetTickCount() +
-        mission_ms_to_ticks(MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS);
+        mission_ms_to_ticks(pause_ms);
 
     while ((int32_t)(deadline - osKernelGetTickCount()) > 0) {
         if (mission_test_take_command(command, sizeof(command))) {
@@ -3452,6 +3453,12 @@ static bool mission_test_pause(mission_context_t *ctx)
         osDelay(mission_ms_to_ticks(MISSION_WIRELESS_POLL_MS));
     }
     return true;
+}
+
+/** @copydoc mission_test_pause */
+static bool mission_test_pause(mission_context_t *ctx)
+{
+    return mission_test_pause_ms(ctx, MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS);
 }
 
 /** @copydoc mission_test_wait_chassis_event */
@@ -3591,6 +3598,70 @@ static bool mission_test_skip_small_disc(mission_context_t *ctx)
         return false;
     }
     return mission_test_pause(ctx);
+}
+
+/** 从起点走正式底盘路线；仓库前三轮模拟完整积木扫描，第四轮模拟放球。
+ * 只复用底盘命令/到位回报，指令内不启动机械臂、视觉、读卡或转盘。
+ */
+static bool mission_test_depot_path_command(mission_context_t *ctx, const char *command)
+{
+    static const uint8_t red[4][4] = {{2,3,4,0}, {3,2,1,4}, {3,2,1,4}, {3,2,1,0}};
+    static const uint8_t blue[4][4] = {{2,3,4,1}, {2,3,4,1}, {2,3,4,1}, {2,3,4,1}};
+    const uint8_t (*points)[4] = (g_mission_side == MISSION_COLOR_BLUE) ? blue : red;
+    uint8_t round, step;
+
+    if (strcmp(command, "ROUTE DEPOT PATH") != 0) return false;
+    if ((g_wireless_test.mode != MISSION_TEST_MODE_IDLE) ||
+        (g_wireless_test.expected != MISSION_TEST_STAGE_PLATFORM)) {
+        mission_test_write("ERR RESET REQUIRED\r\n");
+        return true;
+    }
+    g_wireless_test.mode = MISSION_TEST_MODE_PATH;
+    mission_test_write("[PATH] START DEPOT VIA PLATFORM STAIRS DISC; NO_ARM NO_VISION\r\n");
+    if (!mission_test_skip_platform(ctx) || !mission_test_skip_stairs(ctx) ||
+        !mission_test_skip_small_disc(ctx) ||
+        !mission_test_send_wait(ctx, MISSION_CMD_GO_DEPOT_1, CHASSIS_CMD_DEPOT_1_READY,
+                                MISSION_STATE_WAIT_DEPOT_1)) goto failed;
+    /* 首次D1回报包含正式角度对齐及depot_locate校准完成，不能提前记到位。 */
+    g_wireless_test.expected = MISSION_TEST_STAGE_DEPOT;
+    g_wireless_test.depot_position = 1U;
+    mission_test_write("[PATH] ENTRY D1 REACHED HOLD=500MS\r\n");
+    if (!mission_test_pause_ms(ctx, 500U)) goto failed;
+    for (round = 0U; round < 4U; ++round) {
+        for (step = 0U; step < 4U; ++step) {
+            uint8_t point = points[round][step];
+            if (point == 0U) continue;
+            (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                "[PATH] SIDE=%s ROUND=%u PHASE=%s D%u->D%u\r\n",
+                mission_test_color_name(g_mission_side), (unsigned)(round + 1U),
+                (round < 3U) ? "BLOCK" : "BALL", (unsigned)g_wireless_test.depot_position,
+                (unsigned)point);
+            mission_test_write(g_wireless_test.text);
+            if (!mission_test_send_wait(ctx,
+                    (mission_command_type_t)(MISSION_CMD_GO_DEPOT_1 + point - 1U),
+                    (chassis_command_type_t)(CHASSIS_CMD_DEPOT_1_READY + point - 1U),
+                    MISSION_STATE_WAIT_DEPOT_1)) goto failed;
+            g_wireless_test.depot_position = point;
+            (void)snprintf(g_wireless_test.text, sizeof(g_wireless_test.text),
+                "[PATH] REACHED D%u HOLD=500MS\r\n", (unsigned)point);
+            mission_test_write(g_wireless_test.text);
+            if (!mission_test_pause_ms(ctx, 500U)) goto failed;
+        }
+    }
+    mission_test_write("[PATH] D1->HOME\r\n");
+    if (!mission_test_send_wait(ctx, MISSION_CMD_DEPOT_OK, CHASSIS_CMD_HOME_READY,
+                                MISSION_STATE_WAIT_DEPOT_1)) goto failed;
+    g_wireless_test.expected = MISSION_TEST_STAGE_DONE;
+    mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
+    mission_test_write("[PATH] DONE HOME\r\n");
+    return true;
+
+failed:
+    /* STOP由既有等待函数收敛；失败不得继续下一点或假记回家成功。 */
+    if (!g_wireless_test.stop_requested && (ctx->state != MISSION_STATE_FAULT))
+        mission_fail(ctx, MISSION_FAULT_CHASSIS);
+    mission_test_write("[PATH] ABORT DEPOT PATH\r\n");
+    return true;
 }
 
 /** 纯路径分两步：先到绕行起点等待人工摆臂，再放行既有底盘绕行。 */
@@ -4462,6 +4533,8 @@ static void mission_wireless_test_entry(void *argument)
             mission_test_write("ERR WAIT DISC_RUN\r\n");
             continue;
         }
+
+        if (mission_test_depot_path_command(ctx, command)) continue;
 
         if (strcmp(command, "BALL HOME") == 0) {
             if (!g_wireless_test.depot_wait_ball_home ||

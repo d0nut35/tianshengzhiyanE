@@ -37,7 +37,7 @@
 #define AL_YAW_TOL_DEG   0.8f     /* 回中角度容差，deg */
 #define AL_MID_YAW_OFS   (-1.42f)  /* 中值补偿，沿 IMU yaw 正向，deg */
 #define AL_RED_STAIR_OFS  0.0f    /* 红方阶梯追加补偿，deg */
-#define AL_RED_DEPOT_OFS  0.0f    /* 红方仓库追加补偿，deg */
+#define AL_RED_DEPOT_OFS  -0.2f    /* 红方仓库追加补偿，deg */
 #define AL_BLUE_STAIR_OFS -1.0f    /* 蓝方阶梯追加补偿，deg */
 #define AL_BLUE_DEPOT_OFS -1.15f    /* 蓝方仓库追加补偿，deg */
 #define AL_SEEK_VX_MMS   60.0f    /* 找线时的右移速度，mm/s */

@@ -659,11 +659,24 @@ static void test_block_protocol(void)
     result.status = NANO_VISION_BLOCK_NO_VALID;
     result.digit = 0U;
     result.reason = NANO_VISION_REASON_LOW_SCORE;
-    result.frames = 15U;
+    result.frames = 10U;
     result.elapsed_ms = 1000U;
     assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_OK);
     assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_OK);
     assert(parsed.status == NANO_VISION_BLOCK_NO_VALID && parsed.elapsed_ms == 1000U);
+    /* 10/12/14/15帧均可收发；9帧即使CRC正确也拒收。 */
+    for (uint16_t count = 10U; count <= 15U; ++count) {
+        result.frames = count;
+        assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_OK);
+        assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_OK);
+        assert(parsed.frames == count);
+    }
+    frame[16] = 9U;
+    frame[17] = 0U;
+    len = refresh_frame_crc(frame);
+    assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_ERR_VALUE);
+    result.frames = 10U;
+    assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_OK);
     /* 999ms即使CRC正确也不能作为NO_VALID消费。 */
     result.elapsed_ms = 999U;
     assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_ERR_VALUE);
@@ -673,7 +686,7 @@ static void test_block_protocol(void)
     assert(nano_vision_decode_block_result(frame,len,&parsed) == NANO_VISION_ERR_VALUE);
     result.elapsed_ms = 1000U;
     assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_OK);
-    result.frames = 14U;
+    result.frames = 9U;
     assert(nano_vision_build_block_result_frame(3U,&result,frame,sizeof(frame),&len) == NANO_VISION_ERR_VALUE);
     frame[11] = NANO_VISION_REASON_CAMERA_ERROR;
     len = refresh_frame_crc(frame);

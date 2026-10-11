@@ -163,7 +163,7 @@ BLOCK_RESULT载荷14字节：
 
 原因：1=CONFIRMED、2=NO_CANDIDATE、3=LOW_SCORE、4=AMBIGUOUS、5=UNSTABLE；故障6=CAMERA_NO_FRAME、7=FRAME_GAP、8=STALE_FRAME、9=INSUFFICIENT_FRAMES、10=MODEL_ERROR、11=MODE_NOT_READY、12=CAMERA_ERROR。
 
-DIGIT要求分数≥80且连续3张新帧一致；NO_VALID要求digit=0、原因2～5、累计至少15张有效新帧且首张有效帧起至少1000ms。低分/无候选等统一跳站，保留原因，不能据此认定物理空仓。缺帧或模型异常不能当空仓。
+DIGIT要求分数≥80且连续3张新帧一致；NO_VALID要求digit=0、原因2～5、累计至少10张有效新帧且首张有效帧起至少1000ms。低分/无候选等统一跳站，保留原因，不能据此认定物理空仓。缺帧或模型异常不能当空仓。
 
 F7只在动作完成、停车稳定200ms后的专属等待状态接受本SID结果，结果年龄≤120ms。START准备最长10秒，READY后8秒是通信保护；1000ms业务判定由Nano管理。旧C100仓库场景保留等READY后计时，不套用积木准备期限。
 
@@ -180,3 +180,5 @@ Nano准备相机与首帧在后台进行，串口线程可响应STOP。READY时�
 - 仓库数字场景、会话目标约束和`DIGIT_EVENT`的Python/C编解码、共享黄金帧、长度、取值及CRC错误测试已通过。
 - 仓库数字及小圆盘已接入正式/无线Mission；用户报告此前联调，近期小圆盘基本夹到但停车偏早。不能用旧版PC测试描述覆盖现场反馈。
 - 积木模型查询、三层无线走位、旧会话隔离及故障停车通过双方主机测试；Keil编译结果另见CURRENT_STATUS。用户反馈Nano首帧修复后ROUTE BLOCK DIGIT完整跑通、未观察到误识别或故障停车，记录为本轮Nano/F7实机联调通过；异常场景与多轮统计未单独覆盖，完整比赛积木抓放尚未接入。
+
+2026-10-11兼容说明：10～14帧NO_VALID需Nano发送校验和本STM32接收校验同时更新；旧15帧F7固件拒收。等待1000ms、DIGIT连续3帧与消息格式不变，实机待验证。

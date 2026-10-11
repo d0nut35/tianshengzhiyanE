@@ -2095,7 +2095,7 @@ static uint8_t mission_stair_grasp_group(mission_stair_layer_t layer)
 static void mission_start_stair_exit(mission_context_t *ctx)
 {
     if (!mission_start_arm(ctx, MISSION_STAIR_EXIT_GROUP,
-                           MISSION_STATE_STAIR_WAIT_EXIT)) {
+                           MISSION_STATE_STAIR_WAIT_SAFE)) {
         mission_fail(ctx, MISSION_FAULT_ARM);
     }
 }
@@ -2555,14 +2555,7 @@ static void mission_handle_arm(mission_context_t *ctx, bool success)
         }
         return;
     }
-    /* 9) 阶梯结束先由18过渡到10，再通知底盘前往小圆盘。 */
-    if (ctx->state == MISSION_STATE_STAIR_WAIT_EXIT) {
-        if (!mission_start_arm(ctx, MISSION_HOME_ACTION_GROUP,
-                               MISSION_STATE_STAIR_WAIT_SAFE)) {
-            mission_fail(ctx, MISSION_FAULT_ARM);
-        }
-        return;
-    }
+    /* 9) 动作组18已包含回10姿态，完成后直接通知底盘前往小圆盘。 */
     if (ctx->state == MISSION_STATE_STAIR_WAIT_SAFE) {
         (void)mission_next_request_id(ctx);
         if (!mission_send_chassis(MISSION_CMD_GO_SMALL_DISC,

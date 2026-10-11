@@ -1572,7 +1572,12 @@ static void mission_handle_block_result(mission_context_t *ctx)
     if ((ctx->vision.phase == MISSION_VISION_STARTING) &&
         (result.status != NANO_VISION_BLOCK_FAULT)) return;
     if ((result.status != NANO_VISION_BLOCK_FAULT) &&
-        (result.age_ms > MISSION_VISION_EVENT_MAX_AGE_MS)) return;
+        (result.age_ms > MISSION_BLOCK_RESULT_MAX_AGE_MS)) {
+        BLOCK_TRACE("[B] RESULT REJECT AGE=%u MAX=%u SID=%u STATUS=%u\r\n",
+            (unsigned)result.age_ms, (unsigned)MISSION_BLOCK_RESULT_MAX_AGE_MS,
+            (unsigned)result.session_id, (unsigned)result.status);
+        return;
+    }
     ack.session_id = result.session_id;
     ack.frame_id = result.frame_id;
     if (nano_vision_build_event_ack_frame(
@@ -1822,8 +1827,10 @@ static void mission_handle_vision(mission_context_t *ctx)
             ctx->vision.mail_data, ctx->vision.mail_len, &digit_event);
         if ((status != NANO_VISION_OK) ||
             (digit_event.session_id != ctx->vision.session_id) ||
-            (digit_event.age_ms > MISSION_VISION_EVENT_MAX_AGE_MS)) {
-            DEPOT_TRACE("[M] DIGIT REJECT DECODE=%u\r\n", (unsigned)status);
+            (digit_event.age_ms > MISSION_DEPOT_DIGIT_MAX_AGE_MS)) {
+            DEPOT_TRACE("[M] DIGIT REJECT DECODE=%u SID=%u AGE=%u MAX=%u\r\n",
+                (unsigned)status, (unsigned)digit_event.session_id,
+                (unsigned)digit_event.age_ms, (unsigned)MISSION_DEPOT_DIGIT_MAX_AGE_MS);
             return;
         }
         DEPOT_TRACE("[M] DIGIT RX=%u SID=%u AGE=%u\r\n",

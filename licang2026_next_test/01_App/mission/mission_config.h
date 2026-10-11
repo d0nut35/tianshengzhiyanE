@@ -53,6 +53,9 @@
 #define MISSION_VISION_TIMEOUT_MS           200U
 #define MISSION_VISION_READ_TIMEOUT_MS      250U
 #define MISSION_VISION_EVENT_MAX_AGE_MS     120U
+/* 停车后识别允许模型推理和串口排队产生更大帧龄；运动定位仍用上面的120ms。 */
+#define MISSION_DEPOT_DIGIT_MAX_AGE_MS      400U
+#define MISSION_BLOCK_RESULT_MAX_AGE_MS     400U
 /* 模型在Nano启动时预加载；起点每秒查询，不把加载时间算入识别限时。 */
 #define MISSION_MODEL_QUERY_INTERVAL_MS   1000U
 #define MISSION_BLOCK_PREPARE_TIMEOUT_MS 10000U

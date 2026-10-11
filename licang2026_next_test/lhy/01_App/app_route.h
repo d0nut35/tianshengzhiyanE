@@ -1,8 +1,8 @@
 /**
  * @file    app_route.h
  * @brief   任务点编排：按点表执行导航 → 找线 → 位姿标定
- * @note    - 所有场地坐标集中在 app_route.c 顶部的 g_route 表中（默认图）
- *          - 场地侧由 route_set_side 选择：镜像图关于 x=1250 对称换算
+ * @note    - 场地坐标集中在 app_route.c：默认图点表及蓝方圆盘、阶梯独立配置
+ *          - 场地侧由 route_set_side 选择：蓝方圆盘与阶梯独立配置，其余点关于 x=1250 镜像
  *          - 阻塞接口，只能在底盘任务上下文调用
  */
 
@@ -28,10 +28,10 @@ typedef enum {
     ROUTE_NUM            /* 任务点总数 */
 } route_id_t;
 
-/* 场地侧：g_route 为默认图，镜像图为其关于 x=1250 的对称像 */
+/* 场地侧：g_route 为默认图；镜像图除蓝方圆盘、阶梯独立配置外，关于 x=1250 对称 */
 typedef enum {
     ROUTE_SIDE_DEFAULT = 0,  /* 默认地图，点表原值 */
-    ROUTE_SIDE_MIRROR,       /* 镜像地图：x→2500-x，航向→180°-θ，y 不变 */
+    ROUTE_SIDE_MIRROR,       /* 镜像地图：圆盘、阶梯用蓝方配置，其余 x→2500-x、航向→180°-θ */
 } route_side_t;
 
 /**

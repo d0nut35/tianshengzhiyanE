@@ -1,8 +1,8 @@
 /**
  * @file    app_route.c
  * @brief   任务点表与统一执行流程：导航 → 找线 → 位姿标定
- * @note    - g_route 集中全部场地坐标与速度（默认图），实机标定只改本文件的表
- *          - 镜像侧由 route_go 现场换算：x→RT_FIELD_W_MM-x，航向→180°-θ
+ * @note    - g_route 为默认图点表，g_blue_platform / g_blue_stair 为蓝方圆盘 / 阶梯独立配置
+ *          - 蓝方圆盘与阶梯直接使用配置，其余镜像侧点按 x→RT_FIELD_W_MM-x、航向→180°-θ 换算
  *          - FIX_NONE 只导航；FIX_IMU 按当前 IMU 航向标定；FIX_LINE 扫白线回中
  *          - IMU 帧与世界帧反号（chassis 侧取负对齐地图系）
  */
@@ -53,7 +53,7 @@ typedef struct {
 } route_pt_t;
 
 /* 场地坐标待实机标定；表序与 route_id_t 严格一致；均为默认图坐标，
- * 镜像侧由 route_go 关于 x=RT_FIELD_W_MM/2 换算，不另建表 */
+ * 蓝方圆盘与阶梯使用下方独立配置，其余镜像侧点由 route_go 关于 x=RT_FIELD_W_MM/2 换算 */
 static const route_pt_t g_route[ROUTE_NUM] = {
     /* PLATFORM：圆盘工作位，找线后按 IMU 航向标定 */
     { CSVC_NAV_PATH, { 500, 4300}, 180.0f, 500.0f, 30.0f,
@@ -74,6 +74,20 @@ static const route_pt_t g_route[ROUTE_NUM] = {
     /* HOME：起点，直线返回不做找线对齐 */
     { CSVC_NAV_LINE, {1270,  350}, 180.0f, 500.0f, 30.0f,
       {   0,    0}, FIX_NONE },
+};
+
+/* 蓝方 PLATFORM：直接填写蓝方世界系导航点、到点航向与标定点，不再镜像。
+ * 初值沿用原镜像结果；找线后仍按当前 IMU 航向标定。 */
+static const route_pt_t g_blue_platform = {
+    CSVC_NAV_PATH, {2000, 4300},   0.0f, 500.0f, 30.0f,
+    {2027, 4300}, FIX_IMU
+};
+
+/* 蓝方 STAIRS：直接填写蓝方世界系导航点、航向与标定点，不再镜像。
+ * 初值沿用原镜像结果；实机调参只改此项，不影响红方阶梯。 */
+static const route_pt_t g_blue_stair = {
+    CSVC_NAV_PATH, { 400, 2920}, -180.0f, 500.0f, 60.0f,
+    { 393, 2950}, FIX_LINE
 };
 
 static uint8_t      g_nav_fin = 1U;  /* 导航完成标志，1=空闲 */
@@ -144,12 +158,18 @@ app_status_t route_go(route_id_t id)
     if (id >= ROUTE_NUM) {
         return APP_ERR;
     }
-    pt = g_route[id];
-    pt.nav_pt.x_mm = route_side_x(pt.nav_pt.x_mm);
-    pt.fix_pt.x_mm = route_side_x(pt.fix_pt.x_mm);
-    if (g_side == ROUTE_SIDE_MIRROR) {
-        /* 镜像后左右互换：航向 θ→180°-θ，y 不变 */
-        pt.yaw_deg = util_ang_norm(180.0f - pt.yaw_deg);
+    if ((g_side == ROUTE_SIDE_MIRROR) && (id == ROUTE_PLATFORM)) {
+        pt = g_blue_platform;
+    } else if ((g_side == ROUTE_SIDE_MIRROR) && (id == ROUTE_STAIRS)) {
+        pt = g_blue_stair;
+    } else {
+        pt = g_route[id];
+        pt.nav_pt.x_mm = route_side_x(pt.nav_pt.x_mm);
+        pt.fix_pt.x_mm = route_side_x(pt.fix_pt.x_mm);
+        if (g_side == ROUTE_SIDE_MIRROR) {
+            /* 镜像后左右互换：航向 θ→180°-θ，y 不变 */
+            pt.yaw_deg = util_ang_norm(180.0f - pt.yaw_deg);
+        }
     }
     if (nav_wait(&pt) != APP_OK) {
         RT_LOGE("route %d nav fail", (int)id);

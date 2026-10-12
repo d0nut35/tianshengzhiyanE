@@ -261,7 +261,7 @@ void StartDefaultTask(void *argument)
   uint8_t oled_init_ready = OLED_IsReady();
   if (OLED_IsReady()) {
     OLED_ShowString(0, 0, "LICANG 2026", OLED_8X16);
-    OLED_ShowString(0, 16, "OLED I2C1", OLED_8X16);
+    OLED_ShowString(0, 16, "OLED SOFT I2C", OLED_8X16);
     OLED_ShowString(0, 32, "0123456789", OLED_8X16);
     OLED_Update();
 

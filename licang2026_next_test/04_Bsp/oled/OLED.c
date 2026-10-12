@@ -18,7 +18,7 @@
   ***************************************************************************************
   */
 
-#include "i2c.h"
+#include "main.h"
 #include "OLED.h"
 #include <string.h>
 #include <math.h>
@@ -84,16 +84,106 @@ uint8_t OLED_DisplayBuf[8][128];
 /*********************全局变量*/
 
 
-/* 硬件I2C1：复用CubeMX配置的PB8/SCL、PB9/SDA，不重新配置GPIO。
- * HAL地址为7位0x3C左移1位。只由一个任务调用，普通阻塞发送，无DMA依赖。
- * 任一传输失败后本轮初始化/刷新不再发送；重新调用OLED_Init才能恢复。
- */
-#define OLED_I2C_ADDRESS       (0x3CU << 1)
-#define OLED_I2C_TIMEOUT_MS    30U
+/* 软件I2C：PE11=SCL、PE12=SDA，开漏输出；当前启用内部弱上拉用于诊断。
+ * 仅显示任务调用，不关闭中断；沿用原显示接口，失败后停止后续写入。 */
+#define OLED_I2C_ADDRESS (0x3CU << 1)
+#define OLED_I2C_HALF_US 10U
 static HAL_StatusTypeDef OLED_I2C_Status = HAL_ERROR;
+static uint32_t OLED_SoftError;
 static oled_boot_diagnostic_t OLED_BootDiagnostic;
 static volatile uint8_t OLED_BootDiagnosticReady;
 
+/* 保守延时：按主频预留NOP次数，volatile防止循环消除。
+ * 循环开销及任务抢占只会延长间隔；不是精确10us，实际波形需实测。 */
+static void OLED_SoftDelay(void)
+{
+    volatile uint32_t cycles = ((SystemCoreClock + 999999U) / 1000000U) * OLED_I2C_HALF_US;
+    while (cycles-- > 0U) { __NOP(); }
+}
+
+static void OLED_SDA(GPIO_PinState level)
+{
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_12, level);
+}
+static void OLED_SCLLow(void)
+{
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_11, GPIO_PIN_RESET);
+    OLED_SoftDelay();
+}
+/* 等待SCL释放，最多100轮，错误2表示SCL未能拉高。 */
+static HAL_StatusTypeDef OLED_SCLHigh(void)
+{
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_11, GPIO_PIN_SET);
+    for (unsigned i = 0U; i < 100U; ++i) {
+        OLED_SoftDelay();
+        if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_11) == GPIO_PIN_SET) return HAL_OK;
+    }
+    OLED_SoftError = 2U;
+    return HAL_TIMEOUT;
+}
+static HAL_StatusTypeDef OLED_Start(void)
+{
+    OLED_SDA(GPIO_PIN_SET);
+    OLED_SoftDelay();
+    if (OLED_SCLHigh() != HAL_OK) return HAL_TIMEOUT;
+    if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_12) == GPIO_PIN_RESET) {
+        OLED_SoftError = 3U; /* SDA held low before START. */
+        return HAL_BUSY;
+    }
+    OLED_SDA(GPIO_PIN_RESET);
+    OLED_SoftDelay();
+    OLED_SCLLow();
+    return HAL_OK;
+}
+static HAL_StatusTypeDef OLED_Stop(void)
+{
+    HAL_StatusTypeDef status;
+    OLED_SCLLow();
+    OLED_SDA(GPIO_PIN_RESET);
+    OLED_SoftDelay();
+    status = OLED_SCLHigh();
+    OLED_SDA(GPIO_PIN_SET);
+    OLED_SoftDelay();
+    return status;
+}
+static HAL_StatusTypeDef OLED_SendByte(uint8_t value)
+{
+    for (unsigned i = 0U; i < 8U; ++i) {
+        OLED_SDA((value & 0x80U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        OLED_SoftDelay();
+        if (OLED_SCLHigh() != HAL_OK) return HAL_TIMEOUT;
+        OLED_SCLLow();
+        value <<= 1U;
+    }
+    OLED_SDA(GPIO_PIN_SET); /* Release SDA for the slave ACK. */
+    OLED_SoftDelay();
+    if (OLED_SCLHigh() != HAL_OK) return HAL_TIMEOUT;
+    uint8_t nack = (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_12) == GPIO_PIN_SET);
+    OLED_SCLLow();
+    if (nack) {
+        OLED_SoftError = 1U;
+        return HAL_ERROR;
+    }
+    return HAL_OK;
+}
+/* data为空时只探测地址；失败也尝试STOP，保留首个错误。 */
+static HAL_StatusTypeDef OLED_Transfer(uint8_t address, uint8_t control,
+                                     const uint8_t *data, uint8_t count)
+{
+    HAL_StatusTypeDef status, stop_status;
+    uint32_t error;
+    OLED_SoftError = 0U;
+    status = OLED_Start();
+    if (status == HAL_OK) status = OLED_SendByte(address);
+    if (status == HAL_OK && data != NULL) status = OLED_SendByte(control);
+    for (unsigned i = 0U; status == HAL_OK && data != NULL && i < count; ++i) {
+        status = OLED_SendByte(data[i]);
+    }
+    error = OLED_SoftError;
+    stop_status = OLED_Stop();
+    if (status != HAL_OK) OLED_SoftError = error;
+    return (status == HAL_OK) ? stop_status : status;
+}
 void OLED_FinishBootDiagnostic(uint8_t init_ready)
 {
     OLED_BootDiagnostic.init_ready = init_ready;
@@ -101,7 +191,6 @@ void OLED_FinishBootDiagnostic(uint8_t init_ready)
     __DMB();
     OLED_BootDiagnosticReady = 1U;
 }
-
 uint8_t OLED_GetBootDiagnostic(oled_boot_diagnostic_t *result)
 {
     if (!OLED_BootDiagnosticReady || result == NULL) return 0U;
@@ -109,63 +198,44 @@ uint8_t OLED_GetBootDiagnostic(oled_boot_diagnostic_t *result)
     *result = OLED_BootDiagnostic;
     return 1U;
 }
-
-
-uint8_t OLED_IsReady(void)
-{
-    return OLED_I2C_Status == HAL_OK;
-}
-
-/* 命令/数据控制字节由Mem_Write作为8位前缀发送，随后连续发送有效载荷。 */
+uint8_t OLED_IsReady(void) { return OLED_I2C_Status == HAL_OK; }
 void OLED_WriteCommand(uint8_t Command)
 {
     if (OLED_I2C_Status != HAL_OK) return;
-    OLED_I2C_Status = HAL_I2C_Mem_Write(&hi2c1, OLED_I2C_ADDRESS,
-        0x00U, I2C_MEMADD_SIZE_8BIT, &Command, 1U, OLED_I2C_TIMEOUT_MS);
+    OLED_I2C_Status = OLED_Transfer(OLED_I2C_ADDRESS, 0x00U, &Command, 1U);
     if (OLED_I2C_Status != HAL_OK) {
         OLED_BootDiagnostic.write_kind = 1U;
         OLED_BootDiagnostic.write_value = Command;
         OLED_BootDiagnostic.write_status = (uint8_t)OLED_I2C_Status;
-        OLED_BootDiagnostic.write_error = HAL_I2C_GetError(&hi2c1);
+        OLED_BootDiagnostic.write_error = OLED_SoftError;
     }
 }
-
 void OLED_WriteData(uint8_t *Data, uint8_t Count)
 {
-    if ((OLED_I2C_Status != HAL_OK) || (Data == NULL) || (Count == 0U)) return;
-    OLED_I2C_Status = HAL_I2C_Mem_Write(&hi2c1, OLED_I2C_ADDRESS,
-        0x40U, I2C_MEMADD_SIZE_8BIT, Data, Count, OLED_I2C_TIMEOUT_MS);
+    if (OLED_I2C_Status != HAL_OK || Data == NULL || Count == 0U) return;
+    OLED_I2C_Status = OLED_Transfer(OLED_I2C_ADDRESS, 0x40U, Data, Count);
     if (OLED_I2C_Status != HAL_OK) {
         OLED_BootDiagnostic.write_kind = 2U;
         OLED_BootDiagnostic.write_value = Count;
         OLED_BootDiagnostic.write_status = (uint8_t)OLED_I2C_Status;
-        OLED_BootDiagnostic.write_error = HAL_I2C_GetError(&hi2c1);
+        OLED_BootDiagnostic.write_error = OLED_SoftError;
     }
 }
-
-/*硬件配置*********************/
-
-/**
-  * 函    数：OLED初始化
-  * 参    数：无
-  * 返 回 值：无
-  * 说    明：使用前，需要调用此初始化函数
-  */
 void OLED_Init(void)
 {
-    /* Record only; Mission owns USART1 output. No automatic address change. */
     OLED_BootDiagnosticReady = 0U;
     memset(&OLED_BootDiagnostic, 0, sizeof(OLED_BootDiagnostic));
-    OLED_BootDiagnostic.scl = (uint8_t)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8);
-    OLED_BootDiagnostic.sda = (uint8_t)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9);
-    for (uint16_t address = 0x3CU; address <= 0x3DU; ++address) {
-        HAL_StatusTypeDef status = HAL_I2C_IsDeviceReady(
-            &hi2c1, address << 1, 1U, OLED_I2C_TIMEOUT_MS);
-        OLED_BootDiagnostic.probe_status[address - 0x3CU] = (uint8_t)status;
-        OLED_BootDiagnostic.probe_error[address - 0x3CU] = HAL_I2C_GetError(&hi2c1);
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_11 | GPIO_PIN_12, GPIO_PIN_SET);
+    OLED_SoftDelay();
+    OLED_BootDiagnostic.scl = (uint8_t)HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_11);
+    OLED_BootDiagnostic.sda = (uint8_t)HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_12);
+    for (unsigned i = 0U; i < 2U; ++i) {
+        HAL_StatusTypeDef status = OLED_Transfer((uint8_t)((0x3CU + i) << 1U), 0U, NULL, 0U);
+        OLED_BootDiagnostic.probe_status[i] = (uint8_t)status;
+        OLED_BootDiagnostic.probe_error[i] = OLED_SoftError;
     }
-	OLED_I2C_Status = HAL_OK; /* 调用前I2C1须已初始化，且屏幕供电稳定。 */
-	
+    OLED_I2C_Status = HAL_OK;
+
 	/*写入一系列的命令，对OLED进行初始化配置*/
 	OLED_WriteCommand(0xAE);	//设置显示开启/关闭，0xAE关闭，0xAF开启
 	

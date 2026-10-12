@@ -868,28 +868,26 @@ static void mission_reset_vision(mission_context_t *ctx)
 }
 
 /** 起点状态查询与识别会话互斥，共用单份DMA缓冲区及回调邮箱。 */
-/** 只观察四路输入原始电平，不判定按下极性或触发动作；限频后由Mission输出USART1。 */
+/* PD12-PD15原始电平诊断：出发前采样，不触发任何动作。 */
 static void mission_button_trace(void)
 {
 #if MISSION_DEPOT_TRACE_ENABLED || MISSION_CHASSIS_ROUTE_TEST_ENABLED
     static bool sampled;
-    static uint32_t last_sample_tick;
-    static uint32_t last_print_tick;
-    static uint32_t last_levels;
+    static uint32_t sample_tick, print_tick;
+    static unsigned last_level;
     uint32_t now = osKernelGetTickCount();
-    uint32_t levels;
-
-    if (sampled && (now - last_sample_tick < mission_ms_to_ticks(100U))) return;
-    last_sample_tick = now;
-    levels = (GPIOD->IDR >> 12U) & 0x0FU;
-    if (!sampled || (levels != last_levels) ||
-        (now - last_print_tick >= mission_ms_to_ticks(1000U))) {
-        BLOCK_TRACE("[KEY] PD12=%u PD13=%u PD14=%u PD15=%u\r\n",
-            (unsigned)(levels & 1U), (unsigned)((levels >> 1U) & 1U),
-            (unsigned)((levels >> 2U) & 1U), (unsigned)((levels >> 3U) & 1U));
-        last_print_tick = now;
+    unsigned level;
+    if (sampled && (now - sample_tick < mission_ms_to_ticks(100U))) return;
+    sample_tick = now;
+    level = (unsigned)((GPIOD->IDR >> 12U) & 0x0FU);
+    if (!sampled || level != last_level ||
+        now - print_tick >= mission_ms_to_ticks(1000U)) {
+        BLOCK_TRACE("[KEY] KEY1_PD13=%u KEY3_PD12=%u KEY4_PD15=%u PD14=%u\r\n",
+            (level >> 1U) & 1U, level & 1U, (level >> 3U) & 1U,
+            (level >> 2U) & 1U);
+        print_tick = now;
     }
-    last_levels = levels;
+    last_level = level;
     sampled = true;
 #endif
 }
@@ -902,7 +900,7 @@ static void mission_oled_boot_trace(void)
     oled_boot_diagnostic_t d;
     if (printed || !OLED_GetBootDiagnostic(&d)) return;
     printed = true;
-    BLOCK_TRACE("[OLED] BOOT WAIT=500MS I2C1 PB8_SCL=%u PB9_SDA=%u ADDR=0x3C\r\n",
+    BLOCK_TRACE("[OLED] BOOT WAIT=500MS SOFT_I2C PE11_SCL=%u PE12_SDA=%u ADDR=0x3C HALF_MIN_US=10\r\n",
         (unsigned)d.scl, (unsigned)d.sda);
     for (unsigned i = 0U; i < 2U; ++i) {
         BLOCK_TRACE("[OLED] PROBE=0x%X STATUS=%u ERROR=0x%lX\r\n",
@@ -3139,7 +3137,7 @@ static void mission_task_entry(void *argument)
     /* 0) 上电先等待动作组10完成，不设置超时。 */
 #if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
     uint32_t boot_trace_next_tick = 0U;
-    bool button_trace_before_start = true;
+    bool buttons_before_start = true;
     /* 只启用诊断输出，不解析无线测试命令；关闭开关即不占用该调试实例。 */
     (void)debug_uart1_init(&g_depot_debug);
 #endif
@@ -3154,19 +3152,14 @@ static void mission_task_entry(void *argument)
 #if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
         mission_boot_trace(ctx, &boot_trace_next_tick);
 #endif
-#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
-        if (ctx->state == MISSION_STATE_WAIT_PLATFORM) button_trace_before_start = false;
-        if (button_trace_before_start) {
-            mission_oled_boot_trace();
-            mission_button_trace();
-        }
-#endif
+        mission_oled_boot_trace();
         mission_model_process(ctx);
         wait_ticks = mission_wait_ticks(ctx);
 #if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
-        /* 诊断开启时定期唤醒采样，不改变状态的原有截止时间。 */
-        if (button_trace_before_start && (wait_ticks > mission_ms_to_ticks(100U))) {
-            wait_ticks = mission_ms_to_ticks(100U);
+        if (ctx->state == MISSION_STATE_WAIT_PLATFORM) buttons_before_start = false;
+        if (buttons_before_start) {
+            mission_button_trace();
+            if (wait_ticks > mission_ms_to_ticks(100U)) wait_ticks = mission_ms_to_ticks(100U);
         }
 #endif
         flags = osThreadFlagsWait(

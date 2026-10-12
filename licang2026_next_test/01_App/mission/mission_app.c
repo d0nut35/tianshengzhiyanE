@@ -868,6 +868,32 @@ static void mission_reset_vision(mission_context_t *ctx)
 }
 
 /** 起点状态查询与识别会话互斥，共用单份DMA缓冲区及回调邮箱。 */
+/** 只观察四路输入原始电平，不判定按下极性或触发动作；限频后由Mission输出USART1。 */
+static void mission_button_trace(void)
+{
+#if MISSION_DEPOT_TRACE_ENABLED || MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    static bool sampled;
+    static uint32_t last_sample_tick;
+    static uint32_t last_print_tick;
+    static uint32_t last_levels;
+    uint32_t now = osKernelGetTickCount();
+    uint32_t levels;
+
+    if (sampled && (now - last_sample_tick < mission_ms_to_ticks(100U))) return;
+    last_sample_tick = now;
+    levels = (GPIOD->IDR >> 12U) & 0x0FU;
+    if (!sampled || (levels != last_levels) ||
+        (now - last_print_tick >= mission_ms_to_ticks(1000U))) {
+        BLOCK_TRACE("[KEY] PD12=%u PD13=%u PD14=%u PD15=%u\r\n",
+            (unsigned)(levels & 1U), (unsigned)((levels >> 1U) & 1U),
+            (unsigned)((levels >> 2U) & 1U), (unsigned)((levels >> 3U) & 1U));
+        last_print_tick = now;
+    }
+    last_levels = levels;
+    sampled = true;
+#endif
+}
+
 /* Print once from the existing USART1 owner after OLED publishes its snapshot. */
 static void mission_oled_boot_trace(void)
 {
@@ -3108,10 +3134,12 @@ static void mission_task_entry(void *argument)
     chassis_mission_event_t chassis_event;
     mission_user_command_t command;
     uint32_t flags;
+    uint32_t wait_ticks;
 
     /* 0) 上电先等待动作组10完成，不设置超时。 */
 #if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
     uint32_t boot_trace_next_tick = 0U;
+    bool button_trace_before_start = true;
     /* 只启用诊断输出，不解析无线测试命令；关闭开关即不占用该调试实例。 */
     (void)debug_uart1_init(&g_depot_debug);
 #endif
@@ -3126,12 +3154,25 @@ static void mission_task_entry(void *argument)
 #if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
         mission_boot_trace(ctx, &boot_trace_next_tick);
 #endif
-        mission_oled_boot_trace();
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        if (ctx->state == MISSION_STATE_WAIT_PLATFORM) button_trace_before_start = false;
+        if (button_trace_before_start) {
+            mission_oled_boot_trace();
+            mission_button_trace();
+        }
+#endif
         mission_model_process(ctx);
+        wait_ticks = mission_wait_ticks(ctx);
+#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        /* 诊断开启时定期唤醒采样，不改变状态的原有截止时间。 */
+        if (button_trace_before_start && (wait_ticks > mission_ms_to_ticks(100U))) {
+            wait_ticks = mission_ms_to_ticks(100U);
+        }
+#endif
         flags = osThreadFlagsWait(
             MISSION_ALL_FLAGS,
             osFlagsWaitAny,
-            mission_wait_ticks(ctx));
+            wait_ticks);
 
         if ((flags & osFlagsError) == 0U) {
             /* 2) 排空用户命令队列。 */
@@ -4432,6 +4473,7 @@ static void mission_wireless_test_entry(void *argument)
     /* 先由无线指令选色，再允许底盘开始握手；本轮颜色此后保持不变。 */
     while (g_mission_side == MISSION_COLOR_NONE) {
         mission_oled_boot_trace();
+        mission_button_trace();
         if (mission_test_take_command(command, sizeof(command))) {
             if (strcmp(command, "RED") == 0) {
                 g_mission_side = MISSION_COLOR_RED;
@@ -4457,6 +4499,7 @@ static void mission_wireless_test_entry(void *argument)
     mission_test_write("WAIT ARM 10 + CHASSIS + BLOCK MODEL\r\n");
     while ((chassis_ready == 0U) || !ctx->arm_home_ready || !ctx->block_model_ready) {
         mission_oled_boot_trace();
+        mission_button_trace();
         mission_model_process(ctx);
         flags = osThreadFlagsWait(
             CHASSIS_MISSION_FLAG_EVENT | MISSION_FLAG_ARM_OK |

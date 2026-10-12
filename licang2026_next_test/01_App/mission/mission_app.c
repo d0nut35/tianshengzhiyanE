@@ -21,7 +21,7 @@
 #include "chassis_mission_link.h"
 #include "arm.h"
 #include "mission_config.h"
-#include "OLED.h"
+#include "main.h"
 #include "mux_service.h"
 #include "nano_vision_core.h"
 #include "gate.h"
@@ -868,51 +868,65 @@ static void mission_reset_vision(mission_context_t *ctx)
 }
 
 /** 起点状态查询与识别会话互斥，共用单份DMA缓冲区及回调邮箱。 */
-/* PD12-PD15原始电平诊断：出发前采样，不触发任何动作。 */
-static void mission_button_trace(void)
-{
-#if MISSION_DEPOT_TRACE_ENABLED || MISSION_CHASSIS_ROUTE_TEST_ENABLED
-    static bool sampled;
-    static uint32_t sample_tick, print_tick;
-    static unsigned last_level;
-    uint32_t now = osKernelGetTickCount();
-    unsigned level;
-    if (sampled && (now - sample_tick < mission_ms_to_ticks(100U))) return;
-    sample_tick = now;
-    level = (unsigned)((GPIOD->IDR >> 12U) & 0x0FU);
-    if (!sampled || level != last_level ||
-        now - print_tick >= mission_ms_to_ticks(1000U)) {
-        BLOCK_TRACE("[KEY] KEY1_PD13=%u KEY3_PD12=%u KEY4_PD15=%u PD14=%u\r\n",
-            (level >> 1U) & 1U, level & 1U, (level >> 3U) & 1U,
-            (level >> 2U) & 1U);
-        print_tick = now;
-    }
-    last_level = level;
-    sampled = true;
-#endif
-}
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+/* Mission独占出发前按键和LED；确认后锁定颜色，出发后停止读写。 */
+static struct {
+    bool base_ready, confirmed, departed, sampled, armed, ready_led;
+    uint32_t raw, stable, changed_tick, confirmed_tick;
+} g_start;
 
-/* Print once from the existing USART1 owner after OLED publishes its snapshot. */
-static void mission_oled_boot_trace(void)
+static void mission_start_panel(mission_context_t *ctx)
 {
-#if MISSION_DEPOT_TRACE_ENABLED || MISSION_CHASSIS_ROUTE_TEST_ENABLED
-    static bool printed;
-    oled_boot_diagnostic_t d;
-    if (printed || !OLED_GetBootDiagnostic(&d)) return;
-    printed = true;
-    BLOCK_TRACE("[OLED] BOOT WAIT=500MS SOFT_I2C PE11_SCL=%u PE12_SDA=%u ADDR=0x3C HALF_MIN_US=10\r\n",
-        (unsigned)d.scl, (unsigned)d.sda);
-    for (unsigned i = 0U; i < 2U; ++i) {
-        BLOCK_TRACE("[OLED] PROBE=0x%X STATUS=%u ERROR=0x%lX\r\n",
-            0x3CU + i, (unsigned)d.probe_status[i], (unsigned long)d.probe_error[i]);
+    uint32_t now, raw;
+    bool ready, pressed;
+    if (g_start.departed) return;
+    ready = ctx->state == MISSION_STATE_WAIT_CHASSIS_READY &&
+            ctx->arm_home_ready && ctx->block_model_ready && g_start.base_ready &&
+            ctx->fault_code == MISSION_FAULT_NONE;
+    if (g_start.confirmed && ctx->state == MISSION_STATE_READY) {
+        ready = ctx->arm_home_ready && ctx->block_model_ready && g_start.base_ready &&
+                ctx->fault_code == MISSION_FAULT_NONE;
     }
-    BLOCK_TRACE("[OLED] WRITE KIND=%u VALUE=%u STATUS=%u ERROR=0x%lX\r\n",
-        (unsigned)d.write_kind, (unsigned)d.write_value,
-        (unsigned)d.write_status, (unsigned long)d.write_error);
-    BLOCK_TRACE("[OLED] INIT_READY=%u DISPLAY_READY=%u\r\n",
-        (unsigned)d.init_ready, (unsigned)d.display_ready);
-#endif
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_11, ready ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    if (ready != g_start.ready_led) {
+        DEPOT_TRACE("[BOOT] START_READY=%u ARM10=%u MODEL=%u BASE=%u\r\n",
+            (unsigned)ready, (unsigned)ctx->arm_home_ready,
+            (unsigned)ctx->block_model_ready, (unsigned)g_start.base_ready);
+        g_start.ready_led = ready;
+    }
+    if (g_start.confirmed) return;
+    now = osKernelGetTickCount();
+    raw = GPIOD->IDR & (GPIO_PIN_12 | GPIO_PIN_13);
+    if (!g_start.sampled || raw != g_start.raw) {
+        g_start.raw = raw;
+        g_start.changed_tick = now;
+        g_start.sampled = true;
+    }
+    if (!ready) g_start.armed = false;
+    if (now - g_start.changed_tick < mission_ms_to_ticks(50U)) return;
+    pressed = (raw & GPIO_PIN_13) == 0U;
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_12,
+        (raw & GPIO_PIN_12) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    if (pressed && (g_start.stable & GPIO_PIN_13) != 0U) {
+        if (ready && g_start.armed) {
+            g_start.confirmed = true;
+            g_start.confirmed_tick = now;
+            g_mission_side = (raw & GPIO_PIN_12) ? MISSION_COLOR_RED : MISSION_COLOR_BLUE;
+            DEPOT_TRACE("[BOOT] KEY1 CONFIRM SIDE=%u MIN_DELAY=1000MS\r\n",
+                (unsigned)g_mission_side);
+            /* 最终握手有超时保护，不阻塞模型查询和事件处理。 */
+            mission_enter_state(ctx, MISSION_STATE_WAIT_CHASSIS_READY, MISSION_OPERATION_TIMEOUT_MS);
+        } else {
+            DEPOT_TRACE("[BOOT] KEY1 REJECT ARM10=%u MODEL=%u BASE=%u STATE=%u\r\n",
+                (unsigned)ctx->arm_home_ready, (unsigned)ctx->block_model_ready,
+                (unsigned)g_start.base_ready, (unsigned)ctx->state);
+        }
+    }
+    if (!pressed && ready) g_start.armed = true;
+    if (pressed) g_start.armed = false;
+    g_start.stable = raw;
 }
+#endif
 
 static void mission_model_process(mission_context_t *ctx)
 {
@@ -2038,7 +2052,7 @@ static void mission_vision_process(mission_context_t *ctx)
 /**
  * @brief 在机械臂和底盘均就绪后完成握手并进入READY。
  * @param ctx Mission上下文。
- * @note READY保持约4秒后按已选颜色启动；底盘此时阻塞等待GO_PLATFORM。
+ * @note READY只等待KEY1确认后1秒的剩余时间；底盘此时阻塞等待GO_PLATFORM。
  */
 static void mission_try_ready(mission_context_t *ctx)
 {
@@ -2048,27 +2062,36 @@ static void mission_try_ready(mission_context_t *ctx)
         (g_mission_side == MISSION_COLOR_NONE)) {
         return;
     }
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    if (!g_start.confirmed) return;
+#endif
     if (!mission_send_chassis(MISSION_CMD_MISSION_READY, ctx->request_id)) {
         mission_fail(ctx, MISSION_FAULT_QUEUE);
         return;
     }
-    DEPOT_TRACE("[BOOT] GATE READY ARM10=1 CHASSIS=1 MODEL=1 START_IN=%uMS\r\n",
-                (unsigned)MISSION_AUTO_START_DELAY_MS);
-    mission_enter_state(ctx, MISSION_STATE_READY,
-                        MISSION_AUTO_START_DELAY_MS);
+    uint32_t remaining = 1U;
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    uint32_t elapsed = osKernelGetTickCount() - g_start.confirmed_tick;
+    uint32_t delay_ticks = mission_ms_to_ticks(MISSION_BUTTON_START_DELAY_MS);
+    if (elapsed < delay_ticks) remaining = delay_ticks - elapsed;
+#endif
+    DEPOT_TRACE("[BOOT] HANDSHAKE READY START_WAIT_TICKS=%lu\r\n", (unsigned long)remaining);
+    mission_enter_state(ctx, MISSION_STATE_READY, 0U);
+    ctx->deadline_tick = osKernelGetTickCount() + remaining;
+    if (ctx->deadline_tick == 0U) ctx->deadline_tick = 1U;
 }
 
 /**
  * @brief 启动一轮正式任务并请求底盘前往圆盘工作位。
  * @param ctx Mission上下文。
- * @note 颜色已由假按钮选定，启动时不再覆盖；后续可接入实体按钮。
+ * @note 颜色已由KEY1确认锁定，启动时不再覆盖。
  */
 static void mission_start_run(mission_context_t *ctx)
 {
     /* 0) 新一轮任务使用新的request_id，隔离上一轮底盘回包。 */
     uint16_t request_id = mission_next_request_id(ctx);
 
-    DEPOT_TRACE("[BOOT] AUTO START SIDE=%u GO_PLATFORM ID=%u\r\n",
+    DEPOT_TRACE("[BOOT] START SIDE=%u GO_PLATFORM ID=%u\r\n",
                 (unsigned)g_mission_side, (unsigned)request_id);
     /* 1) 保留已选红蓝方，只清空本轮小球、槽位和故障计数。 */
     ctx->platform_balls = 0U;
@@ -2084,6 +2107,9 @@ static void mission_start_run(mission_context_t *ctx)
         mission_fail(ctx, MISSION_FAULT_QUEUE);
         return;
     }
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    g_start.departed = true;
+#endif
     /* 3) 等待底盘带相同request_id上报PLATFORM_READY。 */
     mission_enter_state(
         ctx,
@@ -2210,6 +2236,13 @@ static void mission_handle_chassis(
                 (unsigned)event->type, (unsigned)event->request_id,
                 (unsigned)ctx->request_id, (unsigned)event->is_ready);
 
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    if (event->type == CHASSIS_CMD_BASE_READY) {
+        g_start.base_ready = event->is_ready != 0U;
+        if (!g_start.base_ready) mission_fail(ctx, MISSION_FAULT_CHASSIS);
+        return;
+    }
+#endif
     /* 0) 握手事件允许底盘先于机械臂完成初始化。 */
     if (event->type == CHASSIS_CMD_MISSION_READY) {
         if ((ctx->state != MISSION_STATE_WAIT_HOME) &&
@@ -3024,6 +3057,16 @@ static void mission_check_timeout(mission_context_t *ctx)
     if ((ctx->deadline_tick != 0U) &&
         ((int32_t)(osKernelGetTickCount() - ctx->deadline_tick) >= 0)) {
         if (ctx->state == MISSION_STATE_READY) {
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+            /* READY计时结束仍检查启动门控，禁止故障或未确认路径放行。 */
+            if (!g_start.confirmed || !g_start.base_ready || !ctx->chassis_ready ||
+                !ctx->arm_home_ready || !ctx->block_model_ready ||
+                ctx->fault_code != MISSION_FAULT_NONE ||
+                g_mission_side == MISSION_COLOR_NONE) {
+                mission_fail(ctx, MISSION_FAULT_PROTOCOL);
+                return;
+            }
+#endif
             mission_start_run(ctx);
             return;
         }
@@ -3113,9 +3156,9 @@ static void mission_boot_trace(mission_context_t *ctx, uint32_t *next_tick)
          (ctx->state != MISSION_STATE_WAIT_CHASSIS_READY)) ||
         ((int32_t)(now - *next_tick) < 0)) return;
     *next_tick = now + mission_ms_to_ticks(MISSION_MODEL_QUERY_INTERVAL_MS);
-    DEPOT_TRACE("[BOOT] WAIT STATE=%u ARM10=%u CHASSIS=%u MODEL=%u V=%u BUSY=%u PENDING=%u LAST=%lu\r\n",
+    DEPOT_TRACE("[BOOT] WAIT STATE=%u ARM10=%u CHASSIS=%u BASE=%u MODEL=%u V=%u BUSY=%u PENDING=%u LAST=%lu\r\n",
         (unsigned)ctx->state, (unsigned)ctx->arm_home_ready,
-        (unsigned)ctx->chassis_ready, (unsigned)ctx->block_model_ready,
+        (unsigned)ctx->chassis_ready, (unsigned)g_start.base_ready, (unsigned)ctx->block_model_ready,
         (unsigned)ctx->vision.phase, (unsigned)ctx->vision.inflight,
         (unsigned)ctx->vision.completion_pending, (unsigned long)ctx->arm_last_action_report);
 }
@@ -3137,7 +3180,6 @@ static void mission_task_entry(void *argument)
     /* 0) 上电先等待动作组10完成，不设置超时。 */
 #if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
     uint32_t boot_trace_next_tick = 0U;
-    bool buttons_before_start = true;
     /* 只启用诊断输出，不解析无线测试命令；关闭开关即不占用该调试实例。 */
     (void)debug_uart1_init(&g_depot_debug);
 #endif
@@ -3152,14 +3194,12 @@ static void mission_task_entry(void *argument)
 #if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
         mission_boot_trace(ctx, &boot_trace_next_tick);
 #endif
-        mission_oled_boot_trace();
         mission_model_process(ctx);
         wait_ticks = mission_wait_ticks(ctx);
-#if MISSION_DEPOT_TRACE_ENABLED && !MISSION_CHASSIS_ROUTE_TEST_ENABLED
-        if (ctx->state == MISSION_STATE_WAIT_PLATFORM) buttons_before_start = false;
-        if (buttons_before_start) {
-            mission_button_trace();
-            if (wait_ticks > mission_ms_to_ticks(100U)) wait_ticks = mission_ms_to_ticks(100U);
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        mission_start_panel(ctx);
+        if (!g_start.departed && wait_ticks > mission_ms_to_ticks(10U)) {
+            wait_ticks = mission_ms_to_ticks(10U);
         }
 #endif
         flags = osThreadFlagsWait(
@@ -3201,6 +3241,9 @@ static void mission_task_entry(void *argument)
         }
         /* 6) 提交下一次视觉事务，并统一检查当前状态是否超时。 */
         mission_vision_process(ctx);
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        mission_start_panel(ctx);
+#endif
         mission_check_timeout(ctx);
         STAIR_POLL(ctx);
     }
@@ -4465,8 +4508,6 @@ static void mission_wireless_test_entry(void *argument)
 
     /* 先由无线指令选色，再允许底盘开始握手；本轮颜色此后保持不变。 */
     while (g_mission_side == MISSION_COLOR_NONE) {
-        mission_oled_boot_trace();
-        mission_button_trace();
         if (mission_test_take_command(command, sizeof(command))) {
             if (strcmp(command, "RED") == 0) {
                 g_mission_side = MISSION_COLOR_RED;
@@ -4491,8 +4532,6 @@ static void mission_wireless_test_entry(void *argument)
     mission_enter_state(ctx, MISSION_STATE_WAIT_CHASSIS_READY, 0U);
     mission_test_write("WAIT ARM 10 + CHASSIS + BLOCK MODEL\r\n");
     while ((chassis_ready == 0U) || !ctx->arm_home_ready || !ctx->block_model_ready) {
-        mission_oled_boot_trace();
-        mission_button_trace();
         mission_model_process(ctx);
         flags = osThreadFlagsWait(
             CHASSIS_MISSION_FLAG_EVENT | MISSION_FLAG_ARM_OK |
@@ -4987,11 +5026,10 @@ mission_app_status_t mission_app_init(void)
     }
     /* 1) 清空运行上下文并初始化小球档案。 */
     (void)memset(ctx, 0, sizeof(*ctx));
-#if MISSION_CHASSIS_ROUTE_TEST_ENABLED
     g_mission_side = MISSION_COLOR_NONE;
-#else
-    /* 正式假按钮按构建选色，两方都走同一正式Mission；实体按键尚未接入。 */
-    g_mission_side = MISSION_FORMAL_BLUE_SIDE ? MISSION_COLOR_BLUE : MISSION_COLOR_RED;
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    (void)memset(&g_start, 0, sizeof(g_start));
+    g_start.stable = GPIO_PIN_12 | GPIO_PIN_13;
 #endif
     ball_manifest_init(&ctx->manifest);
     /* 2) 目标区域测试会复用正式读卡和车载转盘服务。 */

@@ -7,7 +7,7 @@
 
 ## 当前专项资料
 
-- `正式按键与OLED启动方案.md`：沿用旧文件名，内容已改为待实施的LED方案；PE11表示整机就绪，KEY3选色、KEY1确认后至少1秒出发，KEY4备用，不再使用OLED。
+- `正式按键与OLED启动方案.md`：沿用旧文件名，LED按键启动已接入、待实机；PE11表示整机就绪，KEY3选色、KEY1确认后至少1秒出发，KEY4备用，不再使用OLED。
 - `小圆盘纯路径无线调试.md`：DISC_READY到绕行起点停车、DISC_RUN从停点绕行以及DEPOT到D1停车。
 
 - `Nano视觉_UART7通道0协议.md`：STM32球视觉及仓库数字协议参考；实际兼容/业务验证状态另查外层PROTOCOL_COMPATIBILITY.md和双方源码。

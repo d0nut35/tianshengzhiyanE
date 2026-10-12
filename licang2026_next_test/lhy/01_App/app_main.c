@@ -21,6 +21,7 @@
 #include "system_assembly.h"
 /* Mission 红蓝方 g_mission_side；目录不在 include path，同 freertos.c 相对引用 */
 #include "../../01_App/mission/mission_app.h"
+#include "../../01_App/mission/mission_config.h"
 
 /* ===== 调试日志：0=不编译进固件，1=经 RTT 输出 ===== */
 #ifndef APP_LOG_EN
@@ -543,6 +544,12 @@ static void app_task(void *arg)
         osDelay(APP_BOOT_POLL_MS);
     }
     osDelay(APP_CSVC_WAIT_MS);
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    /* 基础初始化成功后先上报，避免Mission等待就绪而底盘等待颜色。 */
+    while (link_post(CHASSIS_CMD_BASE_READY, 1U, 1U) != APP_OK) {
+        osDelay(APP_BOOT_POLL_MS);
+    }
+#endif
     /* [lyx] 正式和测试模式均须先选定红蓝方，再开始底盘握手。 */
     while (g_mission_side == MISSION_COLOR_NONE) {
         osDelay(APP_BOOT_POLL_MS);
@@ -551,6 +558,14 @@ static void app_task(void *arg)
     ok = (side_apply() == APP_OK) ? 1U : 0U;
     if (ok == 0U) {
         APP_LOGE("side apply fail");
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+        while (link_post(CHASSIS_CMD_MISSION_READY, 1U, 0U) != APP_OK) {
+            osDelay(APP_BOOT_POLL_MS);
+        }
+        (void)align_stop();
+        for (;;) (void)link_poll(NULL, NULL, util_ms_ticks(APP_IDLE_MS));
+#endif
+
     }
     link_handshake();
 

@@ -8,7 +8,7 @@
 #define MISSION_OPERATION_TIMEOUT_MS  30000U
 /* 底盘四轮握手不设上限且每1s重发MISSION_READY，Mission侧同样不计时。 */
 #define MISSION_READY_TIMEOUT_MS          0U
-#define MISSION_AUTO_START_DELAY_MS    4000U
+#define MISSION_BUTTON_START_DELAY_MS  1000U
 
 /*
  * Mission无线联调开关：1=USART1指令测试任务，0=正式比赛流程。
@@ -17,8 +17,6 @@
 #define MISSION_CHASSIS_ROUTE_TEST_ENABLED  0U
 /* 正式仓库/阶梯诊断：USART1输出；现场定位后改0即可关闭。 */
 #define MISSION_DEPOT_TRACE_ENABLED          1U
-/* 正式假按钮选色：0=红方，1=蓝方；无线仍由RED/BLUE选择，实体按键尚未接入。 */
-#define MISSION_FORMAL_BLUE_SIDE              1U
 #define MISSION_CHASSIS_ROUTE_TEST_PAUSE_MS 2000U
 #define MISSION_DEPOT_DIGIT_WAIT_MS        5000U /* 仓库每次READY后等数字，和积木期限独立。 */
 #define MISSION_WIRELESS_POLL_MS               10U
@@ -99,9 +97,6 @@
 
 #if (MISSION_CHASSIS_ROUTE_TEST_ENABLED > 1U)
 #error "MISSION_CHASSIS_ROUTE_TEST_ENABLED must be 0 or 1"
-#endif
-#if (MISSION_FORMAL_BLUE_SIDE > 1U)
-#error "MISSION_FORMAL_BLUE_SIDE must be 0 or 1"
 #endif
 
 #endif /* MISSION_CONFIG_H */

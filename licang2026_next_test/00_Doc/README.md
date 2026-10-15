@@ -7,11 +7,13 @@
 
 ## 当前专项资料
 
+- `红方备用模式与现场调参.md`：PD15模式选择、独立底盘参数、实际源码/测试入口及BASE=0未定位停点。
+
 - `现场圆盘机转速适配ROI预案.md`：开头turntable按来球方向和夹取早晚微调入口边界，尚未改参数。
 
 - `MF500数字识别低概率停滞现场预案.md`：有效帧不足与结果无ACK两类现场判据、候选修复及验证；尚未修改运行参数。
 
-- `正式按键与OLED启动方案.md`：沿用旧文件名，LED按键启动已接入、待实机；PE11表示整机就绪，KEY3选色、KEY1确认后至少1秒出发，KEY4备用，不再使用OLED。
+- `正式按键与OLED启动方案.md`：沿用旧文件名，LED按键启动已接入；PE11表示整机就绪，KEY3选色、KEY1确认后至少1秒出发，KEY4选择红方备用，当前现场启动问题见CURRENT_STATUS，不再使用OLED。
 - `小圆盘纯路径无线调试.md`：DISC_READY到绕行起点停车、DISC_RUN从停点绕行以及DEPOT到D1停车。
 
 - `Nano视觉_UART7通道0协议.md`：STM32球视觉及仓库数字协议参考；实际兼容/业务验证状态另查外层PROTOCOL_COMPATIBILITY.md和双方源码。
@@ -34,6 +36,6 @@
 - `任务衔接记录.md`：旧集成工程的实机和软件记录。
 - `TASK_PROGRESS.md`：旧阶段进度和实验记录。
 
-积木模型采集、复核及训练说明位于Nano视觉工程docs/积木数字模型训练与复核.md；正式按键/OLED交互尚待规划，以CURRENT_STATUS.md和Mission源码为起点。
+积木模型采集、复核及训练说明位于Nano视觉工程docs/积木数字模型训练与复核.md；正式启动当前采用LED/实体按键，红方备用已接入，现场验收边界以CURRENT_STATUS.md和Mission源码为准。
 
 跨工程当前状态统一读取`D:\programfile\licang\00_Context\CURRENT_TASK.md`。

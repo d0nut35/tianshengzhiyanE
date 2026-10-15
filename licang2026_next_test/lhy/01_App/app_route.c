@@ -56,7 +56,7 @@ typedef struct {
  * 蓝方圆盘、阶梯、起点使用下方独立配置，其余镜像侧点由 route_go 关于 x=RT_FIELD_W_MM/2 换算 */
 static const route_pt_t g_route[ROUTE_NUM] = {
     /* PLATFORM：圆盘工作位，找线后按 IMU 航向标定 */
-    { CSVC_NAV_PATH, { 520, 4300}, 180.0f, 500.0f, 30.0f,
+    { CSVC_NAV_PATH, { 525, 4300}, 180.0f, 500.0f, 30.0f,
       { 473, 4300}, FIX_IMU  },
     /* STAIRS：阶梯起始工作位，即低层起点 */
     { CSVC_NAV_PATH, {2100, 2920},   0.0f, 500.0f, 60.0f,
@@ -86,7 +86,7 @@ static const route_pt_t g_blue_platform = {
 /* 蓝方 STAIRS：直接填写蓝方世界系导航点、航向与标定点，不再镜像。
  * 初值沿用原镜像结果；实机调参只改此项，不影响红方阶梯。 */
 static const route_pt_t g_blue_stair = {
-    CSVC_NAV_PATH, { 400, 2940}, -180.0f, 500.0f, 60.0f,
+    CSVC_NAV_PATH, { 400, 2950}, -180.0f, 500.0f, 60.0f,
     { 393, 2950}, FIX_LINE
 };
 

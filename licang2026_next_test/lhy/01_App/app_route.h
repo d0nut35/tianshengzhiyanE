@@ -69,6 +69,9 @@ float route_lat_sign(void);
  */
 app_status_t route_go(route_id_t id);
 
+/* 备用专属点表与有界等待；guard由底盘提供，0表示STOP/超时。 */
+app_status_t route_red_backup_go(route_id_t id, uint8_t (*guard)(void));
+
 #ifdef __cplusplus
 }
 #endif

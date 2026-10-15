@@ -12,10 +12,11 @@
 #define PLATFORM_TRACE(...) ((void)0)
 #define TURN_TRACE(...) ((void)0)
 volatile mission_color_t g_mission_side = MISSION_COLOR_RED;
+volatile mission_run_mode_t g_mission_run_mode = MISSION_RUN_FORMAL;
 enum { IC_CARD_OK, IC_CARD_ERR_BUSY, IC_READ_TIMEOUT_MS = 1000, MISSION_FLAG_IC_DONE = 1 };
 enum { LSC16_OK, LSC16_FAIL };
-enum { MISSION_FAULT_ARM, MISSION_FAULT_VISION, MISSION_FAULT_QUEUE };
-enum { MISSION_CMD_STAIR_RESUME, MISSION_CMD_SMALL_DISC_RESUME, MISSION_CMD_GO_STAIRS };
+enum { MISSION_FAULT_CHASSIS, MISSION_FAULT_ARM, MISSION_FAULT_VISION, MISSION_FAULT_QUEUE };
+enum { MISSION_CMD_STAIR_RESUME, MISSION_CMD_SMALL_DISC_RESUME, MISSION_CMD_GO_STAIRS, MISSION_CMD_GO_DEPOT_1 };
 enum { MISSION_VISION_SCENE_PLATFORM, MISSION_VISION_SCENE_STAIR, MISSION_VISION_SCENE_SMALL_DISC };
 typedef enum { MISSION_STORAGE_REGION_PLATFORM, MISSION_STORAGE_REGION_STAIR, MISSION_STORAGE_REGION_SMALL_DISC } mission_storage_region_t;
 enum { ZDT_TURNTABLE_DIR_CW, ZDT_TURNTABLE_DIR_CCW };
@@ -30,7 +31,7 @@ typedef struct {
     struct { unsigned ic_status; struct { uint8_t code, row, column; } ic_ball; } storage;
 } mission_context_t;
 static unsigned reads, turns, last_arm, visions;
-static unsigned arm_commands, stairs_commands;
+static unsigned arm_commands, stairs_commands, depot_commands;
 static bool read_success, move_success = true, arm_success = true;
 static unsigned osThreadFlagsClear(unsigned f) { return f; }
 static unsigned mission_ms_to_ticks(unsigned ms) { return ms; }
@@ -51,7 +52,7 @@ static void mission_fail(mission_context_t *c, unsigned fault) { (void)fault; c-
 static bool mission_start_vision(mission_context_t *c, unsigned scene, mission_stair_layer_t layer, mission_state_t state)
 { (void)scene; (void)layer; ++visions; c->state = state; return true; }
 static bool mission_send_chassis(unsigned cmd, uint16_t id)
-{ (void)id; if (cmd == MISSION_CMD_GO_STAIRS) ++stairs_commands; return true; }
+{ (void)id; if (cmd == MISSION_CMD_GO_STAIRS) ++stairs_commands; if (cmd == MISSION_CMD_GO_DEPOT_1) ++depot_commands; return true; }
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
 static uint16_t mission_next_request_id(mission_context_t *c) { return ++c->request_id; }
 #endif
@@ -154,6 +155,18 @@ int main(void)
     before = c.platform_attempts;
     assert(!mission_start_arm(&c, 12, MISSION_STATE_PLATFORM_WAIT_GRASP));
     assert(c.platform_attempts == before);
+#if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
+    arm_success = move_success = true;
+    memset(&c, 0, sizeof(c)); g_mission_run_mode = MISSION_RUN_RED_BACKUP;
+    previous_stairs = stairs_commands;
+    for (unsigned i=0;i<5;i++) attempt(&c, i!=2);
+    assert(c.state == MISSION_STATE_WAIT_DEPOT_1 && depot_commands==1);
+    assert(stairs_commands==previous_stairs && c.manifest.count==5 && c.current_slot==5);
+    g_mission_side=MISSION_COLOR_BLUE;
+    mission_finish_platform(&c);assert(c.state==MISSION_STATE_FAULT && depot_commands==1);
+    g_mission_side=MISSION_COLOR_RED;c.arm_home_ready=false;
+    mission_finish_platform(&c);assert(c.state==MISSION_STATE_FAULT && depot_commands==1);
+#endif
     puts("Platform retry regression passed (host logic only)");
     return 0;
 }

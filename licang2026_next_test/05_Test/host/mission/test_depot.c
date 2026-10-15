@@ -18,7 +18,7 @@ enum { CHASSIS_CMD_DEPOT_1_READY = 20, CHASSIS_CMD_DEPOT_2_READY,
        CHASSIS_CMD_DEPOT_3_READY, CHASSIS_CMD_DEPOT_4_READY, CHASSIS_CMD_HOME_READY };
 typedef struct { uint16_t request_id; uint8_t type, is_ready; } chassis_mission_event_t;
 volatile mission_color_t g_mission_side = MISSION_COLOR_RED;
-enum { MISSION_FAULT_STORAGE = 5, MISSION_FAULT_ARM = 3,
+enum { MISSION_FAULT_NONE = 0, MISSION_FAULT_PROTOCOL = 7, MISSION_FAULT_STORAGE = 5, MISSION_FAULT_ARM = 3,
        MISSION_FAULT_VISION = 4, MISSION_FAULT_QUEUE = 6, MISSION_FAULT_TIMEOUT = 1,
        MISSION_FAULT_CHASSIS = 2 };
 enum { MISSION_VISION_SCENE_PLATFORM = 1, MISSION_VISION_SCENE_DEPOT_DIGIT = 4,
@@ -31,10 +31,14 @@ typedef struct {
     uint8_t depot_first_digit, depot_digit, depot_columns_used, depot_sequence, depot_row;
     uint16_t depot_abnormal_mask, request_id;
     bool depot_preparing, arm_home_ready, block_result_received;
+    bool chassis_ready, block_model_ready;
+    unsigned fault_code;
     uint8_t active_arm_group;
     ball_manifest_t manifest;
 } mission_context_t;
 
+/* 补齐现有启动门禁所需夹具字段；仓库测试不绕过生产门禁。 */
+static struct { bool confirmed, base_ready; } g_start;
 static uint32_t now;
 static unsigned groups[128], group_count, moves, sessions, stops;
 static uint8_t last_command;
@@ -189,8 +193,39 @@ static void test_fallback_routes(void)
     mission_depot_prepare(&c); assert(c.state == MISSION_STATE_FAULT && group_count == 0);
 }
 
+/* 备用仅携带圆盘机五条档案：已知、全未知、混合均按原红方放置。 */
+static void test_backup_five_balls(void)
+{
+    for (unsigned kind=0; kind<3; ++kind) {
+        mission_context_t c;
+        reset(&c); c.current_slot=5; c.arm_home_ready=true;
+        for (uint8_t i=0; i<5; ++i) {
+            if (kind==1 || (kind==2 && i%2==0))
+                assert(ball_manifest_append_read_failed(&c.manifest,
+                    BALL_MANIFEST_REGION_TURNTABLE, BALL_MANIFEST_COLOR_RED, i)==BALL_MANIFEST_OK);
+            else add_ball(&c, i/3+1, i%3+1, i);
+        }
+        mission_depot_prepare(&c);
+        for (unsigned steps=0; c.state!=MISSION_STATE_DEPOT_WAIT_HOME; ++steps) {
+            assert(steps<120 && c.state!=MISSION_STATE_FAULT);
+            if (c.state==MISSION_STATE_DEPOT_SEEK) seek(&c);
+            else if (c.state==MISSION_STATE_DEPOT_WAIT_POSITION) {
+                chassis_mission_event_t e={c.request_id,
+                    (uint8_t)(CHASSIS_CMD_DEPOT_1_READY+c.depot_position-1),1};
+                depot_handle_chassis(&c,&e);
+            } else if(c.state==MISSION_STATE_DEPOT_WAIT_DIGIT) {
+                uint8_t logical=(uint8_t)(4-c.depot_position);
+                digit(&c,logical);digit(&c,logical);
+            } else finish_arm(&c);
+        }
+        assert(last_command==MISSION_CMD_DEPOT_OK && c.manifest.count==5);
+        for(unsigned i=0;i<5;i++) assert(c.manifest.records[i].state==BALL_MANIFEST_STATE_PLACED);
+    }
+}
+
 int main(void)
 {
+    test_backup_five_balls();
     test_fallback_routes();
     mission_context_t c;
     /* 按当前位置而非固定12槽排序：12→9→6→3，层序为2→1→3。 */

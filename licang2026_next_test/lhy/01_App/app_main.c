@@ -8,6 +8,7 @@
  */
 
 #include "app_main.h"
+#include "../../01_App/mission/mission_red_backup_config.h"
 
 #include "cmsis_os2.h"
 
@@ -401,15 +402,26 @@ static app_status_t small_disc_round(uint16_t req_id)
     return small_disc_exit(&ctx, poll_ticks);
 }
 
+/* 仓库动作参数显式传入；正式入口每次构造原值，备用使用独立常量。 */
+typedef struct {
+    float vy;
+    uint32_t poll_ms, locate_ms, shift_timeout_ms;
+    uint8_t sensor, high_count;
+    int16_t line_y, d1_y;
+} depot_settings_t;
+
 /**
- * @brief  根据当前里程计 y 双向横移到指定仓库位置后停车
+ * @brief 按当前里程计Y双向横移并停车，正式/备用显式传入各自参数。
+ * @note 正式shift_timeout_ms为0，保留原行为；备用超时或STOP均中止。
  */
-static app_status_t depot_shift(int16_t y_mm)
+static app_status_t depot_shift_configured(int16_t y_mm, const depot_settings_t *cfg)
 {
     map_point_t pos = { 0, 0 };  /* 里程计坐标 */
     float       yaw = 0.0f;      /* 里程计航向，附带量 */
     float       vy_up;           /* 沿地图 +y 前进的车体系 vy，已按侧取号 */
     uint8_t     up;              /* 1=目标在地图 +y 方向 */
+
+    uint32_t started = osKernelGetTickCount(); /* 仅备用横移启用总期限。 */
 
     if ((disc_loc_wait(0U, 1U) != APP_OK) ||
         (csvc_get_pose(&pos, &yaw) != CSVC_OK)) {
@@ -420,10 +432,15 @@ static app_status_t depot_shift(int16_t y_mm)
         return APP_OK;
     }
     up = (pos.y_mm < y_mm) ? 1U : 0U;
-    vy_up = route_lat_sign() * APP_DEPOT_VY_MMS;
+    vy_up = route_lat_sign() * cfg->vy;
     do {
+        if (cfg->shift_timeout_ms != 0U &&
+            osKernelGetTickCount() - started >= util_ms_ticks(cfg->shift_timeout_ms)) {
+            (void)align_stop();
+            return APP_ERR;
+        }
         if ((csvc_free(0.0f, (up != 0U) ? vy_up : -vy_up, 0.0f) != CSVC_OK) ||
-            (disc_loc_wait(APP_DEPOT_POLL_MS, 1U) != APP_OK) ||
+            (disc_loc_wait(cfg->poll_ms, 1U) != APP_OK) ||
             (csvc_get_pose(&pos, &yaw) != CSVC_OK)) {
             (void)align_stop();
             return APP_ERR;
@@ -438,14 +455,14 @@ static app_status_t depot_shift(int16_t y_mm)
  * @retval APP_OK / APP_ERR=超时、STOP、传感器或底盘失败，已请求停车
  * @note   红方 6 号、蓝方 1 号连续高电平确认；线尾 Y 与阶梯结束一致
  */
-static app_status_t depot_locate(void)
+static app_status_t depot_locate_configured(const depot_settings_t *cfg)
 {
     map_point_t pos = { 0, 0 };              /* 停稳后的里程计坐标 */
     float yaw = 0.0f;                        /* 保留刚修正的航向 */
-    float vy = -route_lat_sign() * APP_DEPOT_VY_MMS; /* 与 D2 方向相反 */
+    float vy = -route_lat_sign() * cfg->vy; /* 与 D2 方向相反 */
     uint32_t start = osKernelGetTickCount(); /* 找线超时起点 */
-    uint32_t tmo = util_ms_ticks(APP_DEPOT_FIX_MS); /* 找线时限 */
-    uint8_t sensor = (route_side() == ROUTE_SIDE_MIRROR) ? 1U : 6U; /* 镜像线尾 */
+    uint32_t tmo = util_ms_ticks(cfg->locate_ms); /* 找线时限 */
+    uint8_t sensor = cfg->sensor; /* 正式按场地侧选取；备用使用专属灰度编号。 */
     uint8_t on_line = 0U;                    /* 1=低电平压线 */
     uint8_t high_cnt = 0U;                   /* 连续高电平计数 */
     uint8_t moving = 0U;                     /* 1=已下发反向横移 */
@@ -457,7 +474,7 @@ static app_status_t depot_locate(void)
         }
         if (on_line == 0U) {
             high_cnt++;
-            if (high_cnt >= APP_DEPOT_HIGH_N) {
+            if (high_cnt >= cfg->high_count) {
                 break;
             }
         } else {
@@ -470,11 +487,11 @@ static app_status_t depot_locate(void)
                 moving = 1U;
             }
         }
-        if (disc_loc_wait(APP_DEPOT_POLL_MS, 1U) != APP_OK) {
+        if (disc_loc_wait(cfg->poll_ms, 1U) != APP_OK) {
             goto fail;
         }
     }
-    if (high_cnt < APP_DEPOT_HIGH_N) {
+    if (high_cnt < cfg->high_count) {
         APP_LOGE("depot line timeout");
         goto fail;
     }
@@ -484,10 +501,10 @@ static app_status_t depot_locate(void)
         goto fail;
     }
     /* 与阶梯线尾一致：停稳后只修 Y，保留 X 和航向。 */
-    APP_LOGI("depot end y=%d -> %d", (int)pos.y_mm, APP_STAIR_END_Y_MM);
-    pos.y_mm = (int16_t)APP_STAIR_END_Y_MM;
+    APP_LOGI("depot end y=%d -> %d", (int)pos.y_mm, cfg->line_y);
+    pos.y_mm = (int16_t)cfg->line_y;
     if ((csvc_set_pose(pos, yaw) == CSVC_OK) &&
-        (depot_shift(g_depot_tbl[0].y_mm) == APP_OK)) {
+        (depot_shift_configured(cfg->d1_y, cfg) == APP_OK)) {
         return APP_OK;
     }
 fail:
@@ -496,6 +513,26 @@ fail:
         APP_LOGE("depot locate stop fail");
     }
     return APP_ERR;
+}
+
+/** 正式模式沿用原参数与原超时语义，不读取备用配置。 */
+static depot_settings_t depot_formal_settings(void)
+{
+    depot_settings_t cfg = {
+        APP_DEPOT_VY_MMS, APP_DEPOT_POLL_MS, APP_DEPOT_FIX_MS, 0U,
+        (route_side() == ROUTE_SIDE_MIRROR) ? 1U : 6U, APP_DEPOT_HIGH_N,
+        APP_STAIR_END_Y_MM, g_depot_tbl[0].y_mm };
+    return cfg;
+}
+static app_status_t depot_shift(int16_t y_mm)
+{
+    depot_settings_t cfg = depot_formal_settings();
+    return depot_shift_configured(y_mm, &cfg);
+}
+static app_status_t depot_locate(void)
+{
+    depot_settings_t cfg = depot_formal_settings();
+    return depot_locate_configured(&cfg);
 }
 
 /* 仓库命令分发上下文 */
@@ -524,6 +561,95 @@ static uint8_t depot_hook(const chassis_mission_command_t *cmd, void *ctx)
     depot->id  = cmd->request_id;
     depot->got = 1U;
     return 1U;
+}
+
+/* 红方备用只在此底盘任务中运行；故障锁存后不返回正式阶段顺序。 */
+static uint8_t g_backup_aborted;
+static uint32_t g_backup_started;
+
+/** STOP仍交由原链路停车回执，同时锁存中止，防止导航结束被误判成功。 */
+static uint8_t backup_stop_hook(const chassis_mission_command_t *cmd, void *ctx)
+{
+    (void)ctx;
+    if (cmd->type == MISSION_CMD_STOP) g_backup_aborted = 1U;
+    return 0U;
+}
+/** 备用导航/找线的轮询保护；停止标志只清零一次，失败后不得恢复运动。 */
+static uint8_t backup_guard(void)
+{
+    (void)link_poll(backup_stop_hook, NULL, 0U);
+    if (osKernelGetTickCount() - g_backup_started >= util_ms_ticks(RED_BACKUP_OPERATION_MS))
+        g_backup_aborted = 1U;
+    return g_backup_aborted == 0U;
+}
+
+/** 等待阶段命令时不限用户操作耗时；STOP立即锁存，不再接受后续运动。 */
+static uint8_t backup_command_hook(const chassis_mission_command_t *cmd, void *ctx)
+{
+    depot_ctx_t *next = (depot_ctx_t *)ctx;
+    if (cmd->type == MISSION_CMD_STOP) {
+        g_backup_aborted = 1U;
+        return 0U;
+    }
+    next->cmd = cmd->type;
+    next->id = cmd->request_id;
+    next->got = 1U;
+    return 1U;
+}
+/** 等待下一条阶段命令；请求号由调用方原样用于到位回报。 */
+static app_status_t backup_command(depot_ctx_t *next)
+{
+    next->got = 0U;
+    while (!next->got && !g_backup_aborted)
+        (void)link_poll(backup_command_hook, next, util_ms_ticks(APP_DEPOT_POLL_MS));
+    return g_backup_aborted ? APP_ERR : APP_OK;
+}
+
+/**
+ * @brief 红方备用阶段编排：圆盘机→仓库校准→仓库命令→回家。
+ * @note 不发送阶梯/绕桩回执；共享底层动作但仅传入备用参数。
+ *       任一失败回报后永久停车，只有重新上电才能重新选模式。
+ */
+static void app_red_backup_run(void)
+{
+    static const depot_settings_t cfg = {
+        RED_BACKUP_DEPOT_SHIFT_VY_MMS, RED_BACKUP_DEPOT_POLL_MS,
+        RED_BACKUP_DEPOT_LOCATE_MS, RED_BACKUP_OPERATION_MS,
+        RED_BACKUP_DEPOT_LINE_SENSOR, RED_BACKUP_DEPOT_HIGH_COUNT,
+        RED_BACKUP_DEPOT_LINE_Y_MM, RED_BACKUP_DEPOT_D1_Y_MM };
+    static const int16_t points[] = { RED_BACKUP_DEPOT_D1_Y_MM,
+        RED_BACKUP_DEPOT_D2_Y_MM, RED_BACKUP_DEPOT_D3_Y_MM, RED_BACKUP_DEPOT_D4_Y_MM };
+    depot_ctx_t next;
+    uint8_t ok;
+    unsigned index;
+    g_backup_aborted = 0U;
+    if (g_mission_side != MISSION_COLOR_RED || route_side() != ROUTE_SIDE_DEFAULT) goto parked;
+    if (backup_command(&next) != APP_OK || next.cmd != MISSION_CMD_GO_PLATFORM) goto parked;
+    g_backup_started = osKernelGetTickCount();
+    ok = route_red_backup_go(ROUTE_PLATFORM, backup_guard) == APP_OK;
+    if (link_post(CHASSIS_CMD_PLATFORM_READY, next.id, ok) != APP_OK || !ok) goto parked;
+
+    /* Mission完成第五次存球及动作10后，才会给出首次GO_DEPOT_1。 */
+    if (backup_command(&next) != APP_OK || next.cmd != MISSION_CMD_GO_DEPOT_1) goto parked;
+    g_backup_started = osKernelGetTickCount();
+    ok = route_red_backup_go(ROUTE_DEPOT, backup_guard) == APP_OK;
+    if (ok) ok = depot_locate_configured(&cfg) == APP_OK;
+    if (link_post(CHASSIS_CMD_DEPOT_1_READY, next.id, ok) != APP_OK || !ok) goto parked;
+    for (;;) {
+        if (backup_command(&next) != APP_OK) goto parked;
+        if (next.cmd == MISSION_CMD_DEPOT_OK) break;
+        if (next.cmd < MISSION_CMD_GO_DEPOT_1 || next.cmd > MISSION_CMD_GO_DEPOT_4) goto parked;
+        index = (unsigned)(next.cmd - MISSION_CMD_GO_DEPOT_1);
+        ok = depot_shift_configured(points[index], &cfg) == APP_OK;
+        if (link_post(g_depot_tbl[index].rsp, next.id, ok) != APP_OK || !ok) goto parked;
+    }
+    g_backup_started = osKernelGetTickCount();
+    ok = route_red_backup_go(ROUTE_HOME, backup_guard) == APP_OK;
+    (void)link_post(CHASSIS_CMD_HOME_READY, next.id, ok);
+parked:
+    /* 包括完成、STOP、未知命令和错误，均不掉入正式流程。 */
+    (void)align_stop();
+    for (;;) (void)link_poll(NULL, NULL, util_ms_ticks(APP_IDLE_MS));
 }
 
 /**
@@ -568,6 +694,12 @@ static void app_task(void *arg)
 
     }
     link_handshake();
+
+    /* 模式在颜色发布前已锁定；正式红蓝继续下方原有阶段顺序。 */
+    if (g_mission_run_mode == MISSION_RUN_RED_BACKUP) {
+        app_red_backup_run();
+        return;
+    }
 
     if (link_wait(MISSION_CMD_GO_PLATFORM, &id, osWaitForever) == APP_OK) {
         if (ok == 0U) {

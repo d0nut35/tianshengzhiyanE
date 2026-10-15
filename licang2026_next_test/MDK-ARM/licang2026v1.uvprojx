@@ -2000,6 +2000,11 @@
               <FileType>5</FileType>
               <FilePath>../01_App/mission/mission_config.h</FilePath>
             </File>
+            <File>
+              <FileName>mission_red_backup_config.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../01_App/mission/mission_red_backup_config.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

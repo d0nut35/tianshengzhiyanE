@@ -21,6 +21,9 @@ stub = r'''
 #define GPIO_PIN_11 (1U<<11)
 #define GPIO_PIN_12 (1U<<12)
 #define GPIO_PIN_13 (1U<<13)
+#define GPIO_PIN_15 (1U<<15)
+enum { MISSION_RUN_FORMAL, MISSION_RUN_RED_BACKUP };
+static unsigned g_mission_run_mode;
 #define GPIO_PIN_RESET 0
 #define GPIO_PIN_SET 1
 #define DEPOT_TRACE(...) ((void)0)
@@ -48,11 +51,12 @@ tests = r'''
 static mission_context_t c;
 static void reset(void) {
  memset(&c,0,sizeof c);memset(&g_start,0,sizeof g_start);
- g_start.stable=GPIO_PIN_12|GPIO_PIN_13;
+ g_start.stable=GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_15;g_mission_run_mode=MISSION_RUN_FORMAL;
  c.state=MISSION_STATE_WAIT_CHASSIS_READY;c.request_id=1;
  tick=0;port.IDR=GPIO_PIN_12|GPIO_PIN_13;g_mission_side=0;sends=writes=0;send_ok=true;
 }
-static void sample(unsigned keys,unsigned dt) { port.IDR=keys;tick+=dt;mission_start_panel(&c); }
+static void sample(unsigned keys,unsigned dt) { port.IDR=keys|GPIO_PIN_15;tick+=dt;mission_start_panel(&c); }
+static void exact(unsigned keys,unsigned dt) { port.IDR=keys;tick+=dt;mission_start_panel(&c); }
 static void make_ready(void) { c.arm_home_ready=c.block_model_ready=true;g_start.base_ready=true; }
 static void press(void) { sample(port.IDR & ~GPIO_PIN_13,1); sample(port.IDR,50); }
 int main(void) {
@@ -82,6 +86,21 @@ int main(void) {
  reset();make_ready();sample(port.IDR,0);sample(port.IDR,50);press();
  c.chassis_ready=true;send_ok=false;mission_try_ready(&c);assert(c.state==FAULT);
  mission_start_panel(&c);assert(led_ready==1);
+ /* Red backup is sampled and locked with color; later release cannot change it. */
+ reset();make_ready();exact(GPIO_PIN_12|GPIO_PIN_13,0);exact(port.IDR,50);
+ exact(GPIO_PIN_12,1);exact(port.IDR,50);
+ assert(g_start.confirmed && g_mission_side==MISSION_COLOR_RED && g_mission_run_mode==MISSION_RUN_RED_BACKUP);
+ exact(GPIO_PIN_15|GPIO_PIN_13,100);assert(g_mission_run_mode==MISSION_RUN_RED_BACKUP && g_mission_side==MISSION_COLOR_RED);
+ /* Blue+backup must reject; releasing PD15 while holding KEY1 must not start. */
+ reset();make_ready();exact(GPIO_PIN_13,0);exact(port.IDR,50);
+ exact(0,1);exact(0,50);assert(!g_start.confirmed && g_mission_side==MISSION_COLOR_NONE);
+ exact(GPIO_PIN_15,1);exact(port.IDR,50);assert(!g_start.confirmed);
+ exact(GPIO_PIN_13|GPIO_PIN_15,1);exact(port.IDR,50);press();
+ assert(g_start.confirmed && g_mission_side==MISSION_COLOR_BLUE && g_mission_run_mode==MISSION_RUN_FORMAL);
+ /* PD15 bounce cancels a simultaneous KEY1 edge until all inputs are stable. */
+ reset();make_ready();sample(GPIO_PIN_12|GPIO_PIN_13,0);sample(port.IDR,50);
+ exact(GPIO_PIN_12,1);exact(GPIO_PIN_12|GPIO_PIN_15,20);exact(port.IDR,20);assert(!g_start.confirmed);
+ exact(port.IDR,30);assert(g_start.confirmed && g_mission_run_mode==MISSION_RUN_FORMAL);
  puts("PASS: readiness, early-held key, debounce, red/blue, lock, handshake timing, fault and departure");
 }
 '''

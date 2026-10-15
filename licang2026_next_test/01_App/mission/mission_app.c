@@ -345,6 +345,7 @@ static mission_context_t g_mission;
 
 /* 当前比赛红蓝方由Mission唯一维护，其他模块只读并据此选择地图。 */
 volatile mission_color_t g_mission_side = MISSION_COLOR_NONE;
+volatile mission_run_mode_t g_mission_run_mode = MISSION_RUN_FORMAL;
 
 #if MISSION_CHASSIS_ROUTE_TEST_ENABLED
 /** USART1无线联调任务的运行状态和文本缓冲区。 */
@@ -896,7 +897,7 @@ static void mission_start_panel(mission_context_t *ctx)
     }
     if (g_start.confirmed) return;
     now = osKernelGetTickCount();
-    raw = GPIOD->IDR & (GPIO_PIN_12 | GPIO_PIN_13);
+    raw = GPIOD->IDR & (GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_15);
     if (!g_start.sampled || raw != g_start.raw) {
         g_start.raw = raw;
         g_start.changed_tick = now;
@@ -908,12 +909,18 @@ static void mission_start_panel(mission_context_t *ctx)
     HAL_GPIO_WritePin(GPIOE, GPIO_PIN_12,
         (raw & GPIO_PIN_12) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     if (pressed && (g_start.stable & GPIO_PIN_13) != 0U) {
-        if (ready && g_start.armed) {
+        if (ready && g_start.armed &&
+            (raw & (GPIO_PIN_12 | GPIO_PIN_15)) == 0U) {
+            /* 蓝方禁止红方备用；消耗本次按下，松开KEY1后才能重新确认。 */
+            DEPOT_TRACE("[BOOT] KEY1 REJECT BLUE_WITH_RED_BACKUP\r\n");
+        } else if (ready && g_start.armed) {
             g_start.confirmed = true;
             g_start.confirmed_tick = now;
+            g_mission_run_mode = (raw & GPIO_PIN_15) ?
+                MISSION_RUN_FORMAL : MISSION_RUN_RED_BACKUP;
             g_mission_side = (raw & GPIO_PIN_12) ? MISSION_COLOR_RED : MISSION_COLOR_BLUE;
-            DEPOT_TRACE("[BOOT] KEY1 CONFIRM SIDE=%u MIN_DELAY=1000MS\r\n",
-                (unsigned)g_mission_side);
+            DEPOT_TRACE("[BOOT] KEY1 CONFIRM SIDE=%u MODE=%u MIN_DELAY=1000MS\r\n",
+                (unsigned)g_mission_side, (unsigned)g_mission_run_mode);
             /* 最终握手有超时保护，不阻塞模型查询和事件处理。 */
             mission_enter_state(ctx, MISSION_STATE_WAIT_CHASSIS_READY, MISSION_OPERATION_TIMEOUT_MS);
         } else {
@@ -2495,6 +2502,20 @@ static void mission_finish_platform(mission_context_t *ctx)
     ctx->active_arm_group = 0U;
     mission_enter_state(ctx, MISSION_STATE_COMPLETE, 0U);
 #else
+    /* 仅备用模式从完整圆盘收尾分流；正式去阶梯的原分支保持。 */
+    if (g_mission_run_mode == MISSION_RUN_RED_BACKUP) {
+        if (g_mission_side != MISSION_COLOR_RED || !ctx->arm_home_ready) {
+            mission_fail(ctx, MISSION_FAULT_CHASSIS);
+            return;
+        }
+        if (!mission_send_chassis(MISSION_CMD_GO_DEPOT_1, mission_next_request_id(ctx))) {
+            mission_fail(ctx, MISSION_FAULT_QUEUE);
+            return;
+        }
+        DEPOT_TRACE("[BACKUP] PLATFORM DONE -> DEPOT ID=%u\r\n", (unsigned)ctx->request_id);
+        mission_enter_state(ctx, MISSION_STATE_WAIT_DEPOT_1, MISSION_OPERATION_TIMEOUT_MS);
+        return;
+    }
     (void)mission_next_request_id(ctx);
     if (!mission_send_chassis(MISSION_CMD_GO_STAIRS, ctx->request_id)) {
         mission_fail(ctx, MISSION_FAULT_QUEUE);
@@ -5026,10 +5047,11 @@ mission_app_status_t mission_app_init(void)
     }
     /* 1) 清空运行上下文并初始化小球档案。 */
     (void)memset(ctx, 0, sizeof(*ctx));
+    g_mission_run_mode = MISSION_RUN_FORMAL;
     g_mission_side = MISSION_COLOR_NONE;
 #if !MISSION_CHASSIS_ROUTE_TEST_ENABLED
     (void)memset(&g_start, 0, sizeof(g_start));
-    g_start.stable = GPIO_PIN_12 | GPIO_PIN_13;
+    g_start.stable = GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_15;
 #endif
     ball_manifest_init(&ctx->manifest);
     /* 2) 目标区域测试会复用正式读卡和车载转盘服务。 */

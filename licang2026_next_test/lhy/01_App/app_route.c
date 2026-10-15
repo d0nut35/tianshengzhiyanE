@@ -8,6 +8,7 @@
  */
 
 #include "app_route.h"
+#include "../../01_App/mission/mission_red_backup_config.h"
 
 #include <stdint.h>
 
@@ -189,6 +190,63 @@ app_status_t route_go(route_id_t id)
         return APP_ERR;
     }
     return APP_OK;
+}
+
+/**
+ * @brief 使用独立参数执行红方备用圆盘机、仓库或回家路线。
+ * @param id 仅支持PLATFORM、DEPOT、HOME。
+ * @param guard 底盘提供的STOP/总超时检查，返回0即中止。
+ * @retval APP_OK=导航及需要的校准完成并停车；APP_ERR=中止或失败。
+ * @note 单底盘任务串行使用；任何出口都解除校准保护回调，不改正式点表。
+ */
+app_status_t route_red_backup_go(route_id_t id, uint8_t (*guard)(void))
+{
+    static const route_pt_t platform = {
+        CSVC_NAV_PATH, {RED_BACKUP_PLATFORM_X_MM, RED_BACKUP_PLATFORM_Y_MM},
+        RED_BACKUP_PLATFORM_YAW_DEG, RED_BACKUP_PLATFORM_V_MMS, RED_BACKUP_PLATFORM_W_DPS,
+        {RED_BACKUP_PLATFORM_FIX_X_MM, RED_BACKUP_PLATFORM_FIX_Y_MM}, FIX_IMU };
+    static const route_pt_t depot = {
+        CSVC_NAV_PATH, {RED_BACKUP_DEPOT_X_MM, RED_BACKUP_DEPOT_Y_MM},
+        RED_BACKUP_DEPOT_YAW_DEG, RED_BACKUP_DEPOT_V_MMS, RED_BACKUP_DEPOT_W_DPS,
+        {RED_BACKUP_DEPOT_FIX_X_MM, RED_BACKUP_DEPOT_FIX_Y_MM}, FIX_LINE };
+    static const route_pt_t home = {
+        CSVC_NAV_LINE, {RED_BACKUP_HOME_X_MM, RED_BACKUP_HOME_Y_MM},
+        RED_BACKUP_HOME_YAW_DEG, RED_BACKUP_HOME_V_MMS, RED_BACKUP_HOME_W_DPS,
+        {0, 0}, FIX_NONE };
+    const route_pt_t *pt;
+    float yaw;
+    app_status_t result = APP_ERR;
+    if (g_side != ROUTE_SIDE_DEFAULT || guard == NULL) return APP_ERR;
+    if (id == ROUTE_PLATFORM) pt = &platform;
+    else if (id == ROUTE_DEPOT) pt = &depot;
+    else if (id == ROUTE_HOME) pt = &home;
+    else return APP_ERR;
+    align_set_guard(guard);
+    if (!guard()) goto done;
+    g_nav_fin = 0U;
+    if (csvc_nav(pt->nav_mode, pt->nav_pt, pt->yaw_deg, pt->v_mms,
+                 pt->w_dps, &g_nav_fin) != CSVC_OK) goto done;
+    while (g_nav_fin == 0U) {
+        if (!guard()) goto done;
+        osDelay(util_ms_ticks(RT_NAV_POLL_MS));
+    }
+    /* STOP也可能把导航标记结束，必须先核对锁存再进入校准。 */
+    if (!guard()) goto done;
+    if (pt->fix != FIX_NONE) {
+        if (align_seek_line() != ALIGN_OK || !guard()) goto done;
+        if (pt->fix == FIX_LINE) {
+            if (align_white_line(pt->fix_pt, pt->yaw_deg, AL_RED_BACKUP_DEPOT) != ALIGN_OK) goto done;
+        } else {
+            if (align_yaw_read(&yaw) != ALIGN_OK || !guard() ||
+                csvc_set_pose(pt->fix_pt, -yaw) != CSVC_OK) goto done;
+        }
+    }
+    if (guard()) result = APP_OK;
+done:
+    if (align_stop() != ALIGN_OK) result = APP_ERR;
+    if (!guard()) result = APP_ERR;
+    align_set_guard(NULL);
+    return result;
 }
 
 /** @copydoc route_set_side */

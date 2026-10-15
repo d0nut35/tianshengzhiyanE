@@ -122,6 +122,13 @@ typedef enum {
  */
 extern volatile mission_color_t g_mission_side;
 
+/* 起点一次锁定，先发布模式再发布颜色；其他任务只读。 */
+typedef enum {
+    MISSION_RUN_FORMAL = 0,
+    MISSION_RUN_RED_BACKUP,
+} mission_run_mode_t;
+extern volatile mission_run_mode_t g_mission_run_mode;
+
 typedef enum {
     MISSION_STAIR_NONE = 0,
     MISSION_STAIR_LOW,

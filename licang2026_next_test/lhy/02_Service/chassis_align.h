@@ -29,6 +29,7 @@ typedef enum {
     AL_RED_DEPOT,
     AL_BLUE_STAIR,
     AL_BLUE_DEPOT,
+    AL_RED_BACKUP_DEPOT, /* 仅备用模式独立补偿 */
 } align_site_t;
 
 /**
@@ -36,6 +37,12 @@ typedef enum {
  * @retval ALIGN_OK / ALIGN_ERR
  */
 align_status_t align_stop(void);
+
+/* 仅底盘任务设置，NULL恢复原行为；回调返回0时中止当前校准。
+ * 备用入口在进入/退出时成对设置，回调负责锁存STOP和总期限。
+ */
+typedef uint8_t (*align_guard_t)(void);
+void align_set_guard(align_guard_t guard);
 
 /**
  * @brief  在限定时间内读取一帧有效 IMU 原始航向

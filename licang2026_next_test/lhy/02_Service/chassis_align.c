@@ -7,6 +7,7 @@
  */
 
 #include "chassis_align.h"
+#include "../../01_App/mission/mission_red_backup_config.h"
 
 #include <stddef.h>
 
@@ -49,6 +50,23 @@
 #define AL_SWEEP_TMO_MS  60000U    /* 单向找线边缘超时，ms */
 #define AL_TURN_TMO_MS   6000U    /* 回到中值角度超时，ms */
 
+/* 正式入口默认NULL；仅备用路线在同一底盘任务中成对安装和解除。
+ * 不能由其他任务/ISR修改，也不能在align_stop中调用以免递归停车。
+ */
+static align_guard_t g_guard = NULL;
+
+/** @copydoc align_set_guard */
+void align_set_guard(align_guard_t guard)
+{
+    g_guard = guard;
+}
+
+/** 默认放行原正式动作；备用由调用方锁存停止及总期限。 */
+static uint8_t align_allowed(void)
+{
+    return g_guard == NULL || g_guard() != 0U;
+}
+
 static align_status_t seek_edge(lsensor_id_t id, float wz, float *yaw_deg);
 static align_status_t turn_mid(float target);
 static align_status_t imu_calib(float yaw_deg);
@@ -74,6 +92,7 @@ align_status_t align_yaw_read(float *yaw_deg)
         return ALIGN_ERR;
     }
     while ((osKernelGetTickCount() - start) < tmo) {
+        if (!align_allowed()) { (void)align_stop(); return ALIGN_ERR; }
         if (hwt101_adp_read(&gyro, yaw_deg) == HWT101_OK) {
             return ALIGN_OK;
         }
@@ -119,10 +138,11 @@ static align_status_t seek_edge(lsensor_id_t id, float wz, float *yaw_deg)
     if (level != LSENSOR_LEVEL_LOW) {
         return ALIGN_ERR;
     }
-    if (csvc_free(0.0f, 0.0f, wz) != CSVC_OK) {
+    if (!align_allowed() || csvc_free(0.0f, 0.0f, wz) != CSVC_OK) {
         return ALIGN_ERR;
     }
     while ((osKernelGetTickCount() - start) < tmo) {
+        if (!align_allowed()) { (void)align_stop(); return ALIGN_ERR; }
         level = lsh_get_level(id);
         if (level == LSENSOR_LEVEL_HIGH) {
             high_cnt++;
@@ -170,10 +190,11 @@ static align_status_t turn_mid(float target)
     /* 底盘命令与 IMU 原始 yaw 同向，按最短误差选择旋转方向。 */
     wz = (err > 0.0f) ? AL_TURN_W_DEG : -AL_TURN_W_DEG;
     prev_err = err;
-    if (csvc_free(0.0f, 0.0f, wz) != CSVC_OK) {
+    if (!align_allowed() || csvc_free(0.0f, 0.0f, wz) != CSVC_OK) {
         return ALIGN_ERR;
     }
     while ((osKernelGetTickCount() - start) < tmo) {
+        if (!align_allowed()) { (void)align_stop(); return ALIGN_ERR; }
         if (align_yaw_read(&yaw) != ALIGN_OK) {
             break;
         }
@@ -200,6 +221,7 @@ static align_status_t imu_calib(float yaw_deg)
     uint32_t tmo = util_ms_ticks(AL_IMU_TMO_MS); /* 超时 tick 数 */
 
     while ((osKernelGetTickCount() - start) < tmo) {
+        if (!align_allowed()) { (void)align_stop(); return ALIGN_ERR; }
         if (hwt101_adp_set_yaw(yaw_deg) == HWT101_OK) {
             return ALIGN_OK;
         }
@@ -215,10 +237,11 @@ align_status_t align_seek_line(void)
     lsensor_level_t sen_5;  /* 5 号循迹传感器电平 */
     uint8_t found = 0U;     /* 双传感器同时压线标志 */
 
-    if (csvc_free(AL_SEEK_VX_MMS, 0.0f, 0.0f) != CSVC_OK) {
+    if (!align_allowed() || csvc_free(AL_SEEK_VX_MMS, 0.0f, 0.0f) != CSVC_OK) {
         AL_LOGE("right move fail");
     } else {
         for (;;) {
+            if (!align_allowed()) break;
             sen_2 = lsh_get_level(LSENSOR_ID_2);
             sen_5 = lsh_get_level(LSENSOR_ID_5);
             if ((sen_2 == LSENSOR_LEVEL_LOW) &&
@@ -254,6 +277,7 @@ align_status_t align_white_line(map_point_t pos, float yaw_deg,
     switch (site) {
         case AL_RED_STAIR: yaw_ofs = AL_RED_STAIR_OFS; break;
         case AL_RED_DEPOT: yaw_ofs = AL_RED_DEPOT_OFS; break;
+        case AL_RED_BACKUP_DEPOT: yaw_ofs = RED_BACKUP_DEPOT_YAW_OFS_DEG; break;
         case AL_BLUE_STAIR: yaw_ofs = AL_BLUE_STAIR_OFS; break;
         case AL_BLUE_DEPOT: yaw_ofs = AL_BLUE_DEPOT_OFS; break;
         default: return ALIGN_ERR;
@@ -281,7 +305,7 @@ align_status_t align_white_line(map_point_t pos, float yaw_deg,
         AL_LOGE("imu calib fail");
         return ALIGN_ERR;
     }
-    if (csvc_set_pose(pos, yaw_deg) != CSVC_OK) {
+    if (!align_allowed() || csvc_set_pose(pos, yaw_deg) != CSVC_OK) {
         AL_LOGE("set pose fail");
         return ALIGN_ERR;
     }
